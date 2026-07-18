@@ -363,11 +363,18 @@ test('iPhone-Scan mit Pixelmaß-MediaBox: Rendern bleibt unter iOS-Canvas-Limit'
   // Scale-1-Heuristik: native Scan-Auflösung, kein Hochskalieren
   expect(res.swDims).toBe('2480x3507');
   expect(res.swSize).toBeLessThan(res.srcSize * 0.5);
-  expect(res.jpegSize).toBeLessThan(res.srcSize);
+  // dpi-Stufen müssen auch bei Pixelmaß-Scans greifen (A4-Normalisierung):
+  // 150 dpi rechnet den 300-dpi-Scan herunter statt nativ zu bleiben
+  expect(res.jpegSize).toBeLessThan(res.srcSize * 0.5);
   const stats = await pdfiumStats(Buffer.from(res.swB64, 'base64'));
   console.log('PDFium Scan-S/W: schwarz', (stats.blackFrac * 100).toFixed(1) + '%', 'weiß', (stats.whiteFrac * 100).toFixed(1) + '%');
   expect(stats.blackFrac).toBeLessThan(0.4);
   expect(stats.whiteFrac).toBeGreaterThan(0.5);
+  // Ausgabeseite hat echte A4-Maße statt der nominellen Postergröße
+  const outDoc = await PDFDocument.load(Buffer.from(res.swB64, 'base64'));
+  const { width, height } = outDoc.getPage(0).getSize();
+  expect(Math.abs(width - 595.28)).toBeLessThan(2);
+  expect(Math.abs(height - 841.89)).toBeLessThan(2);
 });
 
 test('OCR erzeugt durchsuchbaren Textlayer auf Scan ohne Text', async ({ page }) => {

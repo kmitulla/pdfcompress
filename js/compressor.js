@@ -415,15 +415,24 @@ const MAX_PIXELS_BW = 16e6;
 const MAX_PIXELS_COLOR = 12e6; // JPEG-Encode braucht zusätzlich Speicher
 
 async function renderPage(page, dpi, maxPixels) {
-  let scale = dpi / PT_PER_INCH;
   const base = page.getViewport({ scale: 1 });
-  const basePx = base.width * base.height;
   // Seiten jenseits von ~A2 sind fast immer Scans, deren Seitengröße in
-  // Pixelmaßen statt Punkten hinterlegt ist (z. B. iPhone-Scans mit
-  // MediaBox 2480x3507). Dann entspricht Skalierung 1 bereits der nativen
-  // Scan-Auflösung – mehr wäre nur sinnloses Hochskalieren.
-  if (basePx > 1.7e6 && scale > 1) scale = 1;
-  const projected = basePx * scale * scale;
+  // Pixelmaßen statt Punkten hinterlegt ist (z. B. iPhone-/Büroscans mit
+  // MediaBox 2480x3507 = nominell 87x123 cm). Solche Seiten werden auf
+  // A4-Äquivalent normalisiert: Die dpi-Stufen bedeuten dann wieder echte
+  // Papier-dpi (Mittel 150 dpi rechnet den 300-dpi-Scan sauber herunter),
+  // und die Ausgabeseite bekommt reale A4-Maße statt Postergröße.
+  let norm = 1;
+  if (base.width * base.height > 1.7e6) {
+    norm = Math.min(
+      841.89 / Math.max(base.width, base.height),
+      595.28 / Math.min(base.width, base.height),
+    );
+  }
+  const wPt = base.width * norm;
+  const hPt = base.height * norm;
+  let scale = (dpi / PT_PER_INCH) * norm;
+  const projected = base.width * base.height * scale * scale;
   if (maxPixels && projected > maxPixels) {
     scale *= Math.sqrt(maxPixels / projected);
   }
@@ -444,7 +453,7 @@ async function renderPage(page, dpi, maxPixels) {
   if (corner1[3] === 0 && corner2[3] === 0) {
     throw new Error(`Seite konnte nicht gerendert werden (${wPx}×${hPx} Pixel sind für diesen Browser zu groß)`);
   }
-  return { canvas, ctx, wPx, hPx, wPt: viewport.width / scale, hPt: viewport.height / scale, effDpi: scale * PT_PER_INCH };
+  return { canvas, ctx, wPx, hPx, wPt, hPt, effDpi: (wPx / wPt) * PT_PER_INCH };
 }
 
 // ---------------------------------------------------------------- Hauptpipeline
