@@ -63,6 +63,13 @@
           </span>
         </label>
         <label class="preset">
+          <input type="radio" name="preset" value="extrem-farbe">
+          <span class="preset-body">
+            <span class="preset-name">Extrem Farbe – „Scanner-Stil“</span>
+            <span class="preset-desc">Reduzierte Farbpalette (16 Farben) · 150 dpi · so komprimieren Büroscanner Farbscans: flache Farben, sauberer weißer Hintergrund, sehr klein</span>
+          </span>
+        </label>
+        <label class="preset">
           <input type="radio" name="preset" value="extrem-sw">
           <span class="preset-body">
             <span class="preset-name">Extrem S/W – „Scanner-Stil“</span>
@@ -85,6 +92,7 @@
           <select id="colorMode">
             <option value="color">Farbe (JPEG)</option>
             <option value="gray">Graustufen (JPEG)</option>
+            <option value="indexed">Farbe reduziert – 16 Farben (Scanner-Stil)</option>
             <option value="bw">Schwarz-Weiß 1-Bit (CCITT G4)</option>
           </select>
         </div>
@@ -97,6 +105,12 @@
           <input type="range" id="quality" min="10" max="95" step="1" value="60">
         </div>
       </fieldset>
+
+      <div class="field hidden" id="biasField">
+        <label for="bwBias">Helligkeit (S/W &amp; Scanner-Stil): <output id="bwBiasOut">0</output></label>
+        <input type="range" id="bwBias" min="-40" max="40" step="1" value="0">
+        <small>+ heller (mehr Weiß) · − dunkler (mehr Details/Schwarz). Wirkung unten in der Vorschau prüfen.</small>
+      </div>
 
       <h2>Texterkennung (OCR)</h2>
       <div class="field field-row">
@@ -114,6 +128,24 @@
       <p class="hint hidden" id="ocrLosslessHint">ℹ️ OCR ist nur bei den Bild-Modi verfügbar, nicht bei „Verlustfrei“.</p>
 
       <p class="hint">Hinweis: Bei allen Stufen außer „Verlustfrei“ werden die Seiten neu als Bild aufgebaut. Vorhandener Text ist danach nicht mehr auswählbar – aktiviere OCR, um ihn wieder durchsuchbar zu machen.</p>
+
+      <h2>Speichern</h2>
+      <div id="saveSection">
+        <button class="btn btn-small" id="pickOutDirBtn">Zielordner wählen …</button>
+        <p class="hint hidden" id="outDirInfo"></p>
+        <div class="field field-row hidden" id="autoSaveField">
+          <input type="checkbox" id="autoSave" checked>
+          <label for="autoSave">Ergebnisse automatisch in den Zielordner speichern</label>
+        </div>
+        <p class="hint hidden" id="fsUnsupportedHint">ℹ️ Direktes Speichern in einen Ordner unterstützt dein Browser nicht (nur Chrome/Edge). Der normale Download funktioniert immer.</p>
+      </div>
+
+      <h2>Import-Ordner</h2>
+      <div id="importSection">
+        <button class="btn btn-small" id="pickImportDirBtn">Import-Ordner wählen …</button>
+        <button class="btn btn-small btn-ghost hidden" id="rescanImportBtn">Neu scannen</button>
+        <div class="import-list hidden" id="importList"></div>
+      </div>
     </aside>
 
     <!-- ───────────────── Dateien ───────────────── -->
@@ -129,8 +161,18 @@
 
       <div class="actions hidden" id="actions">
         <button class="btn btn-primary" id="startBtn">Komprimieren</button>
+        <button class="btn" id="previewBtn">Vorschau</button>
         <button class="btn" id="downloadAllBtn" disabled>Alle herunterladen</button>
         <button class="btn btn-ghost" id="clearBtn">Liste leeren</button>
+      </div>
+
+      <div class="panel preview-card hidden" id="previewCard">
+        <div class="preview-head">
+          <strong>Vorschau</strong>
+          <span id="previewInfo" class="preview-info"></span>
+          <button class="btn btn-small btn-ghost" id="closePreviewBtn">Schließen</button>
+        </div>
+        <div class="preview-body"><img id="previewImg" alt="Vorschau der ersten Seite mit aktuellen Einstellungen"></div>
       </div>
     </section>
   </main>

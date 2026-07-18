@@ -185,6 +185,108 @@ test('G4-Encoder: Pixel identisch zum Flate-Referenzpfad, Datei kleiner', async 
   expect(res.autoSize).toBeLessThanOrEqual(Math.min(res.g4Size, res.flateSize) + 500);
 });
 
+test('Farbreduzierter Scanner-Modus: gültig, klein, wenige Farben', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async ({ makeSrc, renderSrc }) => {
+    eval(makeSrc); eval(renderSrc);
+    const src = await makeTestPdf(2, 1600, 2263, 0.92);
+    const { compressPdf } = window.__pdfpresser;
+    const out = await compressPdf(src.buffer.slice(0), { mode: 'raster', colorMode: 'indexed', dpi: 150, colors: 16 });
+
+    const scale = 150 / 72;
+    const countColors = async (bytes) => {
+      const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
+      const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+      const p = await doc.getPage(1);
+      const viewport = p.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      await p.render({ canvasContext: ctx, viewport }).promise;
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const set = new Set();
+      let nonWhite = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        set.add((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]);
+        if (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245) nonWhite++;
+      }
+      const numPages = doc.numPages;
+      await doc.destroy();
+      return { colors: set.size, nonWhiteFrac: nonWhite / (d.length / 4), numPages };
+    };
+    const before = await countColors(src);
+    const after = await countColors(out);
+    return { srcSize: src.length, outSize: out.length, before, after };
+  }, { makeSrc: MAKE_TEST_PDF, renderSrc: RENDER_HELPER });
+
+  console.log('Indexed:', res.srcSize, '→', res.outSize, 'Bytes; Farben vorher:', res.before.colors, 'nachher:', res.after.colors);
+  expect(res.after.numPages).toBe(2);
+  expect(res.outSize).toBeLessThan(res.srcSize);
+  expect(res.after.nonWhiteFrac).toBeGreaterThan(0.02);
+  // Massive Farbreduktion (Interpolation beim Rendern kann Mischfarben erzeugen)
+  expect(res.before.colors).toBeGreaterThan(5000);
+  expect(res.after.colors).toBeLessThan(res.before.colors / 10);
+});
+
+test('Helligkeitsregler verschiebt die S/W-Binarisierung', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async ({ makeSrc, renderSrc }) => {
+    eval(makeSrc); eval(renderSrc);
+    const src = await makeTestPdf(1, 1200, 1697, 0.9);
+    const { compressPdf, previewPage } = window.__pdfpresser;
+    const black = async (bytes) => {
+      const i = await inspectPdf(bytes, 1);
+      let n = 0;
+      for (const v of i.bin) n += v;
+      return n / i.bin.length;
+    };
+    const darker = await compressPdf(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 120, bias: -35 });
+    const lighter = await compressPdf(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 120, bias: 35 });
+    const pDark = await previewPage(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 120, bias: -35 });
+    const pLight = await previewPage(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 120, bias: 35 });
+    return {
+      darkFrac: await black(darker),
+      lightFrac: await black(lighter),
+      pDarkBytes: pDark.pageBytes,
+      pLightBytes: pLight.pageBytes,
+      pDataUrlOk: pDark.dataUrl.startsWith('data:image/png'),
+    };
+  }, { makeSrc: MAKE_TEST_PDF, renderSrc: RENDER_HELPER });
+
+  console.log('Schwarzanteil dunkel:', res.darkFrac.toFixed(3), 'hell:', res.lightFrac.toFixed(3));
+  expect(res.lightFrac).toBeLessThan(res.darkFrac);
+  expect(res.pDataUrlOk).toBe(true);
+  expect(res.pDarkBytes).toBeGreaterThan(0);
+  expect(res.pLightBytes).toBeGreaterThan(0);
+});
+
+test('Simulation berechnet alle Stufen mit Größen', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async ({ makeSrc }) => {
+    eval(makeSrc);
+    const src = await makeTestPdf(2, 1400, 1980, 0.92);
+    const { simulatePdf } = window.__pdfpresser;
+    const sim = await simulatePdf(src.buffer.slice(0));
+    return { srcSize: src.length, sim };
+  }, { makeSrc: MAKE_TEST_PDF });
+
+  console.log('Simulation:', res.sim.results.map((r) => `${r.key}=${r.size}`).join(', '));
+  expect(res.sim.totalPages).toBe(2);
+  expect(res.sim.results.length).toBe(7);
+  const keys = res.sim.results.map((r) => r.key);
+  for (const k of ['verlustfrei', 'leicht', 'mittel', 'stark', 'extrem-grau', 'extrem-farbe', 'extrem-sw']) {
+    expect(keys).toContain(k);
+  }
+  for (const r of res.sim.results) {
+    expect(r.size).toBeGreaterThan(500);
+    expect(r.estimated).toBe(false); // 2 Seiten -> exakt gerechnet
+  }
+  // Extremstufen deutlich kleiner als das Original
+  const sw = res.sim.results.find((r) => r.key === 'extrem-sw');
+  expect(sw.size).toBeLessThan(res.srcSize * 0.5);
+});
+
 test('OCR erzeugt durchsuchbaren Textlayer auf Scan ohne Text', async ({ page }) => {
   test.setTimeout(360000);
   await ready(page);
@@ -270,6 +372,89 @@ test('UI: Datei laden, komprimieren, herunterladen', async ({ page }) => {
   // Ergebnis in Node validieren
   const outDoc = await PDFDocument.load(fs.readFileSync(outPath));
   expect(outDoc.getPageCount()).toBe(2);
+
+  // Vorher/Nachher wird angezeigt
+  await expect(page.locator('.file-meta')).toContainText('Vorher:');
+  await expect(page.locator('.file-meta')).toContainText('Nachher:');
+
+  // Teilen-Button: nur sichtbar, wenn der Browser die Web-Share-API kann
+  const shareSupported = await page.evaluate(() => typeof navigator.share === 'function' && typeof navigator.canShare === 'function');
+  if (shareSupported) await expect(page.locator('.btn-share')).toBeVisible();
+  else await expect(page.locator('.btn-share')).toBeHidden();
+
+  // ── Erneut komprimieren ohne neue Dateiauswahl (andere Stufe) ──
+  await expect(page.locator('#startBtn')).toHaveText('Erneut komprimieren');
+  await page.locator('input[name="preset"][value="extrem-sw"]').check();
+  await page.locator('#startBtn').click();
+  await expect(page.locator('.file-status')).toContainText('Fertig', { timeout: 120000 });
+  await expect(page.locator('.file-meta')).toContainText('Extrem S/W');
+  const size2 = await page.evaluate(() => window.__pdfpresser.items[0].result.length);
+  expect(size2).toBeGreaterThan(500);
+  expect(size2).not.toBe(outSize);
+
+  // ── Vorschau mit aktuellen Einstellungen ──
+  await page.locator('#previewBtn').click();
+  await expect(page.locator('#previewInfo')).toContainText('pro Seite', { timeout: 60000 });
+  const imgSrc = await page.locator('#previewImg').getAttribute('src');
+  expect(imgSrc.startsWith('data:image/png')).toBe(true);
+
+  // ── Zielordner speichern (Mock-DirectoryHandle) ──
+  const writes = await page.evaluate(async () => {
+    const written = {};
+    const dirHandle = {
+      name: 'TestZiel',
+      async getFileHandle(name) {
+        return {
+          async createWritable() {
+            return {
+              async write(data) { written[name] = data.byteLength ?? data.length; },
+              async close() {},
+            };
+          },
+        };
+      },
+    };
+    await window.__pdfpresser.setOutputDir(dirHandle);
+    await window.__pdfpresser.saveItemToDir(window.__pdfpresser.items[0]);
+    return written;
+  });
+  expect(Object.keys(writes)).toEqual(['ui-test_komprimiert.pdf']);
+  expect(writes['ui-test_komprimiert.pdf']).toBeGreaterThan(500);
+  await expect(page.locator('.file-status')).toContainText('gespeichert in „TestZiel“');
+  await expect(page.locator('.btn-save-dir')).toBeVisible();
+
+  // ── Import-Ordner (Mock): PDFs finden und hinzufügen ──
+  const foundCount = await page.evaluate(async () => {
+    const { PDFDocument } = window.PDFLib;
+    const d = await PDFDocument.create();
+    d.addPage([200, 200]);
+    const bytes = await d.save();
+    const fileEntry = (name, data) => ({
+      kind: 'file',
+      name,
+      async getFile() { return new File([data], name, { type: 'application/pdf' }); },
+    });
+    const sub = {
+      kind: 'directory',
+      name: 'Unterordner',
+      async* values() { yield fileEntry('scan-b.pdf', bytes); },
+    };
+    const dir = {
+      kind: 'directory',
+      name: 'ImportTest',
+      async* values() {
+        yield fileEntry('scan-a.pdf', bytes);
+        yield { kind: 'file', name: 'notiz.txt' };
+        yield sub;
+      },
+    };
+    return window.__pdfpresser.importFromDirHandle(dir);
+  });
+  expect(foundCount).toBe(2);
+  await expect(page.locator('#importList')).toContainText('2 PDFs');
+  await expect(page.locator('#importList')).toContainText('scan-a.pdf');
+  await page.locator('#importAllBtn').click();
+  await expect(page.locator('.file-item')).toHaveCount(3);
 });
 
 test('PWA: Manifest, Icons, Service Worker und Offline-Betrieb', async ({ page, context }) => {
@@ -288,7 +473,7 @@ test('PWA: Manifest, Icons, Service Worker und Offline-Betrieb', async ({ page, 
   await page.waitForFunction(() => navigator.serviceWorker?.controller || navigator.serviceWorker?.ready, null, { timeout: 30000 });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async () => {
-    const cache = await caches.open('pdfpresser-v1');
+    const cache = await caches.open('pdfpresser-v2');
     const keys = await cache.keys();
     return keys.length >= 20;
   }, null, { timeout: 60000 });

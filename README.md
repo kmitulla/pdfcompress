@@ -13,14 +13,31 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
 - **Kein Upload:** Alle Verarbeitung (Rendern, Komprimieren, OCR) läuft per
   WebAssembly/JavaScript im Browser. Dateien verlassen das Gerät nie.
 - **Kompressionsstufen:** Verlustfrei, Leicht, Mittel, Stark, Extrem
-  (Graustufen), Extrem S/W – plus frei einstellbar (Farbmodus, dpi, Qualität).
+  (Graustufen), Extrem Farbe, Extrem S/W – plus frei einstellbar (Farbmodus,
+  dpi, Qualität).
 - **„Scanner-Stil“ S/W-Modus:** 1-Bit-Binarisierung (Otsu-Schwellwert) mit
   **CCITT-G4-Fax-Kompression** – dieselbe Technik, die Büroscanner (z. B.
   Xerox) für winzige Scans nutzen. Text bleibt bei 300 dpi gestochen scharf,
   typischerweise nur wenige KB pro Seite. Pro Seite wird automatisch die
   kleinere von G4- und Flate-Kompression gewählt.
+- **„Scanner-Stil“ in Farbe:** Median-Cut-Quantisierung auf 16 Palettenfarben
+  mit sauberem weißem Hintergrund (Indexed-ColorSpace + Flate) – der Look von
+  Farbscans aus dem Bürogerät bei sehr kleinen Dateien.
+- **Helligkeitsregler mit Live-Vorschau:** Für S/W- und Scanner-Stil lässt
+  sich der Schwellwert anpassen; die Vorschau zeigt die erste Seite mit den
+  aktuellen Einstellungen inklusive geschätzter Größe pro Seite.
+- **Simulation:** Rechnet auf Knopfdruck alle Stufen durch und zeigt für jede
+  die Nachher-Größe und Ersparnis in % (bei langen Dokumenten hochgerechnet
+  aus Beispielseiten).
+- **Erneut komprimieren:** Stufe wechseln und dieselben Dateien ohne neue
+  Auswahl nochmal durchlaufen lassen. Vorher-/Nachher-Größe wird angezeigt.
 - **Optionaler OCR-Textlayer:** Tesseract (Deutsch/Englisch) legt unsichtbaren
   Text über die Seiten – das PDF wird durchsuch- und kopierbar.
+- **Zielordner & Import-Ordner** (Chrome/Edge): Ergebnisse auf Wunsch
+  automatisch in einen gewählten Ordner speichern; PDFs direkt aus einem
+  Import-Ordner einsammeln (zeigt an, was gefunden wurde).
+- **Teilen:** Komprimierte PDFs direkt über den System-Teilen-Dialog
+  weitergeben (wo die Web-Share-API verfügbar ist).
 - **PWA:** Web-App-Icon, installierbar (Desktop & Mobil), offline-fähig durch
   Service-Worker-Precache aller Assets inklusive OCR-Sprachdaten.
 - **Für PC optimiert:** Zwei-Spalten-Layout, Drag & Drop, mehrere Dateien in
@@ -57,8 +74,12 @@ npm test
 - Alle Stufen erzeugen gültige, kleinere PDFs (Seitenzahl, Maße, Inhalt werden
   gerendert und geprüft)
 - G4-Encoder: Pixel-exakter Vergleich gegen den unabhängigen Flate-Referenzpfad
+- Farbreduzierter Modus: Ergebnis enthält nachweislich nur die Palettenfarben
+- Helligkeitsregler: verschiebt die Binarisierung messbar in beide Richtungen
+- Simulation: alle Stufen liefern plausible Größen
 - OCR: Scan ohne Textlayer → Ausgabe enthält den erkannten Text
-- UI-Workflow inkl. Download
+- UI-Workflow inkl. Download, erneutem Komprimieren, Vorschau, Zielordner-
+  Speichern und Import-Ordner (per Mock-Handles)
 - PWA: Manifest, Icons, Service Worker, App läuft und komprimiert offline
 
 ## Deployment

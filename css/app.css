@@ -227,4 +227,37 @@ output { color: var(--accent); font-weight: 600; }
   font-size: 12.5px;
 }
 
+/* Vorschau */
+.preview-card { margin-top: 16px; padding: 14px; }
+.preview-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.preview-info { color: var(--muted); font-size: 13px; flex: 1; }
+.preview-body { text-align: center; }
+.preview-body img {
+  max-width: 100%;
+  max-height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* Simulation */
+.sim-results { grid-column: 1 / -1; font-size: 13px; }
+.sim-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.sim-table th, .sim-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sim-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.sim-good { color: var(--ok); font-weight: 600; }
+.sim-bad { color: var(--warn); }
+.sim-note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+
+/* Import-Ordner */
+.import-list { margin-top: 10px; font-size: 13.5px; }
+.import-found { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.import-found li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+#saveSection .btn, #importSection .btn { margin-right: 6px; }
+#outDirInfo { margin-top: 8px; }
+
 .hidden { display: none !important; }
