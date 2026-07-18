@@ -14,6 +14,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@hyzyla/pdfium": "^2.1.13",
     "@playwright/test": "^1.61.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",

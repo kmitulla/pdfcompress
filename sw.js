@@ -1,5 +1,5 @@
 // Service Worker: precached alle Assets, damit die App komplett offline läuft.
-const CACHE = 'pdfpresser-v2';
+const CACHE = 'pdfpresser-v3';
 
 const ASSETS = [
   './',
@@ -26,8 +26,15 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  // cache: 'reload' umgeht den HTTP-Cache – verhindert, dass eine neue
+  // SW-Version veraltete Dateien precached (Misch-Versionen!)
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
+    caches.open(CACHE).then((cache) => Promise.all(
+      ASSETS.map((url) => fetch(new Request(url, { cache: 'reload' })).then((resp) => {
+        if (!resp.ok) throw new Error(`Precache ${url}: HTTP ${resp.status}`);
+        return cache.put(url, resp);
+      })),
+    )).then(() => self.skipWaiting()),
   );
 });
 

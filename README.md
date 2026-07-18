@@ -15,9 +15,10 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
 - **Kompressionsstufen:** Verlustfrei, Leicht, Mittel, Stark, Extrem
   (Graustufen), Extrem Farbe, Extrem S/W – plus frei einstellbar (Farbmodus,
   dpi, Qualität).
-- **„Scanner-Stil“ S/W-Modus:** 1-Bit-Binarisierung (Otsu-Schwellwert) mit
-  **CCITT-G4-Fax-Kompression** – dieselbe Technik, die Büroscanner (z. B.
-  Xerox) für winzige Scans nutzen. Text bleibt bei 300 dpi gestochen scharf,
+- **„Scanner-Stil“ S/W-Modus:** adaptive 1-Bit-Binarisierung gegen den
+  lokalen Hintergrund (wie bei Büroscannern – auch getöntes Papier und
+  farbige Flächen bleiben lesbar, statt schwarz zu kippen) mit
+  **CCITT-G4-Fax-Kompression**. Text bleibt bei 300 dpi gestochen scharf,
   typischerweise nur wenige KB pro Seite. Pro Seite wird automatisch die
   kleinere von G4- und Flate-Kompression gewählt.
 - **„Scanner-Stil“ in Farbe:** Median-Cut-Quantisierung auf 16 Palettenfarben
@@ -73,6 +74,8 @@ npm test
 
 - Alle Stufen erzeugen gültige, kleinere PDFs (Seitenzahl, Maße, Inhalt werden
   gerendert und geprüft)
+- Gegenprobe mit **PDFium** (Engine von Chrome/Edge): S/W- und Farb-Ausgaben
+  werden dort gerendert und auf Lesbarkeit geprüft
 - G4-Encoder: Pixel-exakter Vergleich gegen den unabhängigen Flate-Referenzpfad
 - Farbreduzierter Modus: Ergebnis enthält nachweislich nur die Palettenfarben
 - Helligkeitsregler: verschiebt die Binarisierung messbar in beide Richtungen

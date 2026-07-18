@@ -5,6 +5,31 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFiumLibrary } from '@hyzyla/pdfium';
+
+// Unabhängige Gegenprobe mit PDFium (Engine von Chrome/Edge/Acrobat-nah):
+// rendert Seite 1 und liefert Schwarz-/Weiß-Anteile.
+async function pdfiumStats(bytes) {
+  const lib = await PDFiumLibrary.init();
+  try {
+    const doc = await lib.loadDocument(Buffer.from(bytes));
+    const page = doc.getPage(0);
+    const r = await page.render({ scale: 0.6, render: 'bitmap' });
+    const d = r.data;
+    let black = 0;
+    let white = 0;
+    const total = r.width * r.height;
+    for (let i = 0; i < d.length; i += 4) {
+      const l = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
+      if (l < 60) black++;
+      else if (l > 230) white++;
+    }
+    doc.destroy();
+    return { blackFrac: black / total, whiteFrac: white / total };
+  } finally {
+    lib.destroy();
+  }
+}
 
 test.describe.configure({ mode: 'serial' });
 
@@ -217,7 +242,8 @@ test('Farbreduzierter Scanner-Modus: gültig, klein, wenige Farben', async ({ pa
     };
     const before = await countColors(src);
     const after = await countColors(out);
-    return { srcSize: src.length, outSize: out.length, before, after };
+    const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
+    return { srcSize: src.length, outSize: out.length, before, after, outB64: b64(out) };
   }, { makeSrc: MAKE_TEST_PDF, renderSrc: RENDER_HELPER });
 
   console.log('Indexed:', res.srcSize, '→', res.outSize, 'Bytes; Farben vorher:', res.before.colors, 'nachher:', res.after.colors);
@@ -227,6 +253,11 @@ test('Farbreduzierter Scanner-Modus: gültig, klein, wenige Farben', async ({ pa
   // Massive Farbreduktion (Interpolation beim Rendern kann Mischfarben erzeugen)
   expect(res.before.colors).toBeGreaterThan(5000);
   expect(res.after.colors).toBeLessThan(res.before.colors / 10);
+  // Gegenprobe mit PDFium (Chrome-Engine): Indexed-Bild muss dort lesbar sein
+  const ixStats = await pdfiumStats(Buffer.from(res.outB64, 'base64'));
+  console.log('PDFium Indexed: schwarz', (ixStats.blackFrac * 100).toFixed(1) + '%');
+  expect(ixStats.blackFrac).toBeLessThan(0.9);
+  expect(ixStats.blackFrac + ixStats.whiteFrac).toBeGreaterThan(0.05);
 });
 
 test('Helligkeitsregler verschiebt die S/W-Binarisierung', async ({ page }) => {
@@ -392,6 +423,18 @@ test('UI: Datei laden, komprimieren, herunterladen', async ({ page }) => {
   expect(size2).toBeGreaterThan(500);
   expect(size2).not.toBe(outSize);
 
+  // Gegenprobe mit PDFium: S/W-Ausgabe darf nicht invertiert/schwarz sein
+  const swB64 = await page.evaluate(() => {
+    const u8 = window.__pdfpresser.items[0].result;
+    let s = '';
+    for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768));
+    return btoa(s);
+  });
+  const swStats = await pdfiumStats(Buffer.from(swB64, 'base64'));
+  console.log('PDFium S/W: schwarz', (swStats.blackFrac * 100).toFixed(1) + '%', 'weiß', (swStats.whiteFrac * 100).toFixed(1) + '%');
+  expect(swStats.blackFrac).toBeLessThan(0.5);
+  expect(swStats.whiteFrac).toBeGreaterThan(0.3);
+
   // ── Vorschau mit aktuellen Einstellungen ──
   await page.locator('#previewBtn').click();
   await expect(page.locator('#previewInfo')).toContainText('pro Seite', { timeout: 60000 });
@@ -473,7 +516,7 @@ test('PWA: Manifest, Icons, Service Worker und Offline-Betrieb', async ({ page, 
   await page.waitForFunction(() => navigator.serviceWorker?.controller || navigator.serviceWorker?.ready, null, { timeout: 30000 });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async () => {
-    const cache = await caches.open('pdfpresser-v2');
+    const cache = await caches.open('pdfpresser-v3');
     const keys = await cache.keys();
     return keys.length >= 20;
   }, null, { timeout: 60000 });

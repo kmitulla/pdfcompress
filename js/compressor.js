@@ -41,41 +41,88 @@ function toGray(imageData) {
   return gray;
 }
 
-// Otsu-Schwellwert für die Binarisierung (S/W-Modus)
-function otsuThreshold(gray) {
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
-  const total = gray.length;
-  let sum = 0;
-  for (let t = 0; t < 256; t++) sum += t * hist[t];
-  let sumB = 0;
-  let wB = 0;
-  let maxVar = -1;
-  let threshold = 127;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t];
-    if (wB === 0) continue;
-    const wF = total - wB;
-    if (wF === 0) break;
-    sumB += t * hist[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const v = wB * wF * (mB - mF) * (mB - mF);
-    if (v > maxVar) {
-      maxVar = v;
-      threshold = t;
-    }
-  }
-  return threshold;
-}
-
+// Adaptive Binarisierung wie bei Büroscannern: jeder Pixel wird gegen den
+// LOKALEN Hintergrund verglichen (Blockmittelwerte, bilinear interpoliert).
+// Dadurch bleibt Text auf weißem, getöntem oder farbigem Papier schwarz auf
+// weiß, statt dass dunkle/bunte Seiten komplett schwarz kippen (wie es ein
+// globaler Otsu-Schwellwert täte). In dunklen Bereichen (z. B. Farbbalken
+// mit weißer Schrift) wird lokal invertiert gearbeitet, damit die Schrift
+// lesbar bleibt.
 // bias: Helligkeitsregler (-40..+40); positiv = heller (mehr Weiß)
 function binarize(imageData, bias) {
+  const { width: w, height: h } = imageData;
   const gray = toGray(imageData);
-  const threshold = Math.min(250, Math.max(5, otsuThreshold(gray) - (bias | 0)));
+  const b = bias | 0;
+
+  // Blockmittelwerte (32er-Raster) + 3x3-Glättung
+  const BLOCK = 32;
+  const bw = Math.max(1, Math.ceil(w / BLOCK));
+  const bh = Math.max(1, Math.ceil(h / BLOCK));
+  const sums = new Float64Array(bw * bh);
+  const counts = new Uint32Array(bw * bh);
+  for (let y = 0; y < h; y++) {
+    const by = (y / BLOCK) | 0;
+    const rowOff = y * w;
+    const bOff = by * bw;
+    for (let x = 0; x < w; x++) {
+      const bi = bOff + ((x / BLOCK) | 0);
+      sums[bi] += gray[rowOff + x];
+      counts[bi]++;
+    }
+  }
+  const means = new Float32Array(bw * bh);
+  for (let i = 0; i < means.length; i++) means[i] = sums[i] / (counts[i] || 1);
+  const blurred = new Float32Array(bw * bh);
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      let s = 0;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const yy = by + dy;
+          const xx = bx + dx;
+          if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) {
+            s += means[yy * bw + xx];
+            n++;
+          }
+        }
+      }
+      blurred[by * bw + bx] = s / n;
+    }
+  }
+
+  // Pro Pixel: lokalen Hintergrund bilinear samplen und schwellen
+  const C = Math.min(80, Math.max(5, 28 + b)); // heller Hintergrund: Abstand zum Papier
   const bitmap = new Uint8Array(gray.length);
-  for (let i = 0; i < gray.length; i++) bitmap[i] = gray[i] < threshold ? 1 : 0;
-  return { bitmap, threshold };
+  const half = BLOCK / 2;
+  for (let y = 0; y < h; y++) {
+    const fy = Math.min(bh - 1, Math.max(0, (y - half) / BLOCK));
+    const y0 = fy | 0;
+    const y1 = Math.min(bh - 1, y0 + 1);
+    const wy = fy - y0;
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(bw - 1, Math.max(0, (x - half) / BLOCK));
+      const x0 = fx | 0;
+      const x1 = Math.min(bw - 1, x0 + 1);
+      const wx = fx - x0;
+      const m =
+        blurred[y0 * bw + x0] * (1 - wx) * (1 - wy) +
+        blurred[y0 * bw + x1] * wx * (1 - wy) +
+        blurred[y1 * bw + x0] * (1 - wx) * wy +
+        blurred[y1 * bw + x1] * wx * wy;
+      let t;
+      if (m >= 110) {
+        // helles Papier: alles deutlich Dunklere ist Tinte
+        t = Math.min(m - C, 210);
+      } else {
+        // dunkler Bereich (Balken/Header): Fläche schwarz, helle Schrift weiß
+        t = Math.min(Math.max(m + 60 - b, m + 20), 165);
+      }
+      bitmap[rowOff + x] = gray[rowOff + x] < t ? 1 : 0;
+    }
+  }
+  return { bitmap };
 }
 
 function applyGrayInPlace(imageData) {
@@ -348,8 +395,18 @@ function drawOcrWords(page, font, words, dpi, pageHeightPt) {
 
 // ---------------------------------------------------------------- Rendern
 
-async function renderPage(page, dpi) {
-  const scale = dpi / PT_PER_INCH;
+// Obergrenze an Pixeln pro Seite: schützt vor Speicher-/Canvas-Limits bei
+// Scans, deren Seitengröße in Pixelmaßen statt Punkten hinterlegt ist.
+const MAX_PIXELS_BW = 26e6; // reicht für A3 bei 300 dpi
+const MAX_PIXELS_COLOR = 17e6;
+
+async function renderPage(page, dpi, maxPixels) {
+  let scale = dpi / PT_PER_INCH;
+  const base = page.getViewport({ scale: 1 });
+  const projected = base.width * base.height * scale * scale;
+  if (maxPixels && projected > maxPixels) {
+    scale *= Math.sqrt(maxPixels / projected);
+  }
   const viewport = page.getViewport({ scale });
   const wPx = Math.max(1, Math.round(viewport.width));
   const hPx = Math.max(1, Math.round(viewport.height));
@@ -360,7 +417,14 @@ async function renderPage(page, dpi) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, wPx, hPx);
   await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
-  return { canvas, ctx, wPx, hPx, wPt: viewport.width / scale, hPt: viewport.height / scale };
+  // Kaputte/leere Canvas erkennen (liefert überall Alpha 0 statt des weißen
+  // Hintergrunds) -> klarer Fehler statt komplett schwarzer Seiten
+  const corner1 = ctx.getImageData(0, 0, 1, 1).data;
+  const corner2 = ctx.getImageData(wPx - 1, hPx - 1, 1, 1).data;
+  if (corner1[3] === 0 && corner2[3] === 0) {
+    throw new Error(`Seite konnte nicht gerendert werden (${wPx}×${hPx} Pixel sind für diesen Browser zu groß)`);
+  }
+  return { canvas, ctx, wPx, hPx, wPt: viewport.width / scale, hPt: viewport.height / scale, effDpi: scale * PT_PER_INCH };
 }
 
 // ---------------------------------------------------------------- Hauptpipeline
@@ -383,7 +447,8 @@ async function rasterCompress(srcBytes, opts, onProgress) {
     const p = pageNumbers[idx];
     onProgress?.({ phase: 'render', page: idx + 1, pages: pageNumbers.length });
     const page = await srcDoc.getPage(p);
-    const { canvas, ctx, wPx, hPx, wPt, hPt } = await renderPage(page, dpi);
+    const maxPixels = opts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
+    const { canvas, ctx, wPx, hPx, wPt, hPt, effDpi } = await renderPage(page, dpi, maxPixels);
     const outPage = newDoc.addPage([wPt, hPt]);
 
     if (opts.colorMode === 'bw') {
@@ -413,11 +478,11 @@ async function rasterCompress(srcBytes, opts, onProgress) {
       onProgress?.({ phase: 'ocr', page: idx + 1, pages: pageNumbers.length });
       // Für gute OCR-Qualität ggf. höher auflösen als das Zielbild
       let ocrCanvas = canvas;
-      let ocrDpi = dpi;
-      if (dpi < 200) {
-        ocrDpi = 240;
-        const rendered = await renderPage(page, ocrDpi);
+      let ocrDpi = effDpi;
+      if (effDpi < 200) {
+        const rendered = await renderPage(page, 240, MAX_PIXELS_COLOR);
         ocrCanvas = rendered.canvas;
+        ocrDpi = rendered.effDpi;
       }
       const words = await recognizePage(ocrCanvas, opts.ocrLang || 'deu', (prog) => {
         onProgress?.({ phase: 'ocr', page: idx + 1, pages: pageNumbers.length, detail: prog });
@@ -460,7 +525,8 @@ export async function previewPage(arrayBuffer, opts, pageNumber = 1) {
   const doc = await pdfjsLib.getDocument({ data: srcBytes }).promise;
   const page = await doc.getPage(Math.min(Math.max(1, pageNumber), doc.numPages));
   const dpi = Math.min(Math.max(opts.dpi || 150, 50), 600);
-  const { canvas, ctx, wPx, hPx } = await renderPage(page, dpi);
+  const maxPixels = opts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
+  const { canvas, ctx, wPx, hPx } = await renderPage(page, dpi, maxPixels);
 
   let pageBytes;
   let viewCanvas = canvas;

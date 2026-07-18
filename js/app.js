@@ -509,6 +509,17 @@ if ('serviceWorker' in navigator) {
   // app.js lädt durch Top-Level-await evtl. erst nach dem load-Event
   if (document.readyState === 'complete') registerSw();
   else window.addEventListener('load', registerSw);
+
+  // Nach einem App-Update einmal automatisch neu laden, damit nie alte und
+  // neue Dateien gemischt laufen (außer mitten in einer Kompression).
+  let hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !running && !window.__reloadedForUpdate) {
+      window.__reloadedForUpdate = true;
+      location.reload();
+    }
+    hadController = true;
+  });
 }
 
 // Für die automatisierten Tests
