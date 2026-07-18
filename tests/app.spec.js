@@ -318,6 +318,58 @@ test('Simulation berechnet alle Stufen mit Größen', async ({ page }) => {
   expect(sw.size).toBeLessThan(res.srcSize * 0.5);
 });
 
+test('iPhone-Scan mit Pixelmaß-MediaBox: Rendern bleibt unter iOS-Canvas-Limit', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async () => {
+    const { PDFDocument } = window.PDFLib;
+    // Wie ein iOS-Scan: MediaBox 2480x3507 "Punkte" (= Pixelmaße), 1 JPEG
+    const W = 2480;
+    const H = 3507;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    x.fillStyle = '#f3f0e9'; x.fillRect(0, 0, W, H);
+    x.fillStyle = '#111'; x.font = '54px Arial';
+    for (let i = 1; i < 40; i++) x.fillText('Zeile ' + i + ': Scanner-Testtext Lorem ipsum 0123456789', 140, 200 + i * 80);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.82));
+    const doc = await PDFDocument.create();
+    const img = await doc.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+    const p = doc.addPage([W, H]);
+    p.drawImage(img, { x: 0, y: 0, width: W, height: H });
+    const src = await doc.save();
+
+    const { compressPdf, previewPage } = window.__pdfpresser;
+    // Vorschau meldet die Canvas-Größe -> muss unter dem iOS-Limit liegen
+    const pvColor = await previewPage(src.buffer.slice(0), { mode: 'raster', colorMode: 'color', dpi: 150, quality: 0.62 });
+    const pvSw = await previewPage(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 300 });
+    const sw = await compressPdf(src.buffer.slice(0), { mode: 'raster', colorMode: 'bw', dpi: 300 });
+    const jpeg = await compressPdf(src.buffer.slice(0), { mode: 'raster', colorMode: 'color', dpi: 150, quality: 0.62 });
+    const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
+    return {
+      srcSize: src.length,
+      colorPx: pvColor.wPx * pvColor.hPx,
+      swPx: pvSw.wPx * pvSw.hPx,
+      swDims: pvSw.wPx + 'x' + pvSw.hPx,
+      swSize: sw.length,
+      jpegSize: jpeg.length,
+      swB64: b64(sw),
+    };
+  });
+
+  console.log('Scan-Fixture:', res.srcSize, 'B; S/W-Canvas', res.swDims, '->', res.swSize, 'B; JPEG:', res.jpegSize, 'B');
+  const IOS_CANVAS_LIMIT = 16777216;
+  expect(res.colorPx).toBeLessThanOrEqual(12e6);
+  expect(res.swPx).toBeLessThanOrEqual(IOS_CANVAS_LIMIT);
+  // Scale-1-Heuristik: native Scan-Auflösung, kein Hochskalieren
+  expect(res.swDims).toBe('2480x3507');
+  expect(res.swSize).toBeLessThan(res.srcSize * 0.5);
+  expect(res.jpegSize).toBeLessThan(res.srcSize);
+  const stats = await pdfiumStats(Buffer.from(res.swB64, 'base64'));
+  console.log('PDFium Scan-S/W: schwarz', (stats.blackFrac * 100).toFixed(1) + '%', 'weiß', (stats.whiteFrac * 100).toFixed(1) + '%');
+  expect(stats.blackFrac).toBeLessThan(0.4);
+  expect(stats.whiteFrac).toBeGreaterThan(0.5);
+});
+
 test('OCR erzeugt durchsuchbaren Textlayer auf Scan ohne Text', async ({ page }) => {
   test.setTimeout(360000);
   await ready(page);
@@ -516,7 +568,7 @@ test('PWA: Manifest, Icons, Service Worker und Offline-Betrieb', async ({ page, 
   await page.waitForFunction(() => navigator.serviceWorker?.controller || navigator.serviceWorker?.ready, null, { timeout: 30000 });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async () => {
-    const cache = await caches.open('pdfpresser-v3');
+    const cache = await caches.open('pdfpresser-v4');
     const keys = await cache.keys();
     return keys.length >= 20;
   }, null, { timeout: 60000 });

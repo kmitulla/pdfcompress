@@ -1,5 +1,5 @@
 // Service Worker: precached alle Assets, damit die App komplett offline läuft.
-const CACHE = 'pdfpresser-v3';
+const CACHE = 'pdfpresser-v4';
 
 const ASSETS = [
   './',
@@ -21,6 +21,7 @@ const ASSETS = [
   './vendor/tesseract/tesseract.min.js',
   './vendor/tesseract/worker.min.js',
   './vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
+  './vendor/tesseract/tesseract-core-lstm.wasm.js',
   './vendor/tessdata/deu.traineddata.gz',
   './vendor/tessdata/eng.traineddata.gz',
 ];

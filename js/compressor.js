@@ -7,6 +7,13 @@ import { recognizePage } from './ocr.js';
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
 
+// Zeichensatz-/Font-Ressourcen für pdf.js (für PDFs ohne eingebettete Fonts)
+const PDFJS_DOC_OPTS = {
+  cMapUrl: new URL('../vendor/pdfjs/cmaps/', import.meta.url).href,
+  cMapPacked: true,
+  standardFontDataUrl: new URL('../vendor/pdfjs/standard_fonts/', import.meta.url).href,
+};
+
 const PT_PER_INCH = 72;
 
 export const PRESETS = {
@@ -239,14 +246,20 @@ function quantizeIndexed(imageData, colors, bias) {
   return { indices, palette };
 }
 
-function canvasToJpeg(canvas, quality) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? blob.arrayBuffer().then((b) => resolve(new Uint8Array(b))) : reject(new Error('JPEG-Encoding fehlgeschlagen'))),
-      'image/jpeg',
-      quality,
-    );
-  });
+// JPEG-Encode mit Verkleinerungs-Retry: Safari (v. a. iOS) liefert bei zu
+// großen/zu speicherhungrigen Canvas null zurück – dann schrittweise kleiner.
+async function canvasToJpeg(canvas, quality) {
+  let current = canvas;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const blob = await new Promise((resolve) => current.toBlob(resolve, 'image/jpeg', quality));
+    if (blob) return new Uint8Array(await blob.arrayBuffer());
+    const smaller = document.createElement('canvas');
+    smaller.width = Math.max(1, Math.round(current.width * 0.7));
+    smaller.height = Math.max(1, Math.round(current.height * 0.7));
+    smaller.getContext('2d').drawImage(current, 0, 0, smaller.width, smaller.height);
+    current = smaller;
+  }
+  throw new Error('JPEG-Encoding fehlgeschlagen (Seite ist für diesen Browser zu groß)');
 }
 
 // 1-Bit-Bitmap (1 = schwarz) zeilenweise zu Bytes packen; Bit 1 = weiß
@@ -395,15 +408,22 @@ function drawOcrWords(page, font, words, dpi, pageHeightPt) {
 
 // ---------------------------------------------------------------- Rendern
 
-// Obergrenze an Pixeln pro Seite: schützt vor Speicher-/Canvas-Limits bei
-// Scans, deren Seitengröße in Pixelmaßen statt Punkten hinterlegt ist.
-const MAX_PIXELS_BW = 26e6; // reicht für A3 bei 300 dpi
-const MAX_PIXELS_COLOR = 17e6;
+// Obergrenzen an Pixeln pro Seite. iOS-Safari erlaubt nur ca. 16,7 Mio.
+// Canvas-Pixel – darüber entstehen stillschweigend schwarze/leere Canvas.
+// A4 bei 300 dpi (8,7 Mio.) bleibt überall unangetastet.
+const MAX_PIXELS_BW = 16e6;
+const MAX_PIXELS_COLOR = 12e6; // JPEG-Encode braucht zusätzlich Speicher
 
 async function renderPage(page, dpi, maxPixels) {
   let scale = dpi / PT_PER_INCH;
   const base = page.getViewport({ scale: 1 });
-  const projected = base.width * base.height * scale * scale;
+  const basePx = base.width * base.height;
+  // Seiten jenseits von ~A2 sind fast immer Scans, deren Seitengröße in
+  // Pixelmaßen statt Punkten hinterlegt ist (z. B. iPhone-Scans mit
+  // MediaBox 2480x3507). Dann entspricht Skalierung 1 bereits der nativen
+  // Scan-Auflösung – mehr wäre nur sinnloses Hochskalieren.
+  if (basePx > 1.7e6 && scale > 1) scale = 1;
+  const projected = basePx * scale * scale;
   if (maxPixels && projected > maxPixels) {
     scale *= Math.sqrt(maxPixels / projected);
   }
@@ -431,7 +451,7 @@ async function renderPage(page, dpi, maxPixels) {
 
 async function rasterCompress(srcBytes, opts, onProgress) {
   const PDFLib = window.PDFLib;
-  const loadingTask = pdfjsLib.getDocument({ data: srcBytes });
+  const loadingTask = pdfjsLib.getDocument({ data: srcBytes, ...PDFJS_DOC_OPTS });
   const srcDoc = await loadingTask.promise;
   const pageNumbers = opts._pages?.length
     ? opts._pages.filter((p) => p >= 1 && p <= srcDoc.numPages)
@@ -522,7 +542,7 @@ export async function compressPdf(arrayBuffer, opts, onProgress) {
 // Vorschaubild + die kodierte Größe dieser Seite.
 export async function previewPage(arrayBuffer, opts, pageNumber = 1) {
   const srcBytes = new Uint8Array(arrayBuffer).slice();
-  const doc = await pdfjsLib.getDocument({ data: srcBytes }).promise;
+  const doc = await pdfjsLib.getDocument({ data: srcBytes, ...PDFJS_DOC_OPTS }).promise;
   const page = await doc.getPage(Math.min(Math.max(1, pageNumber), doc.numPages));
   const dpi = Math.min(Math.max(opts.dpi || 150, 50), 600);
   const maxPixels = opts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
@@ -594,7 +614,7 @@ export async function previewPage(arrayBuffer, opts, pageNumber = 1) {
 // Seiten (erste/mittlere/letzte) gerechnet und hochgerechnet.
 export async function simulatePdf(arrayBuffer, onProgress) {
   const srcBytes = new Uint8Array(arrayBuffer);
-  const probe = await pdfjsLib.getDocument({ data: srcBytes.slice() }).promise;
+  const probe = await pdfjsLib.getDocument({ data: srcBytes.slice(), ...PDFJS_DOC_OPTS }).promise;
   const totalPages = probe.numPages;
   await probe.destroy();
 
