@@ -3,6 +3,8 @@
 
 import { compressPdf, previewPage, simulatePdf, PRESETS } from './compressor.js';
 import { disposeOcr } from './ocr.js';
+import { openEditor } from './editor.js';
+import { exportAllData, importAllData, loadSettings, saveSettings, requestPersistence } from './store.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -122,6 +124,7 @@ function addFiles(fileList) {
       <div class="progress"><div></div></div>
       <div class="sim-results hidden"></div>
       <div class="file-actions">
+        <button class="btn btn-small btn-edit">✒️ Bearbeiten</button>
         <button class="btn btn-small btn-download hidden">Herunterladen</button>
         <button class="btn btn-small btn-save-dir hidden">In Zielordner speichern</button>
         <button class="btn btn-small btn-share hidden">Teilen</button>
@@ -136,6 +139,17 @@ function addFiles(fileList) {
       items.splice(items.indexOf(item), 1);
       li.remove();
       updateActions();
+    });
+    li.querySelector('.btn-edit').addEventListener('click', () => {
+      if (running) return;
+      openEditor(item, (editedBytes) => {
+        item.editedBytes = editedBytes;
+        item.result = null;
+        refreshItemButtons(item);
+        setStatus(item, `Bearbeitet (${fmtSize(editedBytes.length)}) – jetzt komprimieren ✓`, 'ok');
+        item.el.querySelector('.file-meta').innerHTML = `Original: ${fmtSize(item.file.size)} · <strong>bearbeitet</strong>`;
+        updateActions();
+      });
     });
     li.querySelector('.btn-download').addEventListener('click', () => downloadItem(item));
     li.querySelector('.btn-save-dir').addEventListener('click', () => saveItemToDir(item));
@@ -208,11 +222,16 @@ dropzone.addEventListener('drop', (e) => {
 
 // ---------------------------------------------------------------- Komprimieren
 
+async function itemBytes(item) {
+  if (item.editedBytes) return item.editedBytes.buffer.slice(item.editedBytes.byteOffset, item.editedBytes.byteOffset + item.editedBytes.byteLength);
+  return item.file.arrayBuffer();
+}
+
 async function processItem(item, opts) {
   item.result = null;
   refreshItemButtons(item);
   setStatus(item, 'Wird gelesen …');
-  const buf = await item.file.arrayBuffer();
+  const buf = await itemBytes(item);
   const originalSize = buf.byteLength;
 
   const result = await compressPdf(buf, opts, (p) => {
@@ -234,7 +253,8 @@ async function processItem(item, opts) {
   const newSize = result.byteLength;
   const saved = 1 - newSize / originalSize;
   const metaEl = item.el.querySelector('.file-meta');
-  metaEl.innerHTML = `Vorher: ${fmtSize(originalSize)} → Nachher: <strong>${fmtSize(newSize)}</strong> · ${presetLabel()}`;
+  const editedNote = item.editedBytes ? ' (bearbeitet)' : '';
+  metaEl.innerHTML = `Vorher: ${fmtSize(originalSize)}${editedNote} → Nachher: <strong>${fmtSize(newSize)}</strong> · ${presetLabel()}`;
   if (newSize < originalSize) {
     setStatus(item, `Fertig – ${(saved * 100).toFixed(1)} % gespart ✓`, 'ok');
   } else {
@@ -306,11 +326,11 @@ async function refreshPreview() {
       opts.colorMode = 'color';
       opts.dpi = 120;
       opts.quality = 0.9;
-      const { dataUrl } = await previewPage(await items[0].file.arrayBuffer(), opts);
+      const { dataUrl } = await previewPage(await itemBytes(items[0]), opts);
       previewImg.src = dataUrl;
     } else {
       previewInfo.textContent = 'Wird berechnet …';
-      const { dataUrl, pageBytes, numPages } = await previewPage(await items[0].file.arrayBuffer(), opts);
+      const { dataUrl, pageBytes, numPages } = await previewPage(await itemBytes(items[0]), opts);
       previewImg.src = dataUrl;
       previewInfo.textContent = `${items[0].file.name} · Seite 1/${numPages} · ≈ ${fmtSize(pageBytes)} pro Seite (${presetLabel()})`;
     }
@@ -348,7 +368,7 @@ async function runSimulation(item) {
   btn.disabled = true;
   box.innerHTML = '<em>Simulation läuft …</em>';
   try {
-    const buf = await item.file.arrayBuffer();
+    const buf = await itemBytes(item);
     const { results, totalPages, sampledPages } = await simulatePdf(buf, ({ label }) => {
       box.innerHTML = `<em>Simuliere: ${label} …</em>`;
     });
@@ -486,7 +506,70 @@ if (hasFsAccess) {
   $('#pickImportDirBtn').classList.add('hidden');
 }
 
-syncSettingsUi();
+// ---------------------------------------------------------------- Meine Daten
+
+$('#exportDataBtn').addEventListener('click', async () => {
+  const blob = await exportAllData();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pdfpresser-daten.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+$('#importDataBtn').addEventListener('click', () => $('#importDataInput').click());
+$('#importDataInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const info = $('#dataInfo');
+  info.classList.remove('hidden');
+  try {
+    const res = await importAllData(await file.text());
+    info.textContent = `✓ Import erfolgreich: ${res.signatures} Unterschrift(en) übernommen.`;
+    applyStoredSettings();
+  } catch (err) {
+    info.textContent = `Import fehlgeschlagen: ${err?.message || err}`;
+  }
+});
+
+// Einstellungen dauerhaft lokal speichern & wiederherstellen
+function collectSettings() {
+  return {
+    preset: currentPreset(),
+    colorMode: $('#colorMode').value,
+    dpi: $('#dpi').value,
+    quality: $('#quality').value,
+    bwBias: $('#bwBias').value,
+    ocr: ocrEnabled.checked,
+    ocrLang: $('#ocrLang').value,
+    autoSave: $('#autoSave').checked,
+  };
+}
+let settingsReady = false;
+function persistSettings() {
+  if (settingsReady) saveSettings(collectSettings());
+}
+async function applyStoredSettings() {
+  try {
+    const s = await loadSettings();
+    if (s.preset && document.querySelector(`input[name="preset"][value="${s.preset}"]`)) {
+      document.querySelector(`input[name="preset"][value="${s.preset}"]`).checked = true;
+    }
+    if (s.colorMode) $('#colorMode').value = s.colorMode;
+    if (s.dpi) { $('#dpi').value = s.dpi; $('#dpiOut').value = s.dpi; }
+    if (s.quality) { $('#quality').value = s.quality; $('#qualityOut').value = s.quality; }
+    if (s.bwBias != null) { $('#bwBias').value = s.bwBias; $('#bwBiasOut').value = s.bwBias; }
+    if (s.ocr != null) ocrEnabled.checked = s.ocr;
+    if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
+    if (s.autoSave != null) $('#autoSave').checked = s.autoSave;
+  } catch { /* Erststart */ }
+  settingsReady = true;
+  syncSettingsUi();
+}
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #ocrEnabled, #ocrLang, #autoSave')
+  .forEach((el) => el.addEventListener('change', persistSettings));
+applyStoredSettings();
+requestPersistence();
 
 // ---------------------------------------------------------------- PWA
 
@@ -526,4 +609,5 @@ if ('serviceWorker' in navigator) {
 window.__pdfpresser = {
   compressPdf, previewPage, simulatePdf, PRESETS, items,
   setOutputDir, saveItemToDir, importFromDirHandle,
+  exportAllData, importAllData, itemBytes,
 };

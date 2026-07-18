@@ -146,6 +146,15 @@
         <button class="btn btn-small btn-ghost hidden" id="rescanImportBtn">Neu scannen</button>
         <div class="import-list hidden" id="importList"></div>
       </div>
+
+      <h2>Meine Daten</h2>
+      <div id="dataSection">
+        <p class="hint">Unterschriften &amp; Einstellungen bleiben lokal in diesem Browser gespeichert. Zum Umzug: exportieren und im anderen Browser importieren.</p>
+        <button class="btn btn-small" id="exportDataBtn">Daten exportieren</button>
+        <button class="btn btn-small" id="importDataBtn">Daten importieren</button>
+        <input type="file" id="importDataInput" accept="application/json,.json" hidden>
+        <p class="hint hidden" id="dataInfo"></p>
+      </div>
     </aside>
 
     <!-- ───────────────── Dateien ───────────────── -->

@@ -575,7 +575,7 @@ test('PWA: Manifest, Icons, Service Worker und Offline-Betrieb', async ({ page, 
   await page.waitForFunction(() => navigator.serviceWorker?.controller || navigator.serviceWorker?.ready, null, { timeout: 30000 });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async () => {
-    const cache = await caches.open('pdfpresser-v4');
+    const cache = await caches.open('pdfpresser-v5');
     const keys = await cache.keys();
     return keys.length >= 20;
   }, null, { timeout: 60000 });

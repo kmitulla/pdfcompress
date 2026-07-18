@@ -32,6 +32,17 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
   aus Beispielseiten).
 - **Erneut komprimieren:** Stufe wechseln und dieselben Dateien ohne neue
   Auswahl nochmal durchlaufen lassen. Vorher-/Nachher-Größe wird angezeigt.
+- **PDF-Editor:** Unterschreiben (zeichnen mit Vektor-Glättung oder Foto mit
+  einstellbarer Freistellung: Schwellwert, Helligkeit, Kontrast, Farbe),
+  Signatur-Bibliothek (mehrere speichern & wiederverwenden), Text einfügen,
+  Stift/Marker/Radierer, Bilder einfügen, Seiten löschen/umsortieren/
+  duplizieren/hinzufügen, Zuschneiden, Formularfelder ausfüllen (mit
+  Einbrennen), Zoom & Verschieben (auch Pinch auf Touch). Alle Änderungen
+  werden fest ins PDF eingebrannt – **die anschließende Kompression erfasst
+  sie immer mit**.
+- **Meine Daten:** Unterschriften & Einstellungen bleiben lokal (IndexedDB,
+  mit Persistenz-Anfrage) und lassen sich als Datei exportieren und in einem
+  anderen Browser 1:1 importieren.
 - **Optionaler OCR-Textlayer:** Tesseract (Deutsch/Englisch) legt unsichtbaren
   Text über die Seiten – das PDF wird durchsuch- und kopierbar.
 - **Zielordner & Import-Ordner** (Chrome/Edge): Ergebnisse auf Wunsch
