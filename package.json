@@ -1,0 +1,24 @@
+{
+  "name": "pdf-presser",
+  "version": "1.0.0",
+  "description": "Lokaler PDF-Kompressor als offline-fähige Web-App",
+  "scripts": {
+    "serve": "node scripts/serve.mjs",
+    "test": "playwright test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kmitulla/pdfcompress.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^7.0.0"
+  },
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Presser – Lokaler PDF-Kompressor</title>
+  <meta name="description" content="PDF-Dateien direkt im Browser verkleinern – 100 % lokal, ohne Upload, offline nutzbar. Mit einstellbarer Kompression, S/W-Scan-Modus und optionalem OCR-Textlayer.">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <img src="icons/favicon-32.png" alt="" width="28" height="28" class="logo">
+      <h1>PDF&nbsp;Presser</h1>
+      <span class="badge badge-local" title="Alle Daten bleiben auf diesem Gerät. Es findet kein Upload statt.">🔒 100&nbsp;% lokal – kein Upload</span>
+      <span class="badge badge-offline hidden" id="offlineReadyBadge" title="Die App ist im Browser zwischengespeichert und funktioniert auch ohne Internet.">✈️ Offline bereit</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ───────────────── Einstellungen ───────────────── -->
+    <aside class="panel settings" aria-label="Einstellungen">
+      <h2>Kompression</h2>
+
+      <div class="preset-list" id="presetList" role="radiogroup" aria-label="Kompressionsstufe">
+        <label class="preset">
+          <input type="radio" name="preset" value="verlustfrei">
+          <span class="preset-body">
+            <span class="preset-name">Verlustfrei</span>
+            <span class="preset-desc">Nur Struktur-Optimierung, Qualität &amp; Text bleiben unangetastet</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="leicht">
+          <span class="preset-body">
+            <span class="preset-name">Leicht</span>
+            <span class="preset-desc">Farbe · 200 dpi · hohe Bildqualität</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="mittel" checked>
+          <span class="preset-body">
+            <span class="preset-name">Mittel <em>(empfohlen)</em></span>
+            <span class="preset-desc">Farbe · 150 dpi · gute Balance aus Größe und Qualität</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="stark">
+          <span class="preset-body">
+            <span class="preset-name">Stark</span>
+            <span class="preset-desc">Farbe · 110 dpi · deutlich kleinere Dateien</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="extrem-grau">
+          <span class="preset-body">
+            <span class="preset-name">Extrem (Graustufen)</span>
+            <span class="preset-desc">Graustufen · 100 dpi · sehr kleine Dateien</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="extrem-sw">
+          <span class="preset-body">
+            <span class="preset-name">Extrem S/W – „Scanner-Stil“</span>
+            <span class="preset-desc">1-Bit Schwarz-Weiß · 300 dpi · CCITT-G4-Fax-Kompression wie bei Büroscannern – Text bleibt gestochen scharf, wenige KB pro Seite</span>
+          </span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="custom">
+          <span class="preset-body">
+            <span class="preset-name">Benutzerdefiniert</span>
+            <span class="preset-desc">Farbmodus, Auflösung und Qualität selbst festlegen</span>
+          </span>
+        </label>
+      </div>
+
+      <fieldset class="custom-panel hidden" id="customPanel">
+        <legend>Eigene Einstellungen</legend>
+        <div class="field">
+          <label for="colorMode">Farbmodus</label>
+          <select id="colorMode">
+            <option value="color">Farbe (JPEG)</option>
+            <option value="gray">Graustufen (JPEG)</option>
+            <option value="bw">Schwarz-Weiß 1-Bit (CCITT G4)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="dpi">Auflösung: <output id="dpiOut">150</output> dpi</label>
+          <input type="range" id="dpi" min="72" max="400" step="1" value="150">
+        </div>
+        <div class="field" id="qualityField">
+          <label for="quality">JPEG-Qualität: <output id="qualityOut">60</output> %</label>
+          <input type="range" id="quality" min="10" max="95" step="1" value="60">
+        </div>
+      </fieldset>
+
+      <h2>Texterkennung (OCR)</h2>
+      <div class="field field-row">
+        <input type="checkbox" id="ocrEnabled">
+        <label for="ocrEnabled">Unsichtbaren OCR-Textlayer einfügen<br><small>macht gescannte PDFs durchsuchbar &amp; kopierbar</small></label>
+      </div>
+      <div class="field hidden" id="ocrLangField">
+        <label for="ocrLang">Sprache</label>
+        <select id="ocrLang">
+          <option value="deu" selected>Deutsch</option>
+          <option value="eng">Englisch</option>
+          <option value="deu+eng">Deutsch + Englisch</option>
+        </select>
+      </div>
+      <p class="hint hidden" id="ocrLosslessHint">ℹ️ OCR ist nur bei den Bild-Modi verfügbar, nicht bei „Verlustfrei“.</p>
+
+      <p class="hint">Hinweis: Bei allen Stufen außer „Verlustfrei“ werden die Seiten neu als Bild aufgebaut. Vorhandener Text ist danach nicht mehr auswählbar – aktiviere OCR, um ihn wieder durchsuchbar zu machen.</p>
+    </aside>
+
+    <!-- ───────────────── Dateien ───────────────── -->
+    <section class="panel work" aria-label="Dateien">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF-Dateien auswählen oder hierher ziehen">
+        <div class="dropzone-icon">📄⬇️</div>
+        <p class="dropzone-title">PDF hierher ziehen<br>oder klicken zum Auswählen</p>
+        <p class="dropzone-sub">Mehrere Dateien möglich · verlässt nie deinen Rechner</p>
+        <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
+      </div>
+
+      <ul class="file-list" id="fileList"></ul>
+
+      <div class="actions hidden" id="actions">
+        <button class="btn btn-primary" id="startBtn">Komprimieren</button>
+        <button class="btn" id="downloadAllBtn" disabled>Alle herunterladen</button>
+        <button class="btn btn-ghost" id="clearBtn">Liste leeren</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>PDF Presser verarbeitet alles direkt in deinem Browser (pdf.js, pdf-lib, Tesseract-OCR als WebAssembly). Es werden keine Dateien hochgeladen. Als installierte Web-App funktioniert das Tool auch komplett offline.</p>
+  </footer>
+
+  <script src="vendor/pdflib/pdf-lib.min.js"></script>
+  <script src="vendor/tesseract/tesseract.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
