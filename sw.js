@@ -1,5 +1,5 @@
 // Service Worker: precached alle Assets, damit die App komplett offline läuft.
-const CACHE = 'pdfpresser-v6';
+const CACHE = 'pdfpresser-v7';
 
 const ASSETS = [
   './',

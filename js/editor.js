@@ -4,7 +4,7 @@
 // dadurch immer mit.
 
 import { processSignatureImage, strokeToSvgPath, normalizeStrokes } from './signature.js';
-import { listSignatures, saveSignature, deleteSignature } from './store.js';
+import { listSignatures, saveSignature, deleteSignature, listStamps, saveStamp, deleteStamp } from './store.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -79,6 +79,12 @@ async function drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, ass
       }
     } else if (o.type === 'rect') {
       page.drawRectangle({ x: o.x, y: viewH - o.y - o.h, width: o.w, height: o.h, color });
+    } else if (o.type === 'stamp' && o.style && o.style !== 'frame') {
+      const canvas = renderStampCanvas(o);
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+      const png = new Uint8Array(await blob.arrayBuffer());
+      const img = await newDoc.embedPng(png);
+      page.drawImage(img, { x: o.x, y: viewH - o.y - o.h, width: o.w, height: o.h });
     } else if (o.type === 'stamp') {
       const yTop = viewH - o.y;
       page.drawRectangle({ x: o.x, y: yTop - o.h, width: o.w, height: o.h, borderColor: color, borderWidth: 2.2, opacity: 0 });
@@ -104,6 +110,48 @@ async function drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, ass
     }
   }
   if (m) page.pushOperators(PDFLib.popGraphicsState());
+}
+
+
+// Stempel im echten Stempel-Look als transparentes PNG rendern
+function renderStampCanvas(o, scale = 4) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(8, Math.round(o.w * scale));
+  c.height = Math.max(8, Math.round(o.h * scale));
+  const x = c.getContext('2d');
+  x.scale(scale, scale);
+  x.translate(o.w / 2, o.h / 2);
+  if (o.style === 'stamp' || o.style === 'round') x.rotate(-6 * Math.PI / 180);
+  x.strokeStyle = o.color;
+  x.fillStyle = o.color;
+  const w = o.w * 0.94;
+  const h = o.h * 0.9;
+  if (o.style === 'round') {
+    x.lineWidth = 2.6;
+    x.beginPath(); x.ellipse(0, 0, w / 2, h / 2, 0, 0, 7); x.stroke();
+    x.lineWidth = 1.2;
+    x.beginPath(); x.ellipse(0, 0, w / 2 - 4, h / 2 - 4, 0, 0, 7); x.stroke();
+  } else {
+    x.lineWidth = 2.6;
+    x.strokeRect(-w / 2, -h / 2, w, h);
+    x.lineWidth = 1.2;
+    x.strokeRect(-w / 2 + 3.5, -h / 2 + 3.5, w - 7, h - 7);
+  }
+  const lines = [];
+  if (o.brand) lines.push({ t: o.brand.toUpperCase(), s: Math.min(h * 0.2, w / Math.max(4, o.brand.length) / 0.66), b: true });
+  lines.push({ t: o.title.toUpperCase(), s: Math.min(h * 0.34, (w - 16) / Math.max(4, o.title.length) / 0.66), b: true });
+  let l2 = o.date || '';
+  if (o.note) l2 += (l2 ? ' – ' : '') + o.note;
+  if (l2) lines.push({ t: l2, s: Math.min(h * 0.16, (w - 16) / Math.max(6, l2.length) / 0.55), b: false });
+  const total = lines.reduce((a, l) => a + l.s * 1.3, 0);
+  let y = -total / 2;
+  for (const l of lines) {
+    y += l.s * 1.3;
+    x.font = `${l.b ? '700' : '400'} ${l.s}px Helvetica, Arial, sans-serif`;
+    x.textAlign = 'center';
+    x.fillText(l.t, 0, y - l.s * 0.18);
+  }
+  return c;
 }
 
 // state: { pages: [{src, blankSize?, crop?, objects: []}], formValues?, flattenForm?, assets }
@@ -224,6 +272,8 @@ function buildUi() {
         <button id="edPagesBtn" class="ed-btn" title="Seiten verwalten">🗂️</button>
         <button id="edFormBtn" class="ed-btn hidden" title="Formular ausfüllen">📋</button>
         <button id="edUndoBtn" class="ed-btn" title="Rückgängig">↶</button>
+        <button id="edRedoBtn" class="ed-btn" title="Wiederholen">↷</button>
+        <button id="edHistBtn" class="ed-btn" title="Verlauf">🕘</button>
         <button id="edDeleteBtn" class="ed-btn hidden" title="Objekt löschen">🗑️</button>
       </div>
       <div class="ed-nav">
@@ -247,25 +297,72 @@ function buildUi() {
       </div>
     </div>
     <div class="ed-modal hidden" id="edModal"><div class="ed-modal-box" id="edModalBox"></div></div>
-    <input type="file" id="edImageInput" accept="image/*" hidden>
-    <input type="file" id="edSigPhotoInput" accept="image/*" hidden>
+    <input type="file" id="edImageInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" hidden>
+    <input type="file" id="edSigPhotoInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" hidden>
   </div>`;
   document.body.appendChild(root);
   return root;
 }
 
-function snapshot() {
-  ed.undoStack.push(JSON.stringify(ed.state.pages));
-  if (ed.undoStack.length > 40) ed.undoStack.shift();
+function snapshot(label = 'Änderung') {
+  ed.undoStack.push({ label, json: JSON.stringify(ed.state.pages) });
+  if (ed.undoStack.length > 60) ed.undoStack.shift();
+  ed.redoStack = [];
+  syncHistoryButtons();
+}
+
+function restore(json) {
+  ed.state.pages = JSON.parse(json);
+  if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1;
+  ed.selected = null;
+  updateProps();
+  renderPageView();
 }
 
 function undo() {
   const prev = ed.undoStack.pop();
   if (!prev) return;
-  ed.state.pages = JSON.parse(prev);
-  if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1;
-  ed.selected = null;
-  renderPageView();
+  ed.redoStack.push({ label: prev.label, json: JSON.stringify(ed.state.pages) });
+  restore(prev.json);
+  syncHistoryButtons();
+}
+
+function redo() {
+  const next = ed.redoStack.pop();
+  if (!next) return;
+  ed.undoStack.push({ label: next.label, json: JSON.stringify(ed.state.pages) });
+  restore(next.json);
+  syncHistoryButtons();
+}
+
+function syncHistoryButtons() {
+  const u = $('#edUndoBtn');
+  const r = $('#edRedoBtn');
+  if (u) u.disabled = ed.undoStack.length === 0;
+  if (r) r.disabled = ed.redoStack.length === 0;
+}
+
+function openHistoryModal() {
+  const box = $('#edModalBox');
+  const rows = [
+    ...ed.undoStack.map((h, i) => `<div class="ed-histrow" data-undo="${ed.undoStack.length - i}">↶ ${h.label}</div>`),
+    '<div class="ed-histrow ed-histnow">● Aktueller Stand</div>',
+    ...[...ed.redoStack].reverse().map((h, i) => `<div class="ed-histrow" data-redo="${i + 1}">↷ ${h.label}</div>`),
+  ].join('');
+  box.innerHTML = `<h3>Verlauf</h3><div class="ed-histlist">${rows || '<p>Noch keine Änderungen.</p>'}</div>
+    <div class="ed-row"><button class="btn btn-small btn-ghost" id="edHistClose">Schließen</button></div>`;
+  $('#edModal').classList.remove('hidden');
+  $('#edHistClose').onclick = () => $('#edModal').classList.add('hidden');
+  box.querySelectorAll('[data-undo]').forEach((el) => el.addEventListener('click', () => {
+    const n = parseInt(el.dataset.undo, 10);
+    for (let i = 0; i < n; i++) undo();
+    $('#edModal').classList.add('hidden');
+  }));
+  box.querySelectorAll('[data-redo]').forEach((el) => el.addEventListener('click', () => {
+    const n = parseInt(el.dataset.redo, 10);
+    for (let i = 0; i < n; i++) redo();
+    $('#edModal').classList.add('hidden');
+  }));
 }
 
 function curPage() {
@@ -341,6 +438,9 @@ function renderOverlay() {
       if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
     } else if (o.type === 'rect') {
       parts.push(`<rect data-i="${i}" x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" fill="${o.color}"/>`);
+      if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
+    } else if (o.type === 'stamp' && o.style && o.style !== 'frame') {
+      parts.push(`<image data-i="${i}" x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" href="${renderStampCanvas(o, 3).toDataURL('image/png')}" preserveAspectRatio="none"/>`);
       if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
     } else if (o.type === 'stamp') {
       const ts = Math.min(o.h * 0.42, (o.w - 14) / Math.max(4, o.title.length) / 0.62);
@@ -452,7 +552,11 @@ function updateProps() {
       <input type="text" id="edStampCustom" class="hidden" size="10" placeholder="Eigener Text">
       Datum <input type="text" id="edStampDate" value="${o.date || ''}" size="9">
       Notiz <input type="text" id="edStampNote" value="${(o.note || '').replace(/"/g, '&quot;')}" size="16" placeholder="z. B. per Überweisung">
-      <input type="color" id="edStampColor" value="${o.color}">`;
+      Name/Firma <input type="text" id="edStampBrand" value="${(o.brand || '').replace(/"/g, '&quot;')}" size="12" placeholder="z. B. Peter Müller">
+      Stil <select id="edStampStyle"><option value="frame">Einfach</option><option value="stamp">Stempel</option><option value="round">Stempel rund</option></select>
+      <input type="color" id="edStampColor" value="${o.color}">
+      <button class="btn btn-small" id="edStampSaveTpl">Als Vorlage speichern</button>
+      <button class="btn btn-small btn-ghost" id="edStampTpls">Vorlagen…</button>`;
     props.classList.remove('hidden');
     const sel = $('#edStampTitle');
     if ([...sel.options].some((op) => op.value === o.title)) sel.value = o.title;
@@ -468,6 +572,15 @@ function updateProps() {
     $('#edStampDate').oninput = (e) => { o.date = e.target.value; renderOverlay(); };
     $('#edStampNote').oninput = (e) => { o.note = e.target.value; renderOverlay(); };
     $('#edStampColor').oninput = (e) => { o.color = e.target.value; renderOverlay(); };
+    $('#edStampStyle').value = o.style || 'frame';
+    $('#edStampStyle').onchange = (e) => { o.style = e.target.value; renderOverlay(); };
+    $('#edStampBrand').oninput = (e) => { o.brand = e.target.value; renderOverlay(); };
+    $('#edStampSaveTpl').onclick = async () => {
+      await saveStamp({ kind: 'text', title: o.title, brand: o.brand || '', note: o.note || '', color: o.color, style: o.style || 'frame', dateAuto: true });
+      $('#edStampSaveTpl').textContent = 'Gespeichert ✓';
+      setTimeout(() => { $('#edStampSaveTpl').textContent = 'Als Vorlage speichern'; }, 1500);
+    };
+    $('#edStampTpls').onclick = openStampTplModal;
   } else if (o && (o.type === 'image' || o.type === 'sig-image' || o.type === 'rect')) {
     props.innerHTML = `<label><input type="checkbox" id="edAspect" ${ed.aspectLock ? 'checked' : ''}> Seitenverhältnis sperren</label>
       ${o.type === 'rect' ? '<span class="hint-inline">Schwärzung: Für ECHTES Entfernen danach mit einer Bild-Stufe komprimieren (nicht „Verlustfrei“).</span>' : ''}`;
@@ -483,7 +596,7 @@ function updateProps() {
     props.classList.remove('hidden');
     $('#edCropApply').onclick = () => {
       if (ed.tempRect && ed.tempRect.w > 8 && ed.tempRect.h > 8) {
-        snapshot();
+        snapshot('Zugeschnitten');
         curPage().crop = { ...ed.tempRect };
         ed.tempRect = null;
         renderOverlay();
@@ -517,7 +630,7 @@ function attachPointerHandlers() {
     if (ed.tool === 'pan') {
       const delBadge = e.target.closest?.('[data-del]');
       if (delBadge) {
-        snapshot();
+        snapshot('Objekt gelöscht');
         curPage().objects.splice(parseInt(delBadge.dataset.del, 10), 1);
         ed.selected = null;
         updateProps();
@@ -527,7 +640,7 @@ function attachPointerHandlers() {
       const handle = e.target.closest?.('[data-handle]');
       if (handle) {
         dragging = { kind: 'resize', i: parseInt(handle.dataset.handle, 10), start: pt };
-        snapshot();
+        snapshot('Größe geändert');
         return;
       }
       const hit = hitObject(pt);
@@ -535,7 +648,7 @@ function attachPointerHandlers() {
         ed.selected = hit;
         const o = curPage().objects[hit];
         dragging = { kind: 'move', i: hit, start: pt, orig: { x: o.x, y: o.y } };
-        snapshot();
+        snapshot('Objekt verschoben');
         updateProps();
         renderOverlay();
       } else {
@@ -545,15 +658,15 @@ function attachPointerHandlers() {
         renderOverlay();
       }
     } else if (ed.tool === 'draw') {
-      snapshot();
+      snapshot('Stift-Strich');
       ed.tempStroke = [pt];
       dragging = { kind: 'draw' };
     } else if (ed.tool === 'erase') {
-      snapshot();
+      snapshot('Radiert');
       eraseAt(pt);
       dragging = { kind: 'erase' };
     } else if (ed.tool === 'text') {
-      snapshot();
+      snapshot('Text eingefügt');
       curPage().objects.push({ type: 'text', x: pt.x, y: pt.y, size: 14, color: '#111111', font: 'helv', text: 'Text' });
       ed.selected = curPage().objects.length - 1;
       setToolSoft('pan');
@@ -563,10 +676,27 @@ function attachPointerHandlers() {
       dragging = { kind: 'rect', start: pt };
       ed.tempRect = { x: pt.x, y: pt.y, w: 0, h: 0 };
     } else if (ed.tool === 'redact') {
+      const handle = e.target.closest?.('[data-handle]');
+      if (handle) {
+        dragging = { kind: 'resize', i: parseInt(handle.dataset.handle, 10), start: pt };
+        snapshot('Schwärzung skaliert');
+        return;
+      }
+      const hit = hitObject(pt);
+      if (hit != null && curPage().objects[hit].type === 'rect') {
+        ed.selected = hit;
+        const ro = curPage().objects[hit];
+        dragging = { kind: 'move', i: hit, start: pt, orig: { x: ro.x, y: ro.y } };
+        snapshot('Schwärzung verschoben');
+        updateProps();
+        renderOverlay();
+        return;
+      }
+      ed.selected = null;
       dragging = { kind: 'redact', start: pt };
       ed.tempRect = { x: pt.x, y: pt.y, w: 0, h: 0 };
     } else if (ed.tool === 'stamp') {
-      snapshot();
+      snapshot('Stempel eingefügt');
       const heute = new Date().toLocaleDateString('de-DE');
       curPage().objects.push({ type: 'stamp', x: pt.x - 85, y: pt.y - 28, w: 170, h: 56, color: '#c00000', title: 'BEZAHLT', date: heute, note: '' });
       ed.selected = curPage().objects.length - 1;
@@ -638,8 +768,10 @@ function attachPointerHandlers() {
     if (pointers.size < 2) pinchStart = null;
     if (dragging?.kind === 'redact' && ed.tempRect) {
       if (ed.tempRect.w > 4 && ed.tempRect.h > 4) {
-        snapshot();
+        snapshot('Schwärzung hinzugefügt');
         curPage().objects.push({ type: 'rect', color: '#000000', ...ed.tempRect });
+        ed.selected = curPage().objects.length - 1;
+        updateProps();
       }
       ed.tempRect = null;
       renderOverlay();
@@ -689,7 +821,7 @@ function eraseAt(pt) {
 // Ein vorbereitetes Objekt (Unterschrift) mit Tipp platzieren
 function placePending(pt) {
   if (!ed.pending) return;
-  snapshot();
+  snapshot('Eingefügt/platziert');
   const o = { ...ed.pending, x: pt.x - ed.pending.w / 2, y: pt.y - ed.pending.h / 2 };
   curPage().objects.push(o);
   ed.pending = null;
@@ -697,6 +829,28 @@ function placePending(pt) {
   setToolSoft('pan');
   updateProps();
   renderOverlay();
+}
+
+
+// Bild robust laden (HEIC/Safari-Fallback über <img>)
+async function loadBitmap(file) {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      return c;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- Unterschrift
@@ -805,7 +959,7 @@ async function openSignModal() {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    photoBitmap = await createImageBitmap(file);
+    photoBitmap = await loadBitmap(file);
     $('#sigPhotoCtrls').classList.remove('hidden');
     $('#sigPhotoPreview').classList.remove('hidden');
     updatePhoto();
@@ -832,6 +986,17 @@ async function openSignModal() {
   $('#sigUsePhoto').onclick = async () => {
     if (!processed) return;
     const dataUrl = processed.toDataURL('image/png');
+    if (ed.stampFromImage) {
+      ed.stampFromImage = false;
+      const stamp = { kind: 'image', name: $('#sigPhotoName').value || 'Bild-Stempel', dataUrl, aspect: processed.width / processed.height };
+      if ($('#sigPhotoSave').checked) await saveStamp({ ...stamp });
+      const assetId = addAssetFromDataUrl(dataUrl, 'png');
+      ed.pending = { type: 'image', assetId, w: 160, h: 160 / stamp.aspect };
+      closeSignModal();
+      ed.tool = 'place';
+      alert('Tippe/Klicke an die Stelle für den Stempel.');
+      return;
+    }
     const sig = { kind: 'image', name: $('#sigPhotoName').value || 'Unterschrift', dataUrl, aspect: processed.width / processed.height };
     if ($('#sigPhotoSave').checked) await saveSignature({ ...sig });
     insertSignature(sig);
@@ -906,6 +1071,58 @@ function addAssetFromDataUrl(dataUrl, kind) {
   ed.state.assets.kind[id] = kind;
   ed.state.assets.url[id] = dataUrl;
   return id;
+}
+
+
+async function openStampTplModal() {
+  const box = $('#edModalBox');
+  const stamps = await listStamps();
+  box.innerHTML = `<h3>Stempel-Vorlagen</h3><div class="ed-savedlist" id="edTplList">${stamps.length ? '' : '<p>Noch keine Vorlagen gespeichert.</p>'}</div>
+    <div class="ed-row"><button class="btn btn-small" id="edStampFromImg">🖼️ Stempel aus Bild erstellen</button>
+    <button class="btn btn-small btn-ghost" id="edTplClose">Schließen</button></div>`;
+  $('#edModal').classList.remove('hidden');
+  $('#edTplClose').onclick = () => $('#edModal').classList.add('hidden');
+  $('#edStampFromImg').onclick = async () => {
+    ed.stampFromImage = true;
+    await openSignModal();
+    $('#edModalBox').querySelector('[data-tab="photoTab"]').click();
+    $('#edSigPhotoInput').click();
+  };
+  const list = $('#edTplList');
+  for (const st of stamps) {
+    const row = document.createElement('div');
+    row.className = 'ed-savedrow';
+    const prev = document.createElement(st.kind === 'image' ? 'img' : 'canvas');
+    if (st.kind === 'image') prev.src = st.dataUrl;
+    else {
+      const tmp = renderStampCanvas({ ...st, w: 170, h: 56, date: st.dateAuto ? new Date().toLocaleDateString('de-DE') : '', style: st.style === 'frame' ? 'stamp' : st.style }, 2);
+      prev.width = tmp.width; prev.height = tmp.height;
+      prev.getContext('2d').drawImage(tmp, 0, 0);
+    }
+    const name = document.createElement('span');
+    name.textContent = st.kind === 'image' ? (st.name || 'Bild-Stempel') : `${st.brand ? st.brand + ' – ' : ''}${st.title}`;
+    const use = document.createElement('button');
+    use.className = 'btn btn-small btn-primary';
+    use.textContent = 'Einfügen';
+    use.onclick = () => {
+      $('#edModal').classList.add('hidden');
+      if (st.kind === 'image') {
+        const assetId = addAssetFromDataUrl(st.dataUrl, 'png');
+        ed.pending = { type: 'image', assetId, w: 160, h: 160 / (st.aspect || 2.5) };
+      } else {
+        ed.pending = { type: 'stamp', w: 170, h: 56, color: st.color, title: st.title, brand: st.brand || '',
+          note: st.note || '', style: st.style || 'stamp', date: st.dateAuto ? new Date().toLocaleDateString('de-DE') : '' };
+      }
+      ed.tool = 'place';
+      alert('Tippe/Klicke an die Stelle für den Stempel.');
+    };
+    const del = document.createElement('button');
+    del.className = 'btn btn-small btn-ghost';
+    del.textContent = '🗑';
+    del.onclick = async () => { await deleteStamp(st.id); openStampTplModal(); };
+    row.append(prev, name, use, del);
+    list.appendChild(row);
+  }
 }
 
 // ---------------------------------------------------------------- Seitenverwaltung
@@ -1023,6 +1240,7 @@ export async function openEditor(item, onApplied) {
     tempRect: null,
     tempStroke: null,
     undoStack: [],
+    redoStack: [],
     pagePt: { w: A4[0], h: A4[1] },
     formFields: [],
     fitScale: () => {
@@ -1058,9 +1276,11 @@ export async function openEditor(item, onApplied) {
     $('#edPagesBtn').addEventListener('click', openPagesModal);
     $('#edFormBtn').addEventListener('click', openFormModal);
     $('#edUndoBtn').addEventListener('click', undo);
+    $('#edRedoBtn').addEventListener('click', redo);
+    $('#edHistBtn').addEventListener('click', openHistoryModal);
     $('#edDeleteBtn').addEventListener('click', () => {
       if (ed.selected != null) {
-        snapshot();
+        snapshot('Objekt gelöscht');
         curPage().objects.splice(ed.selected, 1);
         ed.selected = null;
         updateProps();
@@ -1091,7 +1311,7 @@ export async function openEditor(item, onApplied) {
       const file = e.target.files[0];
       e.target.value = '';
       if (!file) { setToolSoft('pan'); return; }
-      const bitmap = await createImageBitmap(file);
+      const bitmap = await loadBitmap(file);
       const canvas = document.createElement('canvas');
       const s = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
       canvas.width = Math.round(bitmap.width * s);

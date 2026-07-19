@@ -61,6 +61,24 @@ export async function deleteSignature(id) {
   await kvSet('signatures', sigs);
 }
 
+// ---------------------------------------------------------------- Stempel-Vorlagen
+
+export async function listStamps() {
+  return (await kvGet('stamps')) || [];
+}
+
+export async function saveStamp(stamp) {
+  const stamps = await listStamps();
+  stamp.id = stamp.id || `st${Date.now()}${Math.floor(Math.random() * 1e4)}`;
+  stamps.push(stamp);
+  await kvSet('stamps', stamps);
+  return stamp.id;
+}
+
+export async function deleteStamp(id) {
+  await kvSet('stamps', (await listStamps()).filter((s) => s.id !== id));
+}
+
 // ---------------------------------------------------------------- Einstellungen
 
 export async function loadSettings() {
@@ -79,6 +97,7 @@ export async function exportAllData() {
     version: 1,
     exported: new Date().toISOString(),
     signatures: await listSignatures(),
+    stamps: await listStamps(),
     settings: await loadSettings(),
   };
   return new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
@@ -91,6 +110,7 @@ export async function importAllData(jsonText) {
     throw new Error('Keine gültige PDF-Presser-Datendatei');
   }
   await kvSet('signatures', data.signatures);
+  await kvSet('stamps', data.stamps || []);
   await kvSet('settings', data.settings || {});
   return { signatures: data.signatures.length };
 }
