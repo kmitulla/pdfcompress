@@ -77,6 +77,19 @@ async function drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, ass
           borderLineCap: PDFLib.LineCapStyle.Round,
         });
       }
+    } else if (o.type === 'rect') {
+      page.drawRectangle({ x: o.x, y: viewH - o.y - o.h, width: o.w, height: o.h, color });
+    } else if (o.type === 'stamp') {
+      const yTop = viewH - o.y;
+      page.drawRectangle({ x: o.x, y: yTop - o.h, width: o.w, height: o.h, borderColor: color, borderWidth: 2.2, opacity: 0 });
+      const titleSize = Math.min(o.h * 0.42, (o.w - 14) / Math.max(4, o.title.length) / 0.62);
+      page.drawText(o.title, { x: o.x + 8, y: yTop - titleSize - 5, size: titleSize, font: fonts.helvB, color });
+      let line2 = o.date || '';
+      if (o.note) line2 += (line2 ? ' – ' : '') + o.note;
+      if (line2) {
+        const ns = Math.min(9, o.h * 0.18);
+        try { page.drawText(line2, { x: o.x + 8, y: yTop - o.h + 6, size: ns, font: fonts.helv, color }); } catch { /* Zeichen */ }
+      }
     } else if (o.type === 'sig-vector') {
       for (const stroke of o.strokes) {
         const scaled = stroke.map((p) => ({ x: o.x + p.x * o.w, y: o.y + p.y * o.h }));
@@ -140,9 +153,19 @@ export async function applyEdits(srcBytes, state) {
       page = newDoc.addPage([w, h]);
       viewW = w;
       viewH = h;
+      if (entry.rotate) {
+        // Leere Seite drehen = Maße tauschen
+        if (entry.rotate % 180 !== 0) page.setSize(h, w);
+        viewW = page.getWidth();
+        viewH = page.getHeight();
+      }
     } else {
       const [copied] = await newDoc.copyPages(srcDoc, [entry.src]);
       page = newDoc.addPage(copied);
+      if (entry.rotate) {
+        const base = page.getRotation().angle || 0;
+        page.setRotation(PDFLib.degrees((base + entry.rotate) % 360));
+      }
       const rot = ((page.getRotation().angle % 360) + 360) % 360;
       const { width, height } = page.getSize();
       viewW = rot === 90 || rot === 270 ? height : width;
@@ -150,6 +173,15 @@ export async function applyEdits(srcBytes, state) {
     }
     if (entry.objects?.length) {
       await drawObjectsOnPage(newDoc, page, entry.objects, viewW, viewH, fonts, assets);
+    }
+    if (state.pageNumbers) {
+      const idx = state.pages.indexOf(entry) + 1;
+      const label = `${idx} / ${state.pages.length}`;
+      const rot0 = entry.src == null ? 0 : ((page.getRotation().angle % 360) + 360) % 360;
+      const m0 = rotationMatrix(rot0, page.getWidth(), page.getHeight());
+      if (m0) page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.concatTransformationMatrix(...m0));
+      page.drawText(label, { x: viewW / 2 - label.length * 2.6, y: 18, size: 10, font: fonts.helv, color: PDFLib.rgb(0.25, 0.25, 0.25) });
+      if (m0) page.pushOperators(PDFLib.popGraphicsState());
     }
     if (entry.crop) {
       const c = entry.crop;
@@ -186,6 +218,8 @@ function buildUi() {
         <button data-tool="draw" class="ed-btn" title="Stift">✏️</button>
         <button data-tool="erase" class="ed-btn" title="Radierer (Striche entfernen)">◻️</button>
         <button data-tool="image" class="ed-btn" title="Bild einfügen">🖼️</button>
+        <button data-tool="stamp" class="ed-btn" title="Stempel (BEZAHLT/KOPIE …)">🏷️</button>
+        <button data-tool="redact" class="ed-btn" title="Schwärzen">⬛</button>
         <button data-tool="crop" class="ed-btn" title="Zuschneiden">⛶</button>
         <button id="edPagesBtn" class="ed-btn" title="Seiten verwalten">🗂️</button>
         <button id="edFormBtn" class="ed-btn hidden" title="Formular ausfüllen">📋</button>
@@ -214,7 +248,7 @@ function buildUi() {
     </div>
     <div class="ed-modal hidden" id="edModal"><div class="ed-modal-box" id="edModalBox"></div></div>
     <input type="file" id="edImageInput" accept="image/*" hidden>
-    <input type="file" id="edSigPhotoInput" accept="image/*" capture="environment" hidden>
+    <input type="file" id="edSigPhotoInput" accept="image/*" hidden>
   </div>`;
   document.body.appendChild(root);
   return root;
@@ -247,12 +281,13 @@ async function renderPageView() {
   let hPt = A4[1];
   if (entry.src != null) {
     const page = await ed.pdf.getPage(entry.src + 1);
-    const base = page.getViewport({ scale: 1 });
+    const totalRot = ((page.rotate || 0) + (entry.rotate || 0)) % 360;
+    const base = page.getViewport({ scale: 1, rotation: totalRot });
     // Riesige Pixelmaß-Scans in der Ansicht wie in der Kompression behandeln
     wPt = base.width;
     hPt = base.height;
     const scale = Math.min(3, 1600 / Math.max(wPt, hPt) * (window.devicePixelRatio || 1));
-    const viewport = page.getViewport({ scale });
+    const viewport = page.getViewport({ scale, rotation: totalRot });
     canvas.width = Math.round(viewport.width);
     canvas.height = Math.round(viewport.height);
     const ctx = canvas.getContext('2d');
@@ -261,6 +296,7 @@ async function renderPageView() {
     await page.render({ canvasContext: ctx, viewport }).promise;
   } else {
     [wPt, hPt] = entry.blankSize || A4;
+    if ((entry.rotate || 0) % 180 !== 0) [wPt, hPt] = [hPt, wPt];
     canvas.width = Math.round(wPt * 2);
     canvas.height = Math.round(hPt * 2);
     const ctx = canvas.getContext('2d');
@@ -303,6 +339,17 @@ function renderOverlay() {
       const d = o.strokes.map((st) => strokeToSvgPath(st.map((p) => ({ x: o.x + p.x * o.w, y: o.y + p.y * o.h })))).join(' ');
       parts.push(`<path data-i="${i}" d="${d}" fill="none" stroke="${o.color}" stroke-width="${Math.max(0.4, o.widthN * o.h)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
+    } else if (o.type === 'rect') {
+      parts.push(`<rect data-i="${i}" x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" fill="${o.color}"/>`);
+      if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
+    } else if (o.type === 'stamp') {
+      const ts = Math.min(o.h * 0.42, (o.w - 14) / Math.max(4, o.title.length) / 0.62);
+      let line2 = o.date || '';
+      if (o.note) line2 += (line2 ? ' – ' : '') + o.note;
+      parts.push(`<g data-i="${i}"><rect x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" fill="none" stroke="${o.color}" stroke-width="2.2" rx="4"/>
+        <text x="${o.x + 8}" y="${o.y + ts + 4}" font-size="${ts}" font-weight="bold" fill="${o.color}" font-family="Helvetica,Arial,sans-serif">${o.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</text>
+        ${line2 ? `<text x="${o.x + 8}" y="${o.y + o.h - 6}" font-size="${Math.min(9, o.h * 0.18)}" fill="${o.color}" font-family="Helvetica,Arial,sans-serif">${line2.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</text>` : ''}</g>`);
+      if (sel) parts.push(selBox(o.x, o.y, o.w, o.h, i));
     } else if (o.type === 'ink') {
       const d = o.paths.map((st) => strokeToSvgPath(st)).join(' ');
       parts.push(`<path data-i="${i}" d="${d}" fill="none" stroke="${o.color}" stroke-width="${o.width}" stroke-opacity="${o.opacity ?? 1}" stroke-linecap="round" stroke-linejoin="round"/>`);
@@ -325,9 +372,15 @@ function renderOverlay() {
 }
 
 function selBox(x, y, w, h, i) {
-  const hs = 9 / (ed.zoom * ed.fitScale());
-  return `<g><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#0ea5e9" stroke-width="${1.4 / ed.zoom}" stroke-dasharray="4 3"/>
-    <rect data-handle="${i}" x="${x + w - hs / 2}" y="${y + h - hs / 2}" width="${hs}" height="${hs}" fill="#0ea5e9"/></g>`;
+  const u = 1 / (ed.zoom * ed.fitScale());
+  const hs = 16 * u;   // sichtbarer Griff
+  const hit = 44 * u;  // Trefferfläche (ergonomisch groß)
+  return `<g><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#0ea5e9" stroke-width="${2 * u}" stroke-dasharray="5 4"/>
+    <circle data-del="${i}" cx="${x}" cy="${y}" r="${11 * u}" fill="#ef4444"/>
+    <path d="M ${x - 4.5 * u} ${y - 4.5 * u} l ${9 * u} ${9 * u} M ${x + 4.5 * u} ${y - 4.5 * u} l ${-9 * u} ${9 * u}" stroke="#fff" stroke-width="${2.2 * u}"/>
+    <circle data-del="${i}" cx="${x}" cy="${y}" r="${hit / 2}" fill="transparent"/>
+    <rect data-handle="${i}" x="${x + w - hs / 2}" y="${y + h - hs / 2}" width="${hs}" height="${hs}" rx="${3 * u}" fill="#0ea5e9" stroke="#fff" stroke-width="${1.5 * u}"/>
+    <rect data-handle="${i}" x="${x + w - hit / 2}" y="${y + h - hit / 2}" width="${hit}" height="${hit}" fill="transparent"/></g>`;
 }
 
 function textWidth(o) {
@@ -354,7 +407,9 @@ function hitObject(pt) {
     let box = null;
     if (o.type === 'text') box = { x: o.x - 2, y: o.y - 2, w: textWidth(o) + 6, h: textHeight(o) + 4 };
     else if (o.type === 'image' || o.type === 'sig-image' || o.type === 'sig-vector') box = { x: o.x, y: o.y, w: o.w, h: o.h };
-    if (box && pt.x >= box.x && pt.x <= box.x + box.w && pt.y >= box.y && pt.y <= box.y + box.h) return i;
+    if (o.type === 'rect' || o.type === 'stamp') box = { x: o.x, y: o.y, w: o.w, h: o.h };
+    const pad = 12 / (ed.zoom * ed.fitScale()) * 4 + 6; // großzügige Trefferzone
+    if (box && pt.x >= box.x - pad && pt.x <= box.x + box.w + pad && pt.y >= box.y - pad && pt.y <= box.y + box.h + pad) return i;
   }
   return null;
 }
@@ -391,6 +446,36 @@ function updateProps() {
     $('#edTextSize').oninput = (e) => { o.size = parseInt(e.target.value, 10); renderOverlay(); };
     $('#edTextColor').oninput = (e) => { o.color = e.target.value; renderOverlay(); };
     $('#edTextFont').onchange = (e) => { o.font = e.target.value; renderOverlay(); };
+  } else if (o && o.type === 'stamp') {
+    props.innerHTML = `Stempel:
+      <select id="edStampTitle"><option>BEZAHLT</option><option>KOPIE</option><option>ERLEDIGT</option><option>ENTWURF</option><option>GEPRÜFT</option><option>ERHALTEN</option><option value="__custom">Eigener…</option></select>
+      <input type="text" id="edStampCustom" class="hidden" size="10" placeholder="Eigener Text">
+      Datum <input type="text" id="edStampDate" value="${o.date || ''}" size="9">
+      Notiz <input type="text" id="edStampNote" value="${(o.note || '').replace(/"/g, '&quot;')}" size="16" placeholder="z. B. per Überweisung">
+      <input type="color" id="edStampColor" value="${o.color}">`;
+    props.classList.remove('hidden');
+    const sel = $('#edStampTitle');
+    if ([...sel.options].some((op) => op.value === o.title)) sel.value = o.title;
+    else { sel.value = '__custom'; $('#edStampCustom').classList.remove('hidden'); $('#edStampCustom').value = o.title; }
+    const syncTitle = () => {
+      const custom = sel.value === '__custom';
+      $('#edStampCustom').classList.toggle('hidden', !custom);
+      o.title = custom ? ($('#edStampCustom').value || 'STEMPEL') : sel.value;
+      renderOverlay();
+    };
+    sel.onchange = syncTitle;
+    $('#edStampCustom').oninput = syncTitle;
+    $('#edStampDate').oninput = (e) => { o.date = e.target.value; renderOverlay(); };
+    $('#edStampNote').oninput = (e) => { o.note = e.target.value; renderOverlay(); };
+    $('#edStampColor').oninput = (e) => { o.color = e.target.value; renderOverlay(); };
+  } else if (o && (o.type === 'image' || o.type === 'sig-image' || o.type === 'rect')) {
+    props.innerHTML = `<label><input type="checkbox" id="edAspect" ${ed.aspectLock ? 'checked' : ''}> Seitenverhältnis sperren</label>
+      ${o.type === 'rect' ? '<span class="hint-inline">Schwärzung: Für ECHTES Entfernen danach mit einer Bild-Stufe komprimieren (nicht „Verlustfrei“).</span>' : ''}`;
+    props.classList.remove('hidden');
+    $('#edAspect').onchange = (e) => { ed.aspectLock = e.target.checked; };
+  } else if (ed.tool === 'redact') {
+    props.innerHTML = '<span class="hint-inline">Rechteck über den Inhalt ziehen. Wichtig: ECHT entfernt ist der Inhalt nach Kompression mit einer Bild-Stufe (z. B. Mittel oder Extrem S/W) – „Verlustfrei“ deckt nur ab.</span>';
+    props.classList.remove('hidden');
   } else if (ed.tool === 'crop') {
     props.innerHTML = `Rechteck aufziehen, dann: <button class="btn btn-small" id="edCropApply">Zuschnitt setzen</button>
       <button class="btn btn-small btn-ghost" id="edCropClear">Zuschnitt entfernen</button>
@@ -430,6 +515,15 @@ function attachPointerHandlers() {
     }
     const pt = toPagePt(e);
     if (ed.tool === 'pan') {
+      const delBadge = e.target.closest?.('[data-del]');
+      if (delBadge) {
+        snapshot();
+        curPage().objects.splice(parseInt(delBadge.dataset.del, 10), 1);
+        ed.selected = null;
+        updateProps();
+        renderOverlay();
+        return;
+      }
       const handle = e.target.closest?.('[data-handle]');
       if (handle) {
         dragging = { kind: 'resize', i: parseInt(handle.dataset.handle, 10), start: pt };
@@ -468,6 +562,17 @@ function attachPointerHandlers() {
     } else if (ed.tool === 'crop') {
       dragging = { kind: 'rect', start: pt };
       ed.tempRect = { x: pt.x, y: pt.y, w: 0, h: 0 };
+    } else if (ed.tool === 'redact') {
+      dragging = { kind: 'redact', start: pt };
+      ed.tempRect = { x: pt.x, y: pt.y, w: 0, h: 0 };
+    } else if (ed.tool === 'stamp') {
+      snapshot();
+      const heute = new Date().toLocaleDateString('de-DE');
+      curPage().objects.push({ type: 'stamp', x: pt.x - 85, y: pt.y - 28, w: 170, h: 56, color: '#c00000', title: 'BEZAHLT', date: heute, note: '' });
+      ed.selected = curPage().objects.length - 1;
+      setToolSoft('pan');
+      updateProps();
+      renderOverlay();
     } else if (ed.tool === 'place') {
       placePending(pt);
       dragging = null;
@@ -503,10 +608,13 @@ function attachPointerHandlers() {
       const o = curPage().objects[dragging.i];
       if (o.type === 'text') {
         o.size = Math.max(6, Math.min(80, ((pt.y - o.y) / 1.25)));
+      } else if ((o.type === 'image' || o.type === 'rect' || o.type === 'stamp') && !ed.aspectLock) {
+        o.w = Math.max(12, pt.x - o.x);
+        o.h = Math.max(12, pt.y - o.y);
       } else {
         const ratio = o.h / o.w;
-        o.w = Math.max(12, pt.x - o.x);
-        o.h = o.type === 'image' ? Math.max(12, pt.y - o.y) : o.w * ratio;
+        o.w = Math.max(12, Math.max(pt.x - o.x, (pt.y - o.y) / ratio));
+        o.h = o.w * ratio;
       }
       renderOverlay();
     } else if (dragging.kind === 'draw') {
@@ -514,7 +622,7 @@ function attachPointerHandlers() {
       renderOverlay();
     } else if (dragging.kind === 'erase') {
       eraseAt(pt);
-    } else if (dragging.kind === 'rect') {
+    } else if (dragging.kind === 'rect' || dragging.kind === 'redact') {
       ed.tempRect = {
         x: Math.min(dragging.start.x, pt.x),
         y: Math.min(dragging.start.y, pt.y),
@@ -528,6 +636,14 @@ function attachPointerHandlers() {
   const finish = (e) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinchStart = null;
+    if (dragging?.kind === 'redact' && ed.tempRect) {
+      if (ed.tempRect.w > 4 && ed.tempRect.h > 4) {
+        snapshot();
+        curPage().objects.push({ type: 'rect', color: '#000000', ...ed.tempRect });
+      }
+      ed.tempRect = null;
+      renderOverlay();
+    }
     if (dragging?.kind === 'draw' && ed.tempStroke?.length) {
       const objs = curPage().objects;
       const last = objs[objs.length - 1];
@@ -797,10 +913,14 @@ function addAssetFromDataUrl(dataUrl, kind) {
 async function openPagesModal() {
   const modal = $('#edModal');
   const box = $('#edModalBox');
-  box.innerHTML = '<h3>Seiten verwalten</h3><div class="ed-pagegrid" id="edPageGrid"></div><div class="ed-row"><button class="btn btn-small" id="edAddBlank">+ Leere A4-Seite</button><button class="btn btn-small btn-ghost" id="edPagesClose">Fertig</button></div>';
+  box.innerHTML = '<h3>Seiten verwalten</h3><div class="ed-pagegrid" id="edPageGrid"></div><div class="ed-row"><button class="btn btn-small" id="edAddBlank">+ Leere A4-Seite</button><button class="btn btn-small" id="edPageNums">Seitenzahlen: aus</button><button class="btn btn-small btn-ghost" id="edPagesClose">Fertig</button></div>';
   modal.classList.remove('hidden');
   $('#edPagesClose').onclick = () => { modal.classList.add('hidden'); renderPageView(); };
   $('#edAddBlank').onclick = () => { snapshot(); ed.state.pages.push({ src: null, blankSize: A4.slice(), objects: [] }); renderGrid(); };
+  const pnBtn = $('#edPageNums');
+  const syncPn = () => { pnBtn.textContent = `Seitenzahlen: ${ed.state.pageNumbers ? 'AN' : 'aus'}`; };
+  syncPn();
+  pnBtn.onclick = () => { ed.state.pageNumbers = !ed.state.pageNumbers; syncPn(); };
   const renderGrid = async () => {
     const grid = $('#edPageGrid');
     grid.innerHTML = '';
@@ -836,13 +956,14 @@ async function openPagesModal() {
         return b;
       };
       bar.append(
+        mk('↻', () => { entry.rotate = ((entry.rotate || 0) + 90) % 360; }),
         mk('←', () => { [ed.state.pages[i - 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i - 1]]; }, i === 0),
         mk('→', () => { [ed.state.pages[i + 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i + 1]]; }, i === ed.state.pages.length - 1),
         mk('⧉', () => { ed.state.pages.splice(i + 1, 0, JSON.parse(JSON.stringify(entry))); }),
         mk('🗑', () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
       );
       const label = document.createElement('div');
-      label.textContent = `Seite ${i + 1}${entry.src == null ? ' (leer)' : ''}`;
+      label.textContent = `Seite ${i + 1}${entry.src == null ? ' (leer)' : ''}${entry.rotate ? ` ↻${entry.rotate}°` : ''}`;
       cell.append(thumb, label, bar);
       grid.appendChild(cell);
     }
@@ -894,6 +1015,7 @@ export async function openEditor(item, onApplied) {
     pan: { x: 0, y: 0 },
     tool: 'pan',
     penColor: '#d21f1f',
+    aspectLock: true,
     penWidth: 2,
     marker: false,
     selected: null,

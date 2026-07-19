@@ -55,6 +55,10 @@ function currentOptions() {
   } else {
     opts = { ...PRESETS[preset] };
   }
+  if (preset.startsWith('extrem')) {
+    const dpiOverride = parseInt($('#extremeDpi').value, 10);
+    if (dpiOverride) opts.dpi = dpiOverride;
+  }
   if (opts.colorMode === 'bw' || opts.colorMode === 'indexed') {
     opts.bias = parseInt($('#bwBias').value, 10) || 0;
   }
@@ -78,6 +82,7 @@ function syncSettingsUi() {
   customPanel.classList.toggle('hidden', preset !== 'custom');
   qualityField.classList.toggle('hidden', preset === 'custom' && ['bw', 'indexed'].includes($('#colorMode').value));
   biasField.classList.toggle('hidden', !['bw', 'indexed'].includes(opts.colorMode));
+  $('#extremeDpiField').classList.toggle('hidden', !preset.startsWith('extrem'));
   const lossless = preset === 'verlustfrei';
   ocrEnabled.disabled = lossless;
   ocrLosslessHint.classList.toggle('hidden', !lossless);
@@ -91,6 +96,7 @@ ocrEnabled.addEventListener('change', syncSettingsUi);
 $('#dpi').addEventListener('input', () => { $('#dpiOut').value = $('#dpi').value; schedulePreviewRefresh(); });
 $('#quality').addEventListener('input', () => { $('#qualityOut').value = $('#quality').value; schedulePreviewRefresh(); });
 $('#bwBias').addEventListener('input', () => { $('#bwBiasOut').value = $('#bwBias').value; schedulePreviewRefresh(); });
+$('#extremeDpi').addEventListener('change', schedulePreviewRefresh);
 
 // ---------------------------------------------------------------- Hilfen
 
@@ -162,6 +168,7 @@ function addFiles(fileList) {
 
 function updateActions() {
   actionsEl.classList.toggle('hidden', items.length === 0);
+  $('#mergeBtn').classList.toggle('hidden', items.length < 2);
   downloadAllBtn.disabled = !items.some((it) => it.result);
   const allDone = items.length > 0 && items.every((it) => it.result);
   startBtn.textContent = allDone ? 'Erneut komprimieren' : 'Komprimieren';
@@ -292,6 +299,30 @@ startBtn.addEventListener('click', async () => {
 
 downloadAllBtn.addEventListener('click', () => {
   items.filter((it) => it.result).forEach((it, i) => setTimeout(() => downloadItem(it), i * 300));
+});
+
+$('#mergeBtn').addEventListener('click', async () => {
+  if (running || items.length < 2) return;
+  const btn = $('#mergeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Führe zusammen …';
+  try {
+    const { PDFDocument } = window.PDFLib;
+    const merged = await PDFDocument.create();
+    merged.setProducer('PDF Presser (lokal im Browser)');
+    for (const it of items) {
+      const doc = await PDFDocument.load(await itemBytes(it));
+      const pages = await merged.copyPages(doc, doc.getPageIndices());
+      pages.forEach((p) => merged.addPage(p));
+    }
+    const bytes = await merged.save({ useObjectStreams: true });
+    addFiles([new File([bytes], 'zusammengefuehrt.pdf', { type: 'application/pdf' })]);
+  } catch (e) {
+    alert(`Zusammenführen fehlgeschlagen: ${e?.message || e}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Zu einer PDF zusammenführen';
+  }
 });
 
 clearBtn.addEventListener('click', () => {
@@ -540,6 +571,7 @@ function collectSettings() {
     dpi: $('#dpi').value,
     quality: $('#quality').value,
     bwBias: $('#bwBias').value,
+    extremeDpi: $('#extremeDpi').value,
     ocr: ocrEnabled.checked,
     ocrLang: $('#ocrLang').value,
     autoSave: $('#autoSave').checked,
@@ -559,6 +591,7 @@ async function applyStoredSettings() {
     if (s.dpi) { $('#dpi').value = s.dpi; $('#dpiOut').value = s.dpi; }
     if (s.quality) { $('#quality').value = s.quality; $('#qualityOut').value = s.quality; }
     if (s.bwBias != null) { $('#bwBias').value = s.bwBias; $('#bwBiasOut').value = s.bwBias; }
+    if (s.extremeDpi != null) $('#extremeDpi').value = s.extremeDpi;
     if (s.ocr != null) ocrEnabled.checked = s.ocr;
     if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
     if (s.autoSave != null) $('#autoSave').checked = s.autoSave;
@@ -566,7 +599,7 @@ async function applyStoredSettings() {
   settingsReady = true;
   syncSettingsUi();
 }
-document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #ocrEnabled, #ocrLang, #autoSave')
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave')
   .forEach((el) => el.addEventListener('change', persistSettings));
 applyStoredSettings();
 requestPersistence();

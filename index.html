@@ -85,6 +85,19 @@
         </label>
       </div>
 
+      <div class="field hidden" id="extremeDpiField">
+        <label for="extremeDpi">Auflösung der Extrem-Stufe</label>
+        <select id="extremeDpi">
+          <option value="">Standard (S/W 300 · Farbe 150 · Grau 100 dpi)</option>
+          <option value="100">100 dpi</option>
+          <option value="150">150 dpi</option>
+          <option value="200">200 dpi</option>
+          <option value="300">300 dpi</option>
+          <option value="400">400 dpi</option>
+          <option value="600">600 dpi</option>
+        </select>
+      </div>
+
       <fieldset class="custom-panel hidden" id="customPanel">
         <legend>Eigene Einstellungen</legend>
         <div class="field">
@@ -172,6 +185,7 @@
         <button class="btn btn-primary" id="startBtn">Komprimieren</button>
         <button class="btn" id="previewBtn">Vorschau</button>
         <button class="btn" id="downloadAllBtn" disabled>Alle herunterladen</button>
+        <button class="btn hidden" id="mergeBtn">Zu einer PDF zusammenführen</button>
         <button class="btn btn-ghost" id="clearBtn">Liste leeren</button>
       </div>
 

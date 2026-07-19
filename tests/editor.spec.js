@@ -139,6 +139,41 @@ test('applyEdits: gedrehte Seite (Rotate 90) erhält Objekte an Sichtposition', 
   expect(res.text).toContain('Quertext');
 });
 
+test('Stempel, Schwärzen, Seitenzahlen, Seiten drehen', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async ({ inspect }) => {
+    eval(inspect);
+    const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const p1 = doc.addPage([595.28, 841.89]);
+    p1.drawText('GEHEIMNIS', { x: 100, y: 500, size: 20, font, color: rgb(0, 0, 0) });
+    doc.addPage([595.28, 841.89]);
+    const src = await doc.save();
+    const state = {
+      pages: [
+        { src: 0, objects: [
+          { type: 'rect', color: '#000000', x: 90, y: 320, w: 160, h: 40 },
+          { type: 'stamp', x: 300, y: 100, w: 190, h: 60, color: '#c00000', title: 'BEZAHLT', date: '18.07.2026', note: 'per Überweisung' },
+        ] },
+        { src: 1, rotate: 90, objects: [] },
+      ],
+      pageNumbers: true,
+      assets: { bytes: {}, kind: {}, url: {} },
+    };
+    const out = await window.__pdfeditor.applyEdits(src, state);
+    const black = await inspectRegion(out, 1, 0.17, 0.39, 0.2, 0.04); // Schwärzung
+    const p2 = await inspectRegion(out, 2, 0.4, 0.4, 0.2, 0.2);
+    return { text: black.text, blackFrac: black.frac, p2w: p2.w, p2h: p2.h };
+  }, { inspect: INSPECT });
+  expect(res.blackFrac).toBeGreaterThan(0.85); // Balken deckt vollflächig
+  expect(res.text).toContain('BEZAHLT');
+  expect(res.text).toContain('18.07.2026');
+  expect(res.text).toContain('per Überweisung');
+  expect(res.text).toContain('1 / 2'); // Seitenzahlen
+  expect(res.p2w).toBeGreaterThan(res.p2h); // Seite 2 gedreht (quer)
+});
+
 test('Signatur: Foto-Freistellung und Strich-Glättung', async ({ page }) => {
   await ready(page);
   const res = await page.evaluate(() => {
