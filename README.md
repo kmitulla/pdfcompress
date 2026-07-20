@@ -25,8 +25,13 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
   mit sauberem weißem Hintergrund (Indexed-ColorSpace + Flate) – der Look von
   Farbscans aus dem Bürogerät bei sehr kleinen Dateien.
 - **Helligkeitsregler mit Live-Vorschau:** Für S/W- und Scanner-Stil lässt
-  sich der Schwellwert anpassen; die Vorschau zeigt die erste Seite mit den
+  sich der Schwellwert anpassen; die Vorschau zeigt die Seite mit den
   aktuellen Einstellungen inklusive geschätzter Größe pro Seite.
+- **Vorschau mit Seitennavigation & Seiten-Einstellungen:** In der Vorschau
+  durch **alle Seiten blättern** und einzelnen Seiten eine **eigene
+  Kompressionsstufe samt S/W-Helligkeitsabgleich** zuweisen (z. B. Seite 3
+  als „Extrem S/W“, Rest in Farbe) – wird beim Komprimieren automatisch
+  angewendet.
 - **Simulation:** Rechnet auf Knopfdruck alle Stufen durch und zeigt für jede
   die Nachher-Größe und Ersparnis in % (bei langen Dokumenten hochgerechnet
   aus Beispielseiten).
@@ -38,9 +43,12 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
   Kamerabild) und lassen sich **manuell nachjustieren** – eine **Lupe** neben
   dem Finger zeigt die Ecke stark vergrößert, damit man sie exakt trifft;
   Kanten lassen sich als Ganzes verschieben, Pfeiltasten justieren fein nach.
-  Perspektivkorrektur, wahlweise **A4-Layout** (hoch/quer) oder automatisches
-  Seitenverhältnis, **Drehen in 90°-Schritten**, mehrere Seiten mit
-  Umsortieren/Neuzuschnitt. Das Ergebnis landet als PDF in der Dateiliste –
+  Perspektivkorrektur, wahlweise **A4-Layout** (hoch/quer – der Scan wird
+  dabei **unverzerrt eingepasst**, Strecken auf das volle Blatt ist optional)
+  oder automatisches Seitenverhältnis, **Drehen in 90°-Schritten**, ein
+  **weißer Radierer** mit einstellbarer Pinselgröße und Undo/Redo für
+  Ränder/Schatten, mehrere Seiten mit Umsortieren/Neuzuschnitt. Das Ergebnis
+  landet als PDF in der Dateiliste –
   dort wie gewohnt **Kompressionsstufe & „Scan-Stil“** wählen (z. B.
   „Extrem S/W – Scanner-Stil“).
 - **PDF-Editor:** Unterschreiben (zeichnen mit Vektor-Glättung oder Foto mit

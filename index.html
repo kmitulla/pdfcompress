@@ -2,7 +2,8 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- maximum-scale/user-scalable: App-Gefühl – kein Zoomen der ganzen Seite per Doppeltipp/Pinch (Inhalte zoomen weiterhin in Editor & Scanner) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>PDF Presser – Lokaler PDF-Kompressor</title>
   <meta name="description" content="PDF-Dateien direkt im Browser verkleinern – 100 % lokal, ohne Upload, offline nutzbar. Mit einstellbarer Kompression, S/W-Scan-Modus und optionalem OCR-Textlayer.">
   <meta name="theme-color" content="#0f172a">
@@ -201,10 +202,32 @@
       <div class="panel preview-card hidden" id="previewCard">
         <div class="preview-head">
           <strong>Vorschau</strong>
+          <span class="preview-nav">
+            <button class="btn btn-small" id="prevPageBtn" title="Vorherige Seite">‹</button>
+            <span id="previewPageInfo" class="preview-pageinfo">1/1</span>
+            <button class="btn btn-small" id="nextPageBtn" title="Nächste Seite">›</button>
+          </span>
           <span id="previewInfo" class="preview-info"></span>
           <button class="btn btn-small btn-ghost" id="closePreviewBtn">Schließen</button>
         </div>
-        <div class="preview-body"><img id="previewImg" alt="Vorschau der ersten Seite mit aktuellen Einstellungen"></div>
+        <div class="preview-override">
+          <label for="pageOverrideSel">Nur diese Seite:</label>
+          <select id="pageOverrideSel">
+            <option value="">Globale Einstellung</option>
+            <option value="leicht">Leicht</option>
+            <option value="mittel">Mittel</option>
+            <option value="stark">Stark</option>
+            <option value="extrem-grau">Extrem (Graustufen)</option>
+            <option value="extrem-farbe">Extrem Farbe – „Scanner-Stil“</option>
+            <option value="extrem-sw">Extrem S/W – „Scanner-Stil“</option>
+          </select>
+          <label class="hidden" id="pageBiasWrap" for="pageBias">Helligkeit
+            <input type="range" id="pageBias" min="-40" max="40" step="1" value="0">
+            <output id="pageBiasOut">0</output>
+          </label>
+          <span class="hint-inline" id="overrideSummary"></span>
+        </div>
+        <div class="preview-body"><img id="previewImg" alt="Vorschau der Seite mit aktuellen Einstellungen"></div>
       </div>
     </section>
   </main>

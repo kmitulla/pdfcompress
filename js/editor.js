@@ -264,7 +264,7 @@ function buildUi() {
         <button data-tool="sign" class="ed-btn" title="Unterschrift">✒️</button>
         <button data-tool="text" class="ed-btn" title="Text">T</button>
         <button data-tool="draw" class="ed-btn" title="Stift">✏️</button>
-        <button data-tool="erase" class="ed-btn" title="Radierer (Striche entfernen)">◻️</button>
+        <button data-tool="erase" class="ed-btn" title="Striche-Radierer: entfernt gezeichnete Stift-/Marker-Striche">🧽</button>
         <button data-tool="image" class="ed-btn" title="Bild einfügen">🖼️</button>
         <button data-tool="stamp" class="ed-btn" title="Stempel (BEZAHLT/KOPIE …)">🏷️</button>
         <button data-tool="redact" class="ed-btn" title="Schwärzen">⬛</button>
@@ -586,6 +586,9 @@ function updateProps() {
       ${o.type === 'rect' ? '<span class="hint-inline">Schwärzung: Für ECHTES Entfernen danach mit einer Bild-Stufe komprimieren (nicht „Verlustfrei“).</span>' : ''}`;
     props.classList.remove('hidden');
     $('#edAspect').onchange = (e) => { ed.aspectLock = e.target.checked; };
+  } else if (ed.tool === 'erase') {
+    props.innerHTML = '<span class="hint-inline">🧽 Striche-Radierer: über mit dem Stift ✏️ gezeichnete Striche ziehen, um sie zu entfernen. Original-Inhalt des PDFs wird nicht radiert – dafür „Schwärzen“ ⬛ verwenden.</span>';
+    props.classList.remove('hidden');
   } else if (ed.tool === 'redact') {
     props.innerHTML = '<span class="hint-inline">Rechteck über den Inhalt ziehen. Wichtig: ECHT entfernt ist der Inhalt nach Kompression mit einer Bild-Stufe (z. B. Mittel oder Extrem S/W) – „Verlustfrei“ deckt nur ab.</span>';
     props.classList.remove('hidden');

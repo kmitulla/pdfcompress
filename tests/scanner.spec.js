@@ -12,7 +12,7 @@ async function ready(page) {
 
 // Synthetisches „Foto“: helles, schräg liegendes Dokument auf dunklem Grund
 const MAKE_PHOTO = `
-function makePhotoCanvas(w, h, corners) {
+function makePhotoCanvas(w, h, corners, docColor) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
@@ -22,7 +22,7 @@ function makePhotoCanvas(w, h, corners) {
     ctx.fillStyle = 'rgba(0,0,0,' + (0.05 + (i % 10) / 50) + ')';
     ctx.fillRect((i * 131) % w, (i * 197) % h, 9, 9);
   }
-  ctx.fillStyle = '#f4f0e8';
+  ctx.fillStyle = docColor || '#f4f0e8';
   ctx.beginPath();
   corners.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x * w, y * h); else ctx.lineTo(x * w, y * h); });
   ctx.closePath();
@@ -40,16 +40,58 @@ function makePhotoCanvas(w, h, corners) {
 
 const PHOTO_CORNERS = [[0.15, 0.12], [0.85, 0.18], [0.9, 0.88], [0.12, 0.8]];
 
-async function photoJpegBuffer(page, w = 1200, h = 900) {
+async function photoJpegBuffer(page, w = 1200, h = 900, docColor = null) {
   const dataUrl = await page.evaluate(
-    ({ makePhoto, w, h, corners }) => {
+    ({ makePhoto, w, h, corners, docColor }) => {
       // eslint-disable-next-line no-eval
       eval(makePhoto);
-      return makePhotoCanvas(w, h, corners).toDataURL('image/jpeg', 0.92);
+      return makePhotoCanvas(w, h, corners, docColor).toDataURL('image/jpeg', 0.92);
     },
-    { makePhoto: MAKE_PHOTO, w, h, corners: PHOTO_CORNERS },
+    { makePhoto: MAKE_PHOTO, w, h, corners: PHOTO_CORNERS, docColor },
   );
   return Buffer.from(dataUrl.split(',')[1], 'base64');
+}
+
+// Rendert Seite 1 des ersten Listeneintrags und misst den Blau-Anteil in
+// Bildzeilen-Bändern (für die A4-Einpassungs-Tests mit blauem „Dokument“)
+async function bluePageBands(page) {
+  return page.evaluate(async () => {
+    const item = window.__pdfpresser.items[0];
+    const bytes = new Uint8Array(await window.__pdfpresser.itemBytes(item));
+    const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/pdf.worker.min.mjs', location.href).href;
+    const doc = await pdfjs.getDocument({ data: bytes }).promise;
+    const p = await doc.getPage(1);
+    const vp = p.getViewport({ scale: 0.5 });
+    const c = document.createElement('canvas');
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await p.render({ canvasContext: ctx, viewport: vp }).promise;
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    const blueFrac = (y0, y1) => {
+      let blue = 0;
+      let tot = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = 0; x < c.width; x++) {
+          const i = (y * c.width + x) * 4;
+          tot++;
+          if (d[i + 2] - d[i] > 25) blue++;
+        }
+      }
+      return blue / tot;
+    };
+    const h = c.height;
+    const result = {
+      top: blueFrac(0, Math.floor(h * 0.08)),
+      mid: blueFrac(Math.floor(h * 0.45), Math.floor(h * 0.55)),
+      aspect: c.width / c.height,
+    };
+    await doc.destroy();
+    return result;
+  });
 }
 
 test('Eckenerkennung findet das Dokument im Foto', async ({ page }) => {
@@ -161,11 +203,29 @@ test('Scanner-UI: Bildimport, Ecken, Lupe, A4, Drehen, PDF & Kompression', async
   await page.click('#scRotateBtn');
   await page.click('#scRotateBtn'); // wieder Original-Ausrichtung
 
-  // A4 hoch wählen und übernehmen -> Seitenübersicht
+  // A4 hoch wählen (Strecken-Checkbox erscheint nur bei A4) und übernehmen
+  await expect(page.locator('#scStretchWrap')).toBeHidden();
   await page.click('.sc-seg-btn[data-format="a4p"]');
+  await expect(page.locator('#scStretchWrap')).toBeVisible();
   await page.click('#scCropOkBtn');
   await expect(page.locator('#scPagesView')).toBeVisible();
   await expect(page.locator('.sc-pagecell')).toHaveCount(1);
+
+  // Radierer: weißer Strich mit Undo/Redo
+  await page.locator('.sc-pagecell button[title^="Radieren"]').click();
+  await expect(page.locator('#scEraseView')).toBeVisible();
+  const ebox = await page.locator('#scEraseCanvas').boundingBox();
+  await page.mouse.move(ebox.x + ebox.width * 0.3, ebox.y + ebox.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(ebox.x + ebox.width * 0.7, ebox.y + ebox.height * 0.5, { steps: 5 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.__pdfscanner.state.pages[0].erase.length)).toBe(1);
+  await page.click('#scEraseUndoBtn');
+  expect(await page.evaluate(() => window.__pdfscanner.state.pages[0].erase.length)).toBe(0);
+  await page.click('#scEraseRedoBtn');
+  expect(await page.evaluate(() => window.__pdfscanner.state.pages[0].erase.length)).toBe(1);
+  await page.click('#scEraseOkBtn');
+  await expect(page.locator('#scPagesView')).toBeVisible();
 
   // Zweite Seite aus Bild hinzufügen, dann wieder löschen (Reorder-Buttons prüfen)
   await page.click('#scAddFileBtn');
@@ -209,6 +269,58 @@ test('Scanner-UI: Bildimport, Ecken, Lupe, A4, Drehen, PDF & Kompression', async
   });
   expect(outOk.ok).toBe(true);
   expect(outOk.size).toBeGreaterThan(500);
+});
+
+test('applyErase übermalt Bereiche weiß', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(async () => {
+    const mod = await import('./js/scanner.js');
+    const c = document.createElement('canvas');
+    c.width = 200; c.height = 100;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 200, 100);
+    mod.applyErase(c, [{ size: 0.1, points: [{ x: 0.1, y: 0.5 }, { x: 0.9, y: 0.5 }] }]);
+    return {
+      mid: [...ctx.getImageData(100, 50, 1, 1).data],
+      corner: [...ctx.getImageData(3, 3, 1, 1).data],
+    };
+  });
+  expect(res.mid[0]).toBeGreaterThan(250);
+  expect(res.corner[0]).toBeLessThan(10);
+});
+
+test('A4-Layout passt unverzerrt ein – Strecken nur optional', async ({ page }) => {
+  await ready(page);
+  // „Dokument“ in Blau, damit weiße A4-Ränder messbar sind (Quermaß ~1,5:1)
+  const jpeg = await photoJpegBuffer(page, 1200, 900, '#9cc4ee');
+
+  // Standard: A4 hoch ohne Strecken -> oben/unten weiße Ränder, Mitte blau
+  await page.click('#scanBtn');
+  await page.setInputFiles('#scFileInput', { name: 'blau.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+  await expect(page.locator('#scCropView')).toBeVisible();
+  await page.click('.sc-seg-btn[data-format="a4p"]');
+  await page.click('#scCropOkBtn');
+  await page.click('#scDoneBtn');
+  await expect(page.locator('#scannerRoot')).toHaveCount(0);
+  const fit = await bluePageBands(page);
+  expect(Math.abs(fit.aspect - 210 / 297)).toBeLessThan(0.02); // A4-Seite
+  expect(fit.top).toBeLessThan(0.02);   // Rand bleibt weiß -> nicht verzerrt
+  expect(fit.mid).toBeGreaterThan(0.5); // Scan liegt mittig
+
+  // Mit „auf A4 strecken“: Scan füllt das Blatt (oben blau)
+  await page.click('#clearBtn');
+  await page.click('#scanBtn');
+  await page.setInputFiles('#scFileInput', { name: 'blau2.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+  await expect(page.locator('#scCropView')).toBeVisible();
+  await page.click('.sc-seg-btn[data-format="a4p"]');
+  await page.check('#scStretch');
+  await page.click('#scCropOkBtn');
+  await page.click('#scDoneBtn');
+  await expect(page.locator('#scannerRoot')).toHaveCount(0);
+  const stretched = await bluePageBands(page);
+  expect(stretched.top).toBeGreaterThan(0.5);
+  expect(stretched.mid).toBeGreaterThan(0.5);
 });
 
 test('Scanner-UI: Aufnahme mit (Fake-)Kamera', async ({ page }) => {

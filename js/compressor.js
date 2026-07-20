@@ -470,35 +470,36 @@ async function rasterCompress(srcBytes, opts, onProgress) {
   newDoc.setProducer('PDF Presser (lokal im Browser)');
   const font = opts.ocr ? await newDoc.embedFont(PDFLib.StandardFonts.Helvetica) : null;
 
-  const dpi = Math.min(Math.max(opts.dpi || 150, 50), 600);
-
   for (let idx = 0; idx < pageNumbers.length; idx++) {
     const p = pageNumbers[idx];
+    // Seiten-individuelle Einstellungen (aus der Vorschau) überlagern die globalen
+    const pOpts = opts.pageOverrides?.[p] ? { ...opts, ...opts.pageOverrides[p] } : opts;
+    const dpi = Math.min(Math.max(pOpts.dpi || 150, 50), 600);
     onProgress?.({ phase: 'render', page: idx + 1, pages: pageNumbers.length });
     const page = await srcDoc.getPage(p);
-    const maxPixels = opts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
+    const maxPixels = pOpts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
     const { canvas, ctx, wPx, hPx, wPt, hPt, effDpi } = await renderPage(page, dpi, maxPixels);
     const outPage = newDoc.addPage([wPt, hPt]);
 
-    if (opts.colorMode === 'bw') {
-      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), opts.bias || 0);
-      const ref = embedBwImage(newDoc, PDFLib, bitmap, wPx, hPx, opts.bwFilter || 'auto');
+    if (pOpts.colorMode === 'bw') {
+      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), pOpts.bias || 0);
+      const ref = embedBwImage(newDoc, PDFLib, bitmap, wPx, hPx, pOpts.bwFilter || 'auto');
       drawImageRef(outPage, PDFLib, ref, wPt, hPt);
-    } else if (opts.colorMode === 'indexed') {
+    } else if (pOpts.colorMode === 'indexed') {
       const { indices, palette } = quantizeIndexed(
         ctx.getImageData(0, 0, wPx, hPx),
-        Math.min(16, Math.max(4, opts.colors || 16)),
-        opts.bias || 0,
+        Math.min(16, Math.max(4, pOpts.colors || 16)),
+        pOpts.bias || 0,
       );
       const ref = embedIndexedImage(newDoc, PDFLib, indices, palette, wPx, hPx);
       drawImageRef(outPage, PDFLib, ref, wPt, hPt);
     } else {
-      if (opts.colorMode === 'gray') {
+      if (pOpts.colorMode === 'gray') {
         const imageData = ctx.getImageData(0, 0, wPx, hPx);
         applyGrayInPlace(imageData);
         ctx.putImageData(imageData, 0, 0);
       }
-      const jpeg = await canvasToJpeg(canvas, opts.quality ?? 0.6);
+      const jpeg = await canvasToJpeg(canvas, pOpts.quality ?? 0.6);
       const img = await newDoc.embedJpg(jpeg);
       outPage.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
     }
@@ -535,7 +536,8 @@ async function losslessCompress(srcBytes, onProgress) {
 }
 
 // opts: { mode: 'lossless'|'raster', colorMode: 'color'|'gray'|'bw'|'indexed',
-//         dpi, quality, colors, bias, bwFilter: 'auto'|'g4'|'flate', ocr, ocrLang }
+//         dpi, quality, colors, bias, bwFilter: 'auto'|'g4'|'flate', ocr, ocrLang,
+//         pageOverrides: { [seitennummer]: Teil-Opts, überlagern die globalen } }
 export async function compressPdf(arrayBuffer, opts, onProgress) {
   const srcBytes = new Uint8Array(arrayBuffer);
   if (opts.mode === 'lossless') {

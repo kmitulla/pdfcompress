@@ -139,7 +139,7 @@ function addFiles(fileList) {
       </div>`;
     li.querySelector('.file-name').textContent = file.name;
     fileListEl.appendChild(li);
-    const item = { file, el: li, result: null, outName: file.name.replace(/\.pdf$/i, '') + '_komprimiert.pdf' };
+    const item = { file, el: li, result: null, pageOverrides: {}, outName: file.name.replace(/\.pdf$/i, '') + '_komprimiert.pdf' };
     li.querySelector('.btn-remove').addEventListener('click', () => {
       if (running) return;
       items.splice(items.indexOf(item), 1);
@@ -265,6 +265,10 @@ async function processItem(item, opts) {
   const buf = await itemBytes(item);
   const originalSize = buf.byteLength;
 
+  // Seiten-individuelle Einstellungen aus der Vorschau anwenden
+  const pageOv = opts.mode !== 'lossless' ? buildPageOverrides(item) : null;
+  if (pageOv) opts = { ...opts, pageOverrides: pageOv };
+
   const result = await compressPdf(buf, opts, (p) => {
     if (p.phase === 'render') {
       setStatus(item, `Seite ${p.page}/${p.pages} wird verarbeitet …`);
@@ -362,9 +366,54 @@ clearBtn.addEventListener('click', () => {
 let previewTimer = null;
 let previewBusy = false;
 let previewPending = false;
+let previewPageNum = 1;
+let previewNumPages = 1;
 
 function closePreview() {
   previewCard.classList.add('hidden');
+}
+
+// Seiten-individuelle Einstellungen: {seitennummer: {preset, bias}} pro Datei.
+// Die Vorschau bearbeitet immer die erste Datei der Liste.
+function pageOverrideOpts(item, pageNum) {
+  const ov = item?.pageOverrides?.[pageNum];
+  if (!ov || !PRESETS[ov.preset]) return null;
+  const o = { ...PRESETS[ov.preset] };
+  delete o.mode;
+  if (o.colorMode === 'bw' || o.colorMode === 'indexed') o.bias = ov.bias || 0;
+  return o;
+}
+
+function buildPageOverrides(item) {
+  const map = {};
+  for (const n of Object.keys(item.pageOverrides || {})) {
+    const o = pageOverrideOpts(item, n);
+    if (o) map[n] = o;
+  }
+  return Object.keys(map).length ? map : null;
+}
+
+function syncOverrideUi() {
+  const item = items[0];
+  const ov = item?.pageOverrides?.[previewPageNum];
+  $('#pageOverrideSel').value = ov?.preset || '';
+  const isBiased = ov && ['extrem-sw', 'extrem-farbe'].includes(ov.preset);
+  $('#pageBiasWrap').classList.toggle('hidden', !isBiased);
+  $('#pageBias').value = ov?.bias || 0;
+  $('#pageBiasOut').value = ov?.bias || 0;
+  const count = Object.keys(item?.pageOverrides || {}).length;
+  let summary = count > 0 ? `${count} Seite${count === 1 ? '' : 'n'} mit eigenen Einstellungen` : '';
+  if (count > 0 && currentPreset() === 'verlustfrei') {
+    summary += ' – wird bei „Verlustfrei“ nicht angewendet';
+  }
+  $('#overrideSummary').textContent = summary;
+}
+
+function syncPreviewNav() {
+  previewPageNum = Math.min(Math.max(1, previewPageNum), previewNumPages);
+  $('#previewPageInfo').textContent = `${previewPageNum}/${previewNumPages}`;
+  $('#prevPageBtn').disabled = previewPageNum <= 1;
+  $('#nextPageBtn').disabled = previewPageNum >= previewNumPages;
 }
 
 async function refreshPreview() {
@@ -375,20 +424,24 @@ async function refreshPreview() {
   }
   previewBusy = true;
   try {
-    const opts = currentOptions();
-    if (opts.mode === 'lossless') {
+    let opts = currentOptions();
+    const lossless = opts.mode === 'lossless';
+    if (lossless) {
+      opts = { ...opts, mode: 'raster', colorMode: 'color', dpi: 120, quality: 0.9 };
+    }
+    const override = pageOverrideOpts(items[0], previewPageNum);
+    if (override && !lossless) opts = { ...opts, ...override };
+    previewInfo.textContent = 'Wird berechnet …';
+    const { dataUrl, pageBytes, numPages } = await previewPage(await itemBytes(items[0]), opts, previewPageNum);
+    previewNumPages = numPages;
+    syncPreviewNav();
+    syncOverrideUi();
+    previewImg.src = dataUrl;
+    if (lossless) {
       previewInfo.textContent = 'Verlustfrei ändert das Aussehen nicht – Vorschau zeigt das Original.';
-      opts.mode = 'raster';
-      opts.colorMode = 'color';
-      opts.dpi = 120;
-      opts.quality = 0.9;
-      const { dataUrl } = await previewPage(await itemBytes(items[0]), opts);
-      previewImg.src = dataUrl;
     } else {
-      previewInfo.textContent = 'Wird berechnet …';
-      const { dataUrl, pageBytes, numPages } = await previewPage(await itemBytes(items[0]), opts);
-      previewImg.src = dataUrl;
-      previewInfo.textContent = `${items[0].file.name} · Seite 1/${numPages} · ≈ ${fmtSize(pageBytes)} pro Seite (${presetLabel()})`;
+      const label = override ? 'eigene Seiten-Einstellung' : presetLabel();
+      previewInfo.textContent = `${items[0].file.name} · Seite ${previewPageNum}/${numPages} · ≈ ${fmtSize(pageBytes)} für diese Seite (${label})`;
     }
   } catch (e) {
     previewInfo.textContent = `Vorschau-Fehler: ${e?.message || e}`;
@@ -414,6 +467,34 @@ previewBtn.addEventListener('click', () => {
   previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 $('#closePreviewBtn').addEventListener('click', closePreview);
+$('#prevPageBtn').addEventListener('click', () => {
+  if (previewPageNum > 1) { previewPageNum--; syncPreviewNav(); syncOverrideUi(); refreshPreview(); }
+});
+$('#nextPageBtn').addEventListener('click', () => {
+  if (previewPageNum < previewNumPages) { previewPageNum++; syncPreviewNav(); syncOverrideUi(); refreshPreview(); }
+});
+$('#pageOverrideSel').addEventListener('change', () => {
+  const item = items[0];
+  if (!item) return;
+  item.pageOverrides = item.pageOverrides || {};
+  const preset = $('#pageOverrideSel').value;
+  if (preset) {
+    const prev = item.pageOverrides[previewPageNum];
+    item.pageOverrides[previewPageNum] = { preset, bias: prev?.bias || 0 };
+  } else {
+    delete item.pageOverrides[previewPageNum];
+  }
+  syncOverrideUi();
+  refreshPreview();
+});
+$('#pageBias').addEventListener('input', () => {
+  const item = items[0];
+  const ov = item?.pageOverrides?.[previewPageNum];
+  if (!ov) return;
+  ov.bias = parseInt($('#pageBias').value, 10) || 0;
+  $('#pageBiasOut').value = ov.bias;
+  schedulePreviewRefresh();
+});
 
 // ---------------------------------------------------------------- Simulation
 

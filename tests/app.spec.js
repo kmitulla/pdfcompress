@@ -496,7 +496,7 @@ test('UI: Datei laden, komprimieren, herunterladen', async ({ page }) => {
 
   // ── Vorschau mit aktuellen Einstellungen ──
   await page.locator('#previewBtn').click();
-  await expect(page.locator('#previewInfo')).toContainText('pro Seite', { timeout: 60000 });
+  await expect(page.locator('#previewInfo')).toContainText('für diese Seite', { timeout: 60000 });
   const imgSrc = await page.locator('#previewImg').getAttribute('src');
   expect(imgSrc.startsWith('data:image/png')).toBe(true);
 

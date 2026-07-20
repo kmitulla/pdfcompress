@@ -326,21 +326,50 @@ export function warpPerspective(srcCanvas, corners, outW, outH) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/** Zielgröße des entzerrten Scans in Pixeln (auto = Seitenverhältnis des Vierecks) */
-export function outputSize(srcW, srcH, corners, format) {
+/**
+ * Zielgröße des entzerrten Scans in Pixeln – immer im echten Seitenverhältnis
+ * des Vierecks. Das A4-Format bestimmt nur die PDF-Seite; der Scan selbst wird
+ * nie verzerrt (außer man aktiviert ausdrücklich „auf A4 strecken“).
+ */
+export function outputSize(srcW, srcH, corners) {
   const px = corners.map((p) => ({ x: p.x * srcW, y: p.y * srcH }));
   const quadW = Math.max(dist(px[0], px[1]), dist(px[3], px[2]));
   const quadH = Math.max(dist(px[0], px[3]), dist(px[1], px[2]));
-  if (format === 'a4p' || format === 'a4l') {
-    const longSide = Math.round(clamp(Math.max(quadW, quadH) * 1.05, 1200, OUTPUT_MAX));
-    const shortSide = Math.round(longSide * 210 / 297);
-    return format === 'a4p' ? { w: shortSide, h: longSide } : { w: longSide, h: shortSide };
-  }
   const scale = Math.min(1.2, OUTPUT_MAX / Math.max(quadW, quadH));
   return {
     w: Math.max(8, Math.round(quadW * scale)),
     h: Math.max(8, Math.round(quadH * scale)),
   };
+}
+
+/** Weiße Radier-Striche (normierte Koordinaten) auf ein Canvas anwenden */
+export function applyErase(canvas, strokes) {
+  if (!strokes?.length) return canvas;
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const s of strokes) {
+    const width = Math.max(1, s.size * canvas.width);
+    if (s.points.length === 1) {
+      ctx.beginPath();
+      ctx.arc(s.points[0].x * canvas.width, s.points[0].y * canvas.height, width / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      s.points.forEach((p, i) => {
+        const x = p.x * canvas.width;
+        const y = p.y * canvas.height;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  return canvas;
 }
 
 function rotateCanvas90(canvas) {
@@ -364,6 +393,8 @@ const state = {
   editing: null,    // {src, corners, format, pageIndex} – aktueller Zuschnitt
   cropReturn: 'capture',
   lastFormat: 'auto',
+  lastStretch: false,
+  erasing: null,    // {pageIndex, backup, undo, redo, base, drawing}
   stream: null,
   torchOn: false,
   liveTimer: null,
@@ -410,6 +441,9 @@ const TEMPLATE = `
         <button class="sc-seg-btn" data-format="a4p">A4 hoch</button>
         <button class="sc-seg-btn" data-format="a4l">A4 quer</button>
       </span>
+      <label class="sc-check hidden" id="scStretchWrap" title="Scan auf das ganze A4-Blatt dehnen – verzerrt das Seitenverhältnis. Ohne Häkchen wird der Scan unverzerrt auf A4 eingepasst.">
+        <input type="checkbox" id="scStretch"> auf A4 strecken
+      </label>
       <span class="sc-sep"></span>
       <button class="btn btn-small" id="scRotateBtn">↻ Drehen 90°</button>
     </div>
@@ -422,6 +456,25 @@ const TEMPLATE = `
     <div class="sc-bottombar">
       <button class="btn" id="scCropCancelBtn">Verwerfen</button>
       <button class="btn btn-primary" id="scCropOkBtn">Übernehmen ✓</button>
+    </div>
+  </div>
+
+  <!-- Radierer (weiß übermalen) -->
+  <div class="sc-view hidden" id="scEraseView">
+    <div class="sc-toolbar">
+      <label class="sc-brush-label">🧽 Pinselgröße
+        <input type="range" id="scBrushSize" min="6" max="90" step="1" value="26">
+        <span class="sc-brush-dot" id="scBrushDot"></span>
+      </label>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small" id="scEraseUndoBtn" title="Rückgängig">↶</button>
+      <button class="btn btn-small" id="scEraseRedoBtn" title="Wiederholen">↷</button>
+    </div>
+    <div class="sc-erase-stage" id="scEraseStage"><canvas id="scEraseCanvas"></canvas></div>
+    <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen, um sie zu entfernen.</p>
+    <div class="sc-bottombar">
+      <button class="btn" id="scEraseCancelBtn">Verwerfen</button>
+      <button class="btn btn-primary" id="scEraseOkBtn">Fertig ✓</button>
     </div>
   </div>
 
@@ -442,6 +495,7 @@ const TEMPLATE = `
 function view(name) {
   $('#scCaptureView', state.root).classList.toggle('hidden', name !== 'capture');
   $('#scCropView', state.root).classList.toggle('hidden', name !== 'crop');
+  $('#scEraseView', state.root).classList.toggle('hidden', name !== 'erase');
   $('#scPagesView', state.root).classList.toggle('hidden', name !== 'pages');
   if (name === 'capture') startCamera();
   else stopCamera();
@@ -644,6 +698,7 @@ function openCrop(srcCanvas, pageIndex, returnTo) {
     corners: existing ? existing.corners.map((p) => ({ ...p }))
       : (detectCornersOnCanvas(srcCanvas) || defaultCorners()),
     format: existing ? existing.format : state.lastFormat,
+    stretch: existing ? !!existing.stretch : state.lastStretch,
     pageIndex,
   };
   state.activeHandle = null;
@@ -682,6 +737,8 @@ function renderCrop() {
     b.classList.toggle('active', b.dataset.format === ed.format);
     b.setAttribute('aria-pressed', String(b.dataset.format === ed.format));
   });
+  $('#scStretchWrap', state.root).classList.toggle('hidden', ed.format === 'auto');
+  $('#scStretch', state.root).checked = !!ed.stretch;
 }
 
 function drawCropOverlay() {
@@ -847,8 +904,15 @@ function rotateEditing() {
 function applyCrop() {
   const ed = state.editing;
   if (!ed) return;
-  const page = { src: ed.src, corners: orderCorners(ed.corners.map((p) => ({ ...p }))), format: ed.format };
+  const page = {
+    src: ed.src,
+    corners: orderCorners(ed.corners.map((p) => ({ ...p }))),
+    format: ed.format,
+    stretch: !!ed.stretch,
+    erase: ed.pageIndex != null ? (state.pages[ed.pageIndex].erase || []) : [],
+  };
   state.lastFormat = ed.format;
+  state.lastStretch = !!ed.stretch;
   if (ed.pageIndex != null) state.pages[ed.pageIndex] = page;
   else state.pages.push(page);
   state.editing = null;
@@ -869,7 +933,145 @@ function nextFromQueueOrPages(backToCapture = false) {
   else view('pages');
 }
 
+// ------------------------------------------------ Radierer (weiß übermalen)
+
+function openErase(pageIndex) {
+  const page = state.pages[pageIndex];
+  page.erase = page.erase || [];
+  state.erasing = {
+    pageIndex,
+    backup: JSON.stringify(page.erase),
+    undo: [],
+    redo: [],
+    base: null,
+    drawing: null,
+  };
+  view('erase');
+  renderErase();
+  updateEraseButtons();
+}
+
+function renderErase() {
+  const er = state.erasing;
+  if (!er) return;
+  const page = state.pages[er.pageIndex];
+  const stage = $('#scEraseStage', state.root);
+  const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
+  const fit = Math.min((stage.clientWidth - 16) / w, (stage.clientHeight - 16) / h, 1);
+  const dw = Math.max(1, Math.round(w * fit));
+  const dh = Math.max(1, Math.round(h * fit));
+  if (!er.base || er.base.width !== dw || er.base.height !== dh) {
+    er.base = warpPerspective(page.src, page.corners, dw, dh);
+  }
+  const canvas = $('#scEraseCanvas', state.root);
+  canvas.width = dw;
+  canvas.height = dh;
+  canvas.getContext('2d').drawImage(er.base, 0, 0);
+  applyErase(canvas, page.erase);
+}
+
+function updateEraseButtons() {
+  const er = state.erasing;
+  $('#scEraseUndoBtn', state.root).disabled = !er || er.undo.length === 0;
+  $('#scEraseRedoBtn', state.root).disabled = !er || er.redo.length === 0;
+}
+
+function erasePoint(e) {
+  const canvas = $('#scEraseCanvas', state.root);
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: clamp((e.clientX - r.left) / r.width, 0, 1),
+    y: clamp((e.clientY - r.top) / r.height, 0, 1),
+  };
+}
+
+function onErasePointerDown(e) {
+  const er = state.erasing;
+  if (!er) return;
+  e.preventDefault();
+  const canvas = $('#scEraseCanvas', state.root);
+  canvas.setPointerCapture?.(e.pointerId);
+  const page = state.pages[er.pageIndex];
+  er.undo.push(JSON.stringify(page.erase));
+  if (er.undo.length > 60) er.undo.shift();
+  er.redo = [];
+  const size = parseInt($('#scBrushSize', state.root).value, 10) / canvas.width;
+  er.drawing = { size, points: [erasePoint(e)] };
+  page.erase.push(er.drawing);
+  renderErase();
+  updateEraseButtons();
+}
+
+function onErasePointerMove(e) {
+  const er = state.erasing;
+  if (!er?.drawing) return;
+  e.preventDefault();
+  er.drawing.points.push(erasePoint(e));
+  renderErase();
+}
+
+function onErasePointerUp() {
+  if (state.erasing) state.erasing.drawing = null;
+}
+
+function eraseUndo() {
+  const er = state.erasing;
+  if (!er || er.undo.length === 0) return;
+  const page = state.pages[er.pageIndex];
+  er.redo.push(JSON.stringify(page.erase));
+  page.erase = JSON.parse(er.undo.pop());
+  renderErase();
+  updateEraseButtons();
+}
+
+function eraseRedo() {
+  const er = state.erasing;
+  if (!er || er.redo.length === 0) return;
+  const page = state.pages[er.pageIndex];
+  er.undo.push(JSON.stringify(page.erase));
+  page.erase = JSON.parse(er.redo.pop());
+  renderErase();
+  updateEraseButtons();
+}
+
+function closeErase(discard) {
+  const er = state.erasing;
+  if (!er) return;
+  if (discard) state.pages[er.pageIndex].erase = JSON.parse(er.backup);
+  state.erasing = null;
+  view('pages');
+}
+
 // ------------------------------------------------ Seitenübersicht & PDF
+
+// Miniatur der fertigen PDF-Seite (inkl. A4-Einpassung/Streckung & Radierungen)
+function composeThumb(page, thumbH = 190) {
+  const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
+  const isA4 = page.format === 'a4p' || page.format === 'a4l';
+  if (!isA4) {
+    const tw = Math.max(24, Math.round(thumbH * (w / h)));
+    const thumb = warpPerspective(page.src, page.corners, tw, thumbH);
+    return applyErase(thumb, page.erase);
+  }
+  const [aw, ah] = page.format === 'a4p' ? [210, 297] : [297, 210];
+  const tw = Math.max(24, Math.round(thumbH * (aw / ah)));
+  const c = document.createElement('canvas');
+  c.width = tw;
+  c.height = thumbH;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, tw, thumbH);
+  let iw = tw;
+  let ih = thumbH;
+  if (!page.stretch) {
+    const s = Math.min(tw / w, thumbH / h);
+    iw = Math.max(8, Math.round(w * s));
+    ih = Math.max(8, Math.round(h * s));
+  }
+  const warped = applyErase(warpPerspective(page.src, page.corners, iw, ih), page.erase);
+  ctx.drawImage(warped, Math.round((tw - iw) / 2), Math.round((thumbH - ih) / 2));
+  return c;
+}
 
 function renderPages() {
   const grid = $('#scPageGrid', state.root);
@@ -877,14 +1079,12 @@ function renderPages() {
   state.pages.forEach((page, idx) => {
     const cell = document.createElement('div');
     cell.className = 'sc-pagecell';
-    const { w, h } = outputSize(page.src.width, page.src.height, page.corners, page.format);
-    const thumbH = 190;
-    const thumbW = Math.max(24, Math.round(thumbH * (w / h)));
-    const thumb = warpPerspective(page.src, page.corners, thumbW, thumbH);
+    const thumb = composeThumb(page);
     thumb.className = 'sc-thumb';
     const label = document.createElement('div');
     label.className = 'sc-pagelabel';
-    const fmt = page.format === 'a4p' ? 'A4 hoch' : page.format === 'a4l' ? 'A4 quer' : 'Auto';
+    let fmt = page.format === 'a4p' ? 'A4 hoch' : page.format === 'a4l' ? 'A4 quer' : 'Auto';
+    if (page.format !== 'auto' && page.stretch) fmt += ' · gestreckt';
     label.textContent = `Seite ${idx + 1} · ${fmt}`;
     const bar = document.createElement('div');
     bar.className = 'sc-pagecell-bar';
@@ -899,6 +1099,7 @@ function renderPages() {
     };
     bar.append(
       mk('✂️', 'Zuschnitt/Format bearbeiten', () => openCrop(null, idx, 'pages')),
+      mk('🧽', 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
       mk('←', 'Nach vorne schieben', () => {
         [state.pages[idx - 1], state.pages[idx]] = [state.pages[idx], state.pages[idx - 1]];
         renderPages();
@@ -934,17 +1135,31 @@ async function buildPdf() {
       btn.textContent = `Erstelle PDF … Seite ${i + 1}/${state.pages.length}`;
       await new Promise((r) => setTimeout(r, 0)); // UI atmen lassen
       const page = state.pages[i];
-      const { w, h } = outputSize(page.src.width, page.src.height, page.corners, page.format);
-      const warped = warpPerspective(page.src, page.corners, w, h);
+      const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
+      const warped = applyErase(warpPerspective(page.src, page.corners, w, h), page.erase);
       const blob = await new Promise((r) => warped.toBlob(r, 'image/jpeg', 0.9));
       const img = await doc.embedJpg(new Uint8Array(await blob.arrayBuffer()));
-      let pw;
-      let ph;
-      if (page.format === 'a4p') [pw, ph] = A4_PT;
-      else if (page.format === 'a4l') [pw, ph] = [A4_PT[1], A4_PT[0]];
-      else if (w <= h) { ph = A4_PT[1]; pw = ph * (w / h); }
-      else { pw = A4_PT[1]; ph = pw * (h / w); }
-      doc.addPage([pw, ph]).drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+      if (page.format === 'a4p' || page.format === 'a4l') {
+        const [pw, ph] = page.format === 'a4p' ? A4_PT : [A4_PT[1], A4_PT[0]];
+        const pdfPage = doc.addPage([pw, ph]);
+        // Weißer Seitenhintergrund, damit die Ränder auch nach der
+        // Bild-Kompression sicher weiß bleiben
+        pdfPage.drawRectangle({ x: 0, y: 0, width: pw, height: ph, color: window.PDFLib.rgb(1, 1, 1) });
+        if (page.stretch) {
+          pdfPage.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+        } else {
+          const s = Math.min(pw / w, ph / h);
+          const iw = w * s;
+          const ih = h * s;
+          pdfPage.drawImage(img, { x: (pw - iw) / 2, y: (ph - ih) / 2, width: iw, height: ih });
+        }
+      } else {
+        let pw;
+        let ph;
+        if (w <= h) { ph = A4_PT[1]; pw = ph * (w / h); }
+        else { pw = A4_PT[1]; ph = pw * (h / w); }
+        doc.addPage([pw, ph]).drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+      }
     }
     const bytes = await doc.save({ useObjectStreams: true });
     const stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
@@ -972,6 +1187,7 @@ function closeScanner() {
   state.pages = [];
   state.queue = [];
   state.editing = null;
+  state.erasing = null;
   state.onDone = null;
   state.building = false;
 }
@@ -982,6 +1198,7 @@ function onGlobalKeydown(e) {
 
 function onResize() {
   if (state.root && state.editing) renderCrop();
+  if (state.root && state.erasing) renderErase();
 }
 
 /**
@@ -1031,6 +1248,11 @@ export function openScanner(onDone) {
     state.lastFormat = b.dataset.format;
     renderCrop();
   }));
+  $('#scStretch', root).addEventListener('change', (e) => {
+    if (!state.editing) return;
+    state.editing.stretch = e.target.checked;
+    state.lastStretch = e.target.checked;
+  });
   $('#scRotateBtn', root).addEventListener('click', rotateEditing);
   $('#scCropOkBtn', root).addEventListener('click', applyCrop);
   $('#scCropCancelBtn', root).addEventListener('click', cancelCrop);
@@ -1042,6 +1264,25 @@ export function openScanner(onDone) {
   svg.addEventListener('pointerup', onCropPointerUp);
   svg.addEventListener('pointercancel', onCropPointerUp);
   svg.addEventListener('keydown', onCropKeydown);
+
+  const eraseCanvas = $('#scEraseCanvas', root);
+  eraseCanvas.addEventListener('pointerdown', onErasePointerDown);
+  eraseCanvas.addEventListener('pointermove', onErasePointerMove);
+  eraseCanvas.addEventListener('pointerup', onErasePointerUp);
+  eraseCanvas.addEventListener('pointercancel', onErasePointerUp);
+  $('#scEraseUndoBtn', root).addEventListener('click', eraseUndo);
+  $('#scEraseRedoBtn', root).addEventListener('click', eraseRedo);
+  $('#scEraseCancelBtn', root).addEventListener('click', () => closeErase(true));
+  $('#scEraseOkBtn', root).addEventListener('click', () => closeErase(false));
+  const brushSize = $('#scBrushSize', root);
+  const brushDot = $('#scBrushDot', root);
+  const syncBrushDot = () => {
+    const d = Math.min(46, parseInt(brushSize.value, 10));
+    brushDot.style.width = `${d}px`;
+    brushDot.style.height = `${d}px`;
+  };
+  brushSize.addEventListener('input', syncBrushDot);
+  syncBrushDot();
 
   document.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('resize', onResize);
@@ -1055,6 +1296,7 @@ window.__pdfscanner = {
   warpPerspective,
   orderCorners,
   outputSize,
+  applyErase,
   openScanner,
   state,
 };
