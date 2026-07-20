@@ -32,6 +32,17 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
   aus Beispielseiten).
 - **Erneut komprimieren:** Stufe wechseln und dieselben Dateien ohne neue
   Auswahl nochmal durchlaufen lassen. Vorher-/Nachher-Größe wird angezeigt.
+- **Dokumenten-Scanner:** Vorlagen mit der **Kamera** (inkl. optionalem
+  Blitz/Taschenlampe, wo der Browser es unterstützt) oder aus **Bilddateien**
+  scannen. Die Dokumentränder werden **automatisch erkannt** (live schon im
+  Kamerabild) und lassen sich **manuell nachjustieren** – eine **Lupe** neben
+  dem Finger zeigt die Ecke stark vergrößert, damit man sie exakt trifft;
+  Kanten lassen sich als Ganzes verschieben, Pfeiltasten justieren fein nach.
+  Perspektivkorrektur, wahlweise **A4-Layout** (hoch/quer) oder automatisches
+  Seitenverhältnis, **Drehen in 90°-Schritten**, mehrere Seiten mit
+  Umsortieren/Neuzuschnitt. Das Ergebnis landet als PDF in der Dateiliste –
+  dort wie gewohnt **Kompressionsstufe & „Scan-Stil“** wählen (z. B.
+  „Extrem S/W – Scanner-Stil“).
 - **PDF-Editor:** Unterschreiben (zeichnen mit Vektor-Glättung oder Foto mit
   einstellbarer Freistellung: Schwellwert, Helligkeit, Kontrast, Farbe),
   Signatur-Bibliothek (mehrere speichern & wiederverwenden), Text einfügen,

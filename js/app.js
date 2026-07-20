@@ -227,6 +227,30 @@ dropzone.addEventListener('drop', (e) => {
   if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
 });
 
+// ---------------------------------------------------------------- Scanner
+
+const scanBtn = $('#scanBtn');
+const scanHint = $('#scanHint');
+
+async function launchScanner() {
+  // Modul erst bei Bedarf laden (steckt trotzdem im Offline-Precache)
+  const { openScanner } = await import('./scanner.js');
+  openScanner((pdfFile) => {
+    addFiles([pdfFile]);
+    scanHint.classList.remove('hidden');
+    scanHint.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const settings = document.querySelector('.settings');
+    settings.classList.remove('flash-accent');
+    void settings.offsetWidth; // Animation neu starten
+    settings.classList.add('flash-accent');
+  });
+}
+
+scanBtn.addEventListener('click', launchScanner);
+scanBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); launchScanner(); }
+});
+
 // ---------------------------------------------------------------- Komprimieren
 
 async function itemBytes(item) {
@@ -276,6 +300,7 @@ async function processItem(item, opts) {
 
 startBtn.addEventListener('click', async () => {
   if (running || items.length === 0) return;
+  scanHint.classList.add('hidden');
   running = true;
   startBtn.disabled = true;
   const opts = currentOptions();

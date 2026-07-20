@@ -13,6 +13,11 @@ export default defineConfig({
     launchOptions: {
       // Vorinstalliertes Chromium der Umgebung verwenden
       executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium',
+      args: [
+        // Fake-Kamera für die Scanner-Tests (liefert ein Testbild-Video)
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+      ],
     },
   },
   webServer: {
