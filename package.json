@@ -4,6 +4,7 @@
   "description": "Lokaler PDF-Kompressor als offline-fähige Web-App",
   "scripts": {
     "serve": "node scripts/serve.mjs",
+    "start": "node server/index.mjs",
     "test": "playwright test"
   },
   "repository": {

@@ -35,6 +35,10 @@ let importDirHandle = null;
 const canShareFiles = typeof navigator.share === 'function' && typeof navigator.canShare === 'function';
 const hasFsAccess = typeof window.showDirectoryPicker === 'function';
 
+// Backend-Funktionen (nur aktiv, wenn die App über den mitgelieferten Server
+// läuft – z. B. im Docker-Container auf dem Mini-PC. Auf GitHub Pages: aus.)
+const backend = { scanner: false, consume: false };
+
 // ---------------------------------------------------------------- Einstellungen
 
 function currentPreset() {
@@ -133,6 +137,7 @@ function addFiles(fileList) {
         <button class="btn btn-small btn-edit">✒️ Bearbeiten</button>
         <button class="btn btn-small btn-download hidden">Herunterladen</button>
         <button class="btn btn-small btn-save-dir hidden">In Zielordner speichern</button>
+        <button class="btn btn-small btn-paperless hidden">📥 An Paperless (NAS)</button>
         <button class="btn btn-small btn-share hidden">Teilen</button>
         <button class="btn btn-small btn-simulate">Simulation</button>
         <button class="btn btn-small btn-ghost btn-remove">Entfernen</button>
@@ -159,6 +164,7 @@ function addFiles(fileList) {
     });
     li.querySelector('.btn-download').addEventListener('click', () => downloadItem(item));
     li.querySelector('.btn-save-dir').addEventListener('click', () => saveItemToDir(item));
+    li.querySelector('.btn-paperless').addEventListener('click', () => saveItemToPaperless(item));
     li.querySelector('.btn-share').addEventListener('click', () => shareItem(item));
     li.querySelector('.btn-simulate').addEventListener('click', () => runSimulation(item));
     items.push(item);
@@ -179,6 +185,7 @@ function refreshItemButtons(item) {
   const has = !!item.result;
   item.el.querySelector('.btn-download').classList.toggle('hidden', !has);
   item.el.querySelector('.btn-save-dir').classList.toggle('hidden', !has || !outputDirHandle);
+  item.el.querySelector('.btn-paperless').classList.toggle('hidden', !has || !backend.consume);
   item.el.querySelector('.btn-share').classList.toggle('hidden', !has || !canShareFiles);
 }
 
@@ -231,24 +238,70 @@ dropzone.addEventListener('drop', (e) => {
 
 const scanBtn = $('#scanBtn');
 const scanHint = $('#scanHint');
+const netScanBtn = $('#netScanBtn');
+
+// Rückmeldung, wenn der Scanner ein fertiges PDF liefert.
+function onScanDone(pdfFile) {
+  addFiles([pdfFile]);
+  scanHint.classList.remove('hidden');
+  scanHint.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const settings = document.querySelector('.settings');
+  settings.classList.remove('flash-accent');
+  void settings.offsetWidth; // Animation neu starten
+  settings.classList.add('flash-accent');
+}
 
 async function launchScanner() {
   // Modul erst bei Bedarf laden (steckt trotzdem im Offline-Precache)
   const { openScanner } = await import('./scanner.js');
-  openScanner((pdfFile) => {
-    addFiles([pdfFile]);
-    scanHint.classList.remove('hidden');
-    scanHint.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    const settings = document.querySelector('.settings');
-    settings.classList.remove('flash-accent');
-    void settings.offsetWidth; // Animation neu starten
-    settings.classList.add('flash-accent');
-  });
+  openScanner(onScanDone);
 }
 
 scanBtn.addEventListener('click', launchScanner);
 scanBtn.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); launchScanner(); }
+});
+
+// ------------------------------------------------ Netzwerk-Scanner (Epson via Backend)
+
+let netScanBusy = false;
+
+async function launchNetworkScan() {
+  if (netScanBusy) return;
+  netScanBusy = true;
+  const sub = $('#netScanSub');
+  const prevText = sub.textContent;
+  netScanBtn.classList.add('scanning');
+  sub.textContent = 'Scanne … bitte Vorlage auf die Glasfläche legen und einen Moment warten.';
+  try {
+    const res = await fetch('/api/scanner/scan?color=color&dpi=300', { method: 'POST' });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const type = blob.type || 'image/jpeg';
+    const ext = type.includes('png') ? 'png' : 'jpg';
+    const file = new File([blob], `scan_${Date.now()}.${ext}`, { type });
+
+    const { openScanner, scanIntoOpen } = await import('./scanner.js');
+    // Läuft der Scanner-Editor schon (mehrseitiger Scan)? Seite direkt anhängen.
+    if (!scanIntoOpen(file)) {
+      openScanner(onScanDone, { initialFiles: [file] });
+    }
+  } catch (e) {
+    alert(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}\n\nPrüfe: Ist der Scanner an und im selben Netz? Stimmt SCANNER_HOST im Stack?`);
+  } finally {
+    netScanBusy = false;
+    netScanBtn.classList.remove('scanning');
+    sub.textContent = prevText;
+  }
+}
+
+netScanBtn.addEventListener('click', launchNetworkScan);
+netScanBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); launchNetworkScan(); }
 });
 
 // ---------------------------------------------------------------- Komprimieren
@@ -557,6 +610,52 @@ async function saveItemToDir(item) {
   }
 }
 
+// ---------------------------------------------------------------- An Paperless/NAS senden (Backend)
+
+async function saveItemToPaperless(item) {
+  if (!item.result || !backend.consume) return;
+  const btn = item.el.querySelector('.btn-paperless');
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = 'Sende …';
+  try {
+    const res = await fetch(`/api/save?name=${encodeURIComponent(item.outName)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/pdf' },
+      body: item.result,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const st = item.el.querySelector('.file-status');
+    if (!st.textContent.includes('Paperless')) {
+      st.textContent += ' · an Paperless übergeben ✓';
+      st.classList.add('ok');
+    }
+    btn.textContent = '✓ übergeben';
+  } catch (e) {
+    setStatus(item, `An Paperless senden fehlgeschlagen: ${e?.message || e}`, 'err');
+    btn.textContent = prev;
+    btn.disabled = false;
+  }
+}
+
+// Backend-Fähigkeiten abfragen und passende Bedienelemente einblenden.
+async function detectBackend() {
+  try {
+    const res = await fetch('/api/config', { cache: 'no-store' });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    backend.scanner = !!cfg.scanner;
+    backend.consume = !!cfg.consume;
+  } catch { /* kein Backend (z. B. GitHub Pages) – Funktionen bleiben aus */ }
+  if (backend.scanner) {
+    netScanBtn.classList.remove('hidden');
+    document.querySelector('.source-row')?.classList.add('has-net');
+  }
+  if (backend.consume) items.forEach(refreshItemButtons);
+}
+detectBackend();
+
 if (hasFsAccess) {
   $('#pickOutDirBtn').addEventListener('click', async () => {
     try {
@@ -748,5 +847,6 @@ if ('serviceWorker' in navigator) {
 window.__pdfpresser = {
   compressPdf, previewPage, simulatePdf, PRESETS, items,
   setOutputDir, saveItemToDir, importFromDirHandle,
+  saveItemToPaperless, detectBackend, backend,
   exportAllData, importAllData, itemBytes,
 };

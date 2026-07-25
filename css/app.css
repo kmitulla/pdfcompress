@@ -390,6 +390,14 @@ output { color: var(--accent); font-weight: 600; }
 }
 .scanzone { padding: 24px 16px; display: flex; flex-direction: column; justify-content: center; }
 .scanzone .dropzone-title { font-size: 16px; }
+/* Wenn der Netzwerk-Scanner verfügbar ist: linkes Feld über beide Zeilen,
+   rechts die beiden Scan-Kacheln übereinander. */
+.source-row.has-net { grid-template-rows: 1fr 1fr; }
+.source-row.has-net #dropzone { grid-row: 1 / span 2; }
+@media (max-width: 700px) {
+  .source-row.has-net #dropzone { grid-row: auto; }
+}
+.scanzone.scanning { opacity: 0.75; animation: flashAccent 1.4s ease-out infinite; pointer-events: none; }
 .scan-hint {
   border-left-color: var(--ok);
   background: rgba(74, 222, 128, 0.08);

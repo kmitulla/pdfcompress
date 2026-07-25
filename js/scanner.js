@@ -1204,7 +1204,7 @@ function onResize() {
 /**
  * Öffnet den Scanner. onDone(file) erhält das fertige Scan-PDF (File).
  */
-export function openScanner(onDone) {
+export function openScanner(onDone, opts = {}) {
   if (state.root) return;
   const root = document.createElement('div');
   root.id = 'scannerRoot';
@@ -1286,7 +1286,23 @@ export function openScanner(onDone) {
 
   document.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('resize', onResize);
-  view('capture');
+
+  // Kommen schon Bilder mit (z. B. frisch vom Netzwerk-Scanner), direkt in den
+  // Zuschnitt-Editor springen statt die Kamera zu öffnen.
+  if (opts.initialFiles && opts.initialFiles.length) {
+    view('capture');
+    importFiles(opts.initialFiles);
+  } else {
+    view('capture');
+  }
+}
+
+// Für Netzwerk-Scans: eine bereits gescannte Seite (Bild) hinzufügen. Öffnet
+// den Scanner (falls nötig) und legt die Seite in den Zuschnitt-Editor.
+export function scanIntoOpen(file) {
+  if (!state.root) return false;
+  importFiles([file]);
+  return true;
 }
 
 // Für die automatisierten Tests

@@ -115,7 +115,45 @@ npm test
   Speichern und Import-Ordner (per Mock-Handles)
 - PWA: Manifest, Icons, Service Worker, App läuft und komprimiert offline
 
-## Deployment
+## Selbst hosten: Netzwerk-Scanner & „an Paperless" (Docker/Portainer)
 
-Jeder Push auf `main` veröffentlicht die App automatisch über GitHub Actions
-auf GitHub Pages (`.github/workflows/deploy-pages.yml`).
+Zusätzlich zum reinen Browser-Betrieb lässt sich die App als **Docker-Container**
+auf einem eigenen Server/Mini-PC betreiben. Dann kommen zwei Funktionen dazu, die
+im Browser allein nicht möglich sind:
+
+- **Netzwerk-Scanner (eSCL/AirScan):** Seiten direkt von einem Netzwerk-Scanner
+  wie dem **Epson ET-2720** einlesen – auch vom Handy. Der Scan öffnet sich im
+  gewohnten Zuschnitt-/A4-/Perspektiv-Editor.
+- **„📥 An Paperless (NAS)":** Das fertige, komprimierte PDF landet per Klick in
+  einem überwachten Ordner (z. B. auf dem NAS), aus dem **Paperless** es
+  automatisch weiterverarbeitet.
+
+Das mitgelieferte Backend (`server/`) liefert die Web-App aus **und** stellt die
+API dafür bereit (`/api/scanner/scan`, `/api/save`) – alles same-origin, ohne
+externe Abhängigkeiten. Ist kein Backend vorhanden (z. B. auf GitHub Pages),
+bleiben die beiden Funktionen einfach ausgeblendet.
+
+```bash
+# Schnellstart ohne Docker:
+SCANNER_HOST=192.168.1.50 CONSUME_DIR=./consume npm start   # http://localhost:8823
+
+# Oder als Container / Portainer-Stack:
+docker compose up -d --build
+```
+
+**Komplette Schritt-für-Schritt-Anleitung** (Portainer, Epson-Einrichtung,
+NAS-Mount, Paperless, Handy-Nutzung, Fehlersuche):
+[`docs/portainer-nas-scanner-setup.md`](docs/portainer-nas-scanner-setup.md).
+
+| Umgebungsvariable | Zweck |
+| --- | --- |
+| `SCANNER_HOST` | IP/Host des Scanners (z. B. `192.168.1.50`) – leer = Scanner aus |
+| `CONSUME_DIR` | Zielordner im Container (Standard `/data/consume`, aufs NAS gemountet) |
+| `PORT` | Server-Port (Standard `8823`) |
+
+## Deployment (GitHub Pages)
+
+Jeder Push auf `main` veröffentlicht die (rein clientseitige) App automatisch
+über GitHub Actions auf GitHub Pages (`.github/workflows/deploy-pages.yml`).
+Dort stehen Scanner-/Paperless-Funktionen nicht zur Verfügung (kein Backend);
+dafür den Docker-/Portainer-Weg oben nutzen.

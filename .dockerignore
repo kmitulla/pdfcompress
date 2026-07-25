@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+tests
+docs
+playwright.config.js
+package-lock.json
+*.md
+!README.md
+scratchpad

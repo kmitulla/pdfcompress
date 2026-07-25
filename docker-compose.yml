@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PDF Presser – Stack für Portainer / Docker Compose
+#
+# In Portainer:  Stacks → Add stack → "Repository" → diese URL + Compose-Pfad
+#                docker-compose.yml, oder den Inhalt hier per "Web editor" einfügen.
+#
+# Danach unter "Environment variables" die Werte unten setzen (SCANNER_HOST usw.)
+# oder direkt hier eintragen. Details: docs/portainer-nas-scanner-setup.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  pdfpresser:
+    container_name: pdfpresser
+    # Aus diesem Repo bauen (Portainer klont es beim Stack-Deploy selbst):
+    build:
+      context: .
+    # Alternativ ein fertiges Image nutzen statt zu bauen – dann "build:" oben
+    # auskommentieren und die nächste Zeile aktivieren:
+    # image: ghcr.io/kmitulla/pdfcompress:latest
+    restart: unless-stopped
+    ports:
+      - "8823:8823"
+    environment:
+      # IP oder Hostname deines Epson ET-2720 im gleichen Netz.
+      # Leer lassen, um die Scanner-Funktion zu deaktivieren.
+      SCANNER_HOST: "${SCANNER_HOST:-}"
+      # Zielordner IM CONTAINER. Wird unten auf den NAS-/Paperless-Consume-Ordner
+      # gemountet. Nicht ändern, außer du passt auch das Volume an.
+      CONSUME_DIR: "/data/consume"
+    volumes:
+      # Linke Seite = Paperless-"consume"-Ordner auf deinem NAS bzw. Host.
+      # Beispiele:
+      #   - /mnt/nas/paperless/consume:/data/consume
+      #   - paperless_consume:/data/consume          (gemeinsames Named Volume)
+      - "${CONSUME_HOST_PATH:-./consume}:/data/consume"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Optional: Paperless-ngx im selben Stack mitlaufen lassen. Dann teilen sich
+# beide denselben "consume"-Ordner (Named Volume) und du brauchst kein NAS-Mount.
+# Zum Aktivieren die folgenden Zeilen einkommentieren.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   paperless-broker:
+#     image: redis:7
+#     restart: unless-stopped
+#     volumes:
+#       - redisdata:/data
+#
+#   paperless:
+#     image: ghcr.io/paperless-ngx/paperless-ngx:latest
+#     restart: unless-stopped
+#     depends_on:
+#       - paperless-broker
+#     ports:
+#       - "8010:8000"
+#     environment:
+#       PAPERLESS_REDIS: redis://paperless-broker:6379
+#       PAPERLESS_OCR_LANGUAGE: deu
+#       PAPERLESS_TIME_ZONE: Europe/Berlin
+#       PAPERLESS_URL: http://minipc:8010
+#     volumes:
+#       - paperless_data:/usr/src/paperless/data
+#       - paperless_media:/usr/src/paperless/media
+#       - paperless_consume:/usr/src/paperless/consume
+#
+# volumes:
+#   redisdata:
+#   paperless_data:
+#   paperless_media:
+#   paperless_consume:      # ← dann oben bei pdfpresser: "paperless_consume:/data/consume"

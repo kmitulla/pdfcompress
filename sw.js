@@ -1,5 +1,5 @@
 // Service Worker: precached alle Assets, damit die App komplett offline läuft.
-const CACHE = 'pdfpresser-v9';
+const CACHE = 'pdfpresser-v10';
 
 const ASSETS = [
   './',
@@ -56,6 +56,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // Backend-API nie cachen – Scanner-/Speicher-Status muss immer live sein.
+  if (url.pathname.startsWith('/api/')) return;
 
   event.respondWith(
     caches.match(request, { ignoreSearch: true }).then((cached) => {
