@@ -4,9 +4,53 @@
 import { compressPdf, previewPage, simulatePdf, PRESETS } from './compressor.js';
 import { disposeOcr } from './ocr.js';
 import { openEditor } from './editor.js';
-import { exportAllData, importAllData, loadSettings, saveSettings, requestPersistence } from './store.js';
+import {
+  exportAllData, importAllData, loadSettings, saveSettings, requestPersistence,
+  enableServerProfile, pullServerProfile, onSyncStatus,
+} from './store.js';
+import { icon, hydrateIcons } from './icons.js';
 
 const $ = (sel) => document.querySelector(sel);
+
+// Icons in der Grundoberfläche einsetzen (Scanner/Editor machen das selbst).
+hydrateIcons();
+
+// ---------------------------------------------------------------- Rückmeldung (Toast)
+
+const toastHost = $('#toastHost');
+
+/**
+ * Kurze Rückmeldung am unteren Rand. `kind`: 'ok' | 'err' | 'busy'.
+ * Gibt eine Funktion zurück, mit der sich der Toast aktualisieren/schließen lässt.
+ */
+function toast(text, kind = 'ok', ms = 3200) {
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  const ic = kind === 'err' ? 'info' : kind === 'busy' ? 'spinner' : 'check';
+  el.innerHTML = `${icon(ic, { size: 18 })}<span></span>`;
+  el.querySelector('span').textContent = text;
+  toastHost.appendChild(el);
+
+  let timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 240);
+  };
+  if (ms) timer = setTimeout(close, ms);
+
+  return {
+    update(newText, newKind = kind, newMs = 3200) {
+      el.className = `toast toast-${newKind}`;
+      const ni = newKind === 'err' ? 'info' : newKind === 'busy' ? 'spinner' : 'check';
+      el.innerHTML = `${icon(ni, { size: 18 })}<span></span>`;
+      el.querySelector('span').textContent = newText;
+      clearTimeout(timer);
+      if (newMs) timer = setTimeout(close, newMs);
+    },
+    close,
+  };
+}
 
 const dropzone = $('#dropzone');
 const fileInput = $('#fileInput');
@@ -37,7 +81,7 @@ const hasFsAccess = typeof window.showDirectoryPicker === 'function';
 
 // Backend-Funktionen (nur aktiv, wenn die App über den mitgelieferten Server
 // läuft – z. B. im Docker-Container auf dem Mini-PC. Auf GitHub Pages: aus.)
-const backend = { scanner: false, consume: false };
+const backend = { scanner: false, consume: false, profile: false };
 
 // ---------------------------------------------------------------- Einstellungen
 
@@ -134,13 +178,13 @@ function addFiles(fileList) {
       <div class="progress"><div></div></div>
       <div class="sim-results hidden"></div>
       <div class="file-actions">
-        <button class="btn btn-small btn-edit">✒️ Bearbeiten</button>
-        <button class="btn btn-small btn-download hidden">Herunterladen</button>
-        <button class="btn btn-small btn-save-dir hidden">In Zielordner speichern</button>
-        <button class="btn btn-small btn-paperless hidden">📥 An Paperless (NAS)</button>
-        <button class="btn btn-small btn-share hidden">Teilen</button>
-        <button class="btn btn-small btn-simulate">Simulation</button>
-        <button class="btn btn-small btn-ghost btn-remove">Entfernen</button>
+        <button class="btn btn-small btn-edit">${icon('pen', { size: 15 })} Bearbeiten</button>
+        <button class="btn btn-small btn-download hidden">${icon('download', { size: 15 })} Herunterladen</button>
+        <button class="btn btn-small btn-save-dir hidden">${icon('folder', { size: 15 })} In Zielordner</button>
+        <button class="btn btn-small btn-paperless hidden">${icon('upload', { size: 15 })} An Paperless</button>
+        <button class="btn btn-small btn-share hidden">${icon('share', { size: 15 })} Teilen</button>
+        <button class="btn btn-small btn-simulate">${icon('chart', { size: 15 })} Simulation</button>
+        <button class="btn btn-small btn-ghost btn-remove">${icon('trash', { size: 15 })} Entfernen</button>
       </div>`;
     li.querySelector('.file-name').textContent = file.name;
     fileListEl.appendChild(li);
@@ -157,7 +201,7 @@ function addFiles(fileList) {
         item.editedBytes = editedBytes;
         item.result = null;
         refreshItemButtons(item);
-        setStatus(item, `Bearbeitet (${fmtSize(editedBytes.length)}) – jetzt komprimieren ✓`, 'ok');
+        setStatus(item, `Bearbeitet (${fmtSize(editedBytes.length)}) – jetzt komprimieren`, 'ok');
         item.el.querySelector('.file-meta').innerHTML = `Original: ${fmtSize(item.file.size)} · <strong>bearbeitet</strong>`;
         updateActions();
       });
@@ -175,9 +219,12 @@ function addFiles(fileList) {
 function updateActions() {
   actionsEl.classList.toggle('hidden', items.length === 0);
   $('#mergeBtn').classList.toggle('hidden', items.length < 2);
-  downloadAllBtn.disabled = !items.some((it) => it.result);
+  const anyResult = items.some((it) => it.result);
+  downloadAllBtn.disabled = !anyResult;
+  $('#sendAllBtn').classList.toggle('hidden', !backend.consume || items.length < 2);
+  $('#sendAllBtn').disabled = !anyResult;
   const allDone = items.length > 0 && items.every((it) => it.result);
-  startBtn.textContent = allDone ? 'Erneut komprimieren' : 'Komprimieren';
+  startBtn.innerHTML = `${icon('archive', { size: 17 })} ${allDone ? 'Erneut komprimieren' : 'Komprimieren'}`;
   if (items.length === 0) closePreview();
 }
 
@@ -266,36 +313,41 @@ scanBtn.addEventListener('keydown', (e) => {
 
 let netScanBusy = false;
 
+/**
+ * Holt genau eine Seite vom Netzwerk-Scanner. Wirft bei Fehlern.
+ * Wird sowohl von der Startkachel als auch aus dem Scanner heraus benutzt,
+ * damit man Seite für Seite in dieselbe PDF sammeln kann.
+ */
+async function fetchScannedPage() {
+  const res = await fetch('/api/scanner/scan?color=color&dpi=300', { method: 'POST' });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const type = blob.type || 'image/jpeg';
+  const ext = type.includes('png') ? 'png' : 'jpg';
+  return new File([blob], `scan_${Date.now()}.${ext}`, { type });
+}
+
 async function launchNetworkScan() {
   if (netScanBusy) return;
   netScanBusy = true;
-  const sub = $('#netScanSub');
-  const prevText = sub.textContent;
   netScanBtn.classList.add('scanning');
-  sub.textContent = 'Scanne … bitte Vorlage auf die Glasfläche legen und einen Moment warten.';
+  const t = toast('Scanne … bitte Vorlage auflegen', 'busy', 0);
   try {
-    const res = await fetch('/api/scanner/scan?color=color&dpi=300', { method: 'POST' });
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-      throw new Error(msg);
-    }
-    const blob = await res.blob();
-    const type = blob.type || 'image/jpeg';
-    const ext = type.includes('png') ? 'png' : 'jpg';
-    const file = new File([blob], `scan_${Date.now()}.${ext}`, { type });
-
-    const { openScanner, scanIntoOpen } = await import('./scanner.js');
-    // Läuft der Scanner-Editor schon (mehrseitiger Scan)? Seite direkt anhängen.
-    if (!scanIntoOpen(file)) {
-      openScanner(onScanDone, { initialFiles: [file] });
-    }
+    const file = await fetchScannedPage();
+    t.close();
+    const { openScanner } = await import('./scanner.js');
+    // Der Scanner bekommt die Nachschub-Funktion mit: dort lassen sich weitere
+    // Seiten anfügen, bis die PDF vollständig ist.
+    openScanner(onScanDone, { initialFiles: [file], netScan: fetchScannedPage });
   } catch (e) {
-    alert(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}\n\nPrüfe: Ist der Scanner an und im selben Netz? Stimmt SCANNER_HOST im Stack?`);
+    t.update(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
   } finally {
     netScanBusy = false;
     netScanBtn.classList.remove('scanning');
-    sub.textContent = prevText;
   }
 }
 
@@ -344,7 +396,7 @@ async function processItem(item, opts) {
   const editedNote = item.editedBytes ? ' (bearbeitet)' : '';
   metaEl.innerHTML = `Vorher: ${fmtSize(originalSize)}${editedNote} → Nachher: <strong>${fmtSize(newSize)}</strong> · ${presetLabel()}`;
   if (newSize < originalSize) {
-    setStatus(item, `Fertig – ${(saved * 100).toFixed(1)} % gespart ✓`, 'ok');
+    setStatus(item, `Fertig – ${(saved * 100).toFixed(1)} % gespart`, 'ok');
   } else {
     setStatus(item, 'Fertig – Ergebnis nicht kleiner als das Original (andere Stufe probieren)', 'warn');
   }
@@ -352,6 +404,10 @@ async function processItem(item, opts) {
 
   if (outputDirHandle && $('#autoSave').checked) {
     await saveItemToDir(item);
+  }
+  // Direkt weiterreichen, wenn gewünscht – spart am Handy einen Extra-Tipp.
+  if (backend.consume && $('#autoPaperless').checked) {
+    await saveItemToPaperless(item, { quiet: true });
   }
 }
 
@@ -381,6 +437,20 @@ startBtn.addEventListener('click', async () => {
 
 downloadAllBtn.addEventListener('click', () => {
   items.filter((it) => it.result).forEach((it, i) => setTimeout(() => downloadItem(it), i * 300));
+});
+
+$('#sendAllBtn').addEventListener('click', async () => {
+  const ready = items.filter((it) => it.result && !it.sentToPaperless);
+  if (ready.length === 0) return;
+  const t = toast(`Sende ${ready.length} PDF${ready.length === 1 ? '' : 's'} an Paperless …`, 'busy', 0);
+  let ok = 0;
+  for (const it of ready) {
+    if (await saveItemToPaperless(it, { quiet: true })) ok++;
+  }
+  t.update(
+    ok === ready.length ? `${ok} PDF${ok === 1 ? '' : 's'} an Paperless übergeben` : `${ok} von ${ready.length} übergeben – Rest siehe Liste`,
+    ok === ready.length ? 'ok' : 'err',
+  );
 });
 
 $('#mergeBtn').addEventListener('click', async () => {
@@ -603,7 +673,7 @@ async function saveItemToDir(item) {
     await writable.close();
     const st = item.el.querySelector('.file-status');
     if (!st.textContent.includes('gespeichert')) {
-      st.textContent += ` · gespeichert in „${outputDirHandle.name}“ ✓`;
+      st.textContent += ` · gespeichert in „${outputDirHandle.name}“`;
     }
   } catch (e) {
     setStatus(item, `Speichern im Zielordner fehlgeschlagen: ${e?.message || e}`, 'err');
@@ -612,12 +682,13 @@ async function saveItemToDir(item) {
 
 // ---------------------------------------------------------------- An Paperless/NAS senden (Backend)
 
-async function saveItemToPaperless(item) {
-  if (!item.result || !backend.consume) return;
+async function saveItemToPaperless(item, { quiet = false } = {}) {
+  if (!item.result || !backend.consume) return false;
   const btn = item.el.querySelector('.btn-paperless');
   btn.disabled = true;
-  const prev = btn.textContent;
-  btn.textContent = 'Sende …';
+  btn.classList.add('busy');
+  btn.innerHTML = `${icon('spinner', { size: 15 })} Sende …`;
+  const t = quiet ? null : toast(`„${item.outName}“ wird übergeben …`, 'busy', 0);
   try {
     const res = await fetch(`/api/save?name=${encodeURIComponent(item.outName)}`, {
       method: 'POST',
@@ -626,16 +697,25 @@ async function saveItemToPaperless(item) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    item.sentToPaperless = true;
     const st = item.el.querySelector('.file-status');
     if (!st.textContent.includes('Paperless')) {
-      st.textContent += ' · an Paperless übergeben ✓';
+      st.textContent += ' · an Paperless übergeben';
       st.classList.add('ok');
     }
-    btn.textContent = '✓ übergeben';
+    btn.classList.remove('busy');
+    btn.innerHTML = `${icon('check', { size: 15 })} übergeben`;
+    t?.update(`„${item.outName}“ an Paperless übergeben`, 'ok');
+    return true;
   } catch (e) {
-    setStatus(item, `An Paperless senden fehlgeschlagen: ${e?.message || e}`, 'err');
-    btn.textContent = prev;
+    const msg = `An Paperless senden fehlgeschlagen: ${e?.message || e}`;
+    setStatus(item, msg, 'err');
+    btn.classList.remove('busy');
+    btn.innerHTML = `${icon('upload', { size: 15 })} An Paperless`;
     btn.disabled = false;
+    t?.update(msg, 'err', 5000);
+    if (quiet) toast(msg, 'err', 5000);
+    return false;
   }
 }
 
@@ -647,14 +727,34 @@ async function detectBackend() {
     const cfg = await res.json();
     backend.scanner = !!cfg.scanner;
     backend.consume = !!cfg.consume;
+    backend.profile = !!cfg.profile;
   } catch { /* kein Backend (z. B. GitHub Pages) – Funktionen bleiben aus */ }
+
   if (backend.scanner) {
     netScanBtn.classList.remove('hidden');
     document.querySelector('.source-row')?.classList.add('has-net');
   }
-  if (backend.consume) items.forEach(refreshItemButtons);
+  if (backend.consume) {
+    $('#autoPaperlessField').classList.remove('hidden');
+    items.forEach(refreshItemButtons);
+  }
+  if (backend.profile) {
+    // Einstellungen & Unterschriften liegen zusätzlich auf dem eigenen Server.
+    $('#syncRow').classList.remove('hidden');
+    enableServerProfile(true);
+    await pullServerProfile();
+    await applyStoredSettings();
+  }
+  updateActions();
 }
-detectBackend();
+
+// Status des Server-Speichers in der Seitenleiste spiegeln
+onSyncStatus((state, text) => {
+  const row = $('#syncRow');
+  if (!row || row.classList.contains('hidden')) return;
+  row.classList.toggle('syncing', state === 'syncing');
+  $('#syncInfo').textContent = text;
+});
 
 if (hasFsAccess) {
   $('#pickOutDirBtn').addEventListener('click', async () => {
@@ -761,7 +861,7 @@ $('#importDataInput').addEventListener('change', async (e) => {
   info.classList.remove('hidden');
   try {
     const res = await importAllData(await file.text());
-    info.textContent = `✓ Import erfolgreich: ${res.signatures} Unterschrift(en) übernommen.`;
+    info.textContent = `Import erfolgreich: ${res.signatures} Unterschrift(en) übernommen.`;
     applyStoredSettings();
   } catch (err) {
     info.textContent = `Import fehlgeschlagen: ${err?.message || err}`;
@@ -780,6 +880,7 @@ function collectSettings() {
     ocr: ocrEnabled.checked,
     ocrLang: $('#ocrLang').value,
     autoSave: $('#autoSave').checked,
+    autoPaperless: $('#autoPaperless').checked,
   };
 }
 let settingsReady = false;
@@ -800,14 +901,18 @@ async function applyStoredSettings() {
     if (s.ocr != null) ocrEnabled.checked = s.ocr;
     if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
     if (s.autoSave != null) $('#autoSave').checked = s.autoSave;
+    if (s.autoPaperless != null) $('#autoPaperless').checked = s.autoPaperless;
   } catch { /* Erststart */ }
   settingsReady = true;
   syncSettingsUi();
 }
-document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave')
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
   .forEach((el) => el.addEventListener('change', persistSettings));
 applyStoredSettings();
 requestPersistence();
+// Backend erst danach abfragen: ein evtl. vorhandenes Serverprofil überschreibt
+// die lokalen Einstellungen und wendet sie erneut an.
+detectBackend();
 
 // ---------------------------------------------------------------- PWA
 
@@ -847,6 +952,6 @@ if ('serviceWorker' in navigator) {
 window.__pdfpresser = {
   compressPdf, previewPage, simulatePdf, PRESETS, items,
   setOutputDir, saveItemToDir, importFromDirHandle,
-  saveItemToPaperless, detectBackend, backend,
+  saveItemToPaperless, detectBackend, backend, toast, fetchScannedPage,
   exportAllData, importAllData, itemBytes,
 };

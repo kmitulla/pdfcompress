@@ -3,6 +3,8 @@
 // Perspektivkorrektur, A4-/Auto-Format, Drehen – Ergebnis wird als PDF an
 // die Dateiliste übergeben, wo Kompressionsstufe & „Scan-Stil“ gewählt werden.
 
+import { hydrateIcons, icon } from './icons.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 
 const DETECT_MAX = 440;      // Analysebreite für die Eckenerkennung
@@ -406,9 +408,9 @@ const state = {
 const TEMPLATE = `
 <div class="sc-overlay" role="dialog" aria-modal="true" aria-label="Dokument scannen">
   <div class="sc-topbar">
-    <strong>📷 Dokument scannen</strong>
+    <strong><i data-icon="scanFrame"></i> Dokument scannen</strong>
     <span class="sc-pagecount" id="scPageCount"></span>
-    <button class="btn btn-small btn-ghost" id="scCloseBtn">✕ Schließen</button>
+    <button class="btn btn-small btn-ghost" id="scCloseBtn"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
   </div>
 
   <!-- Aufnahme -->
@@ -420,12 +422,13 @@ const TEMPLATE = `
     </div>
     <p class="sc-hint">Dokument flach und vollständig ins Bild legen – die Ränder werden live erkannt und lassen sich danach fein anpassen.</p>
     <div class="sc-capture-bar">
-      <button class="sc-round-btn" id="scTorchBtn" title="Blitz (Taschenlampe) an/aus" aria-pressed="false" hidden>⚡</button>
+      <button class="sc-round-btn" id="scTorchBtn" title="Blitz (Taschenlampe) an/aus" aria-pressed="false" hidden><i data-icon="bolt"></i></button>
       <button class="sc-shutter" id="scShutterBtn" title="Foto aufnehmen" aria-label="Foto aufnehmen"><span></span></button>
-      <button class="sc-round-btn" id="scPickBtn" title="Bilder aus Dateien wählen">🖼️</button>
+      <button class="sc-round-btn" id="scPickBtn" title="Bilder aus Dateien wählen"><i data-icon="image"></i></button>
     </div>
     <div class="sc-bottombar">
-      <button class="btn" id="scToPagesBtn" hidden>Zu den Seiten →</button>
+      <button class="btn" id="scNetScanBtn" hidden><i data-icon="scanner"></i> Seite vom Netzwerk-Scanner</button>
+      <button class="btn" id="scToPagesBtn" hidden>Zu den Seiten <i data-icon="chevronRight" data-icon-size="15"></i></button>
     </div>
     <input type="file" id="scFileInput" accept="image/*" multiple hidden>
   </div>
@@ -433,8 +436,8 @@ const TEMPLATE = `
   <!-- Zuschnitt -->
   <div class="sc-view hidden" id="scCropView">
     <div class="sc-toolbar">
-      <button class="btn btn-small" id="scAutoBtn">🪄 Automatisch erkennen</button>
-      <button class="btn btn-small" id="scFullBtn">⬜ Ganze Seite</button>
+      <button class="btn btn-small" id="scAutoBtn"><i data-icon="wand" data-icon-size="15"></i> Automatisch erkennen</button>
+      <button class="btn btn-small" id="scFullBtn"><i data-icon="square" data-icon-size="15"></i> Ganze Seite</button>
       <span class="sc-sep"></span>
       <span class="sc-seg" role="radiogroup" aria-label="Ausgabeformat">
         <button class="sc-seg-btn" data-format="auto">Auto</button>
@@ -445,7 +448,7 @@ const TEMPLATE = `
         <input type="checkbox" id="scStretch"> auf A4 strecken
       </label>
       <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scRotateBtn">↻ Drehen 90°</button>
+      <button class="btn btn-small" id="scRotateBtn"><i data-icon="rotate" data-icon-size="15"></i> Drehen 90°</button>
     </div>
     <div class="sc-crop-stage" id="scCropStage">
       <canvas id="scCropCanvas"></canvas>
@@ -455,26 +458,26 @@ const TEMPLATE = `
     <p class="sc-hint">Ecken (● groß) oder Kanten (● klein) ziehen – die Lupe zeigt die Ecke vergrößert, damit du sie exakt triffst. Pfeiltasten justieren fein nach.</p>
     <div class="sc-bottombar">
       <button class="btn" id="scCropCancelBtn">Verwerfen</button>
-      <button class="btn btn-primary" id="scCropOkBtn">Übernehmen ✓</button>
+      <button class="btn btn-primary" id="scCropOkBtn"><i data-icon="check" data-icon-size="16"></i> Übernehmen</button>
     </div>
   </div>
 
   <!-- Radierer (weiß übermalen) -->
   <div class="sc-view hidden" id="scEraseView">
     <div class="sc-toolbar">
-      <label class="sc-brush-label">🧽 Pinselgröße
+      <label class="sc-brush-label"><i data-icon="eraser" data-icon-size="16"></i> Pinselgröße
         <input type="range" id="scBrushSize" min="6" max="90" step="1" value="26">
         <span class="sc-brush-dot" id="scBrushDot"></span>
       </label>
       <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scEraseUndoBtn" title="Rückgängig">↶</button>
-      <button class="btn btn-small" id="scEraseRedoBtn" title="Wiederholen">↷</button>
+      <button class="btn btn-small" id="scEraseUndoBtn" title="Rückgängig" aria-label="Rückgängig"><i data-icon="undo" data-icon-size="15"></i></button>
+      <button class="btn btn-small" id="scEraseRedoBtn" title="Wiederholen" aria-label="Wiederholen"><i data-icon="redo" data-icon-size="15"></i></button>
     </div>
     <div class="sc-erase-stage" id="scEraseStage"><canvas id="scEraseCanvas"></canvas></div>
     <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen, um sie zu entfernen.</p>
     <div class="sc-bottombar">
       <button class="btn" id="scEraseCancelBtn">Verwerfen</button>
-      <button class="btn btn-primary" id="scEraseOkBtn">Fertig ✓</button>
+      <button class="btn btn-primary" id="scEraseOkBtn"><i data-icon="check" data-icon-size="16"></i> Fertig</button>
     </div>
   </div>
 
@@ -482,12 +485,13 @@ const TEMPLATE = `
   <div class="sc-view hidden" id="scPagesView">
     <div class="sc-pagegrid" id="scPageGrid"></div>
     <div class="sc-row">
-      <button class="btn" id="scAddCamBtn">📷 Seite mit Kamera</button>
-      <button class="btn" id="scAddFileBtn">🖼️ Seiten aus Bildern</button>
+      <button class="btn btn-primary" id="scAddNetBtn" hidden><i data-icon="scanner"></i> Nächste Seite scannen</button>
+      <button class="btn" id="scAddCamBtn"><i data-icon="camera"></i> Seite mit Kamera</button>
+      <button class="btn" id="scAddFileBtn"><i data-icon="image"></i> Seiten aus Bildern</button>
     </div>
-    <p class="sc-hint">Nach „Als PDF übernehmen“ wählst du links die Kompressionsstufe und den „Scan-Stil“ (z.&nbsp;B. „Extrem S/W – Scanner-Stil“) und klickst auf „Komprimieren“.</p>
+    <p class="sc-hint" id="scPagesHint">Weitere Seiten anfügen – alle Seiten hier landen zusammen in <strong>einer</strong> PDF. Danach „Als PDF übernehmen“, Kompressionsstufe wählen und komprimieren.</p>
     <div class="sc-bottombar">
-      <button class="btn btn-primary" id="scDoneBtn">✓ Als PDF übernehmen</button>
+      <button class="btn btn-primary" id="scDoneBtn"><i data-icon="check" data-icon-size="16"></i> Als PDF übernehmen</button>
     </div>
   </div>
 </div>`;
@@ -520,7 +524,7 @@ async function startCamera() {
   if (state.stream) return;
   if (!navigator.mediaDevices?.getUserMedia) {
     msg.classList.remove('hidden');
-    msg.innerHTML = 'Keine Kamera verfügbar.<br>Nutze <strong>🖼️ Bilder wählen</strong>, um Fotos aus Dateien zu scannen.';
+    msg.innerHTML = 'Keine Kamera verfügbar.<br>Nutze <strong>Bilder wählen</strong>, um Fotos aus Dateien zu scannen.';
     return;
   }
   try {
@@ -546,7 +550,7 @@ async function startCamera() {
     startLiveDetect();
   } catch (e) {
     msg.classList.remove('hidden');
-    msg.innerHTML = `Kamera nicht verfügbar (${e?.name || e}).<br>Nutze <strong>🖼️ Bilder wählen</strong>, um Fotos aus Dateien zu scannen.`;
+    msg.innerHTML = `Kamera nicht verfügbar (${e?.name || e}).<br>Nutze <strong>Bilder wählen</strong>, um Fotos aus Dateien zu scannen.`;
   }
 }
 
@@ -685,7 +689,11 @@ async function importFiles(fileList) {
   }
   if (canvases.length === 0) return;
   state.queue.push(...canvases.slice(1));
-  openCrop(canvases[0], null, state.pages.length > 0 ? 'pages' : 'capture');
+  // Beim Abbrechen dorthin zurück, wo es sinnvoll ist: zur Seitenübersicht,
+  // sobald Seiten da sind – und im Netzwerk-Betrieb immer (die Kamera wird
+  // dort gar nicht gebraucht).
+  const back = (state.pages.length > 0 || state.netScan) ? 'pages' : 'capture';
+  openCrop(canvases[0], null, back);
 }
 
 // ------------------------------------------------ Zuschnitt (Ecken + Lupe)
@@ -1098,8 +1106,8 @@ function renderPages() {
       return b;
     };
     bar.append(
-      mk('✂️', 'Zuschnitt/Format bearbeiten', () => openCrop(null, idx, 'pages')),
-      mk('🧽', 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
+      mk(icon('crop', { size: 15 }), 'Zuschnitt/Format bearbeiten', () => openCrop(null, idx, 'pages')),
+      mk(icon('eraser', { size: 15 }), 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
       mk('←', 'Nach vorne schieben', () => {
         [state.pages[idx - 1], state.pages[idx]] = [state.pages[idx], state.pages[idx - 1]];
         renderPages();
@@ -1108,7 +1116,7 @@ function renderPages() {
         [state.pages[idx + 1], state.pages[idx]] = [state.pages[idx], state.pages[idx + 1]];
         renderPages();
       }, idx === state.pages.length - 1),
-      mk('✕', 'Seite löschen', () => {
+      mk(icon('close', { size: 15 }), 'Seite löschen', () => {
         state.pages.splice(idx, 1);
         if (state.pages.length === 0) view('capture');
         else renderPages();
@@ -1118,7 +1126,7 @@ function renderPages() {
     cell.append(thumb, label, bar);
     grid.appendChild(cell);
   });
-  $('#scDoneBtn', state.root).textContent = `✓ Als PDF übernehmen (${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'})`;
+  $('#scDoneBtn', state.root).textContent = `${icon('check', { size: 16 })} Als PDF übernehmen (${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'})`;
   updatePageCount();
 }
 
@@ -1170,7 +1178,7 @@ async function buildPdf() {
   } catch (e) {
     alert(`PDF konnte nicht erstellt werden: ${e?.message || e}`);
     btn.disabled = false;
-    btn.textContent = '✓ Als PDF übernehmen';
+    btn.innerHTML = `${icon('check', { size: 16 })} Als PDF übernehmen`;
   } finally {
     state.building = false;
   }
@@ -1209,12 +1217,20 @@ export function openScanner(onDone, opts = {}) {
   const root = document.createElement('div');
   root.id = 'scannerRoot';
   root.innerHTML = TEMPLATE;
+  hydrateIcons(root);
   document.body.appendChild(root);
   state.root = root;
   state.onDone = onDone;
   state.pages = [];
   state.queue = [];
   state.lastFormat = 'auto';
+  state.netScan = opts.netScan || null;   // Funktion, die eine weitere Seite holt
+
+  // Nachschub vom Netzwerk-Scanner: nur einblenden, wenn verfügbar.
+  const netBtns = [$('#scNetScanBtn', root), $('#scAddNetBtn', root)];
+  if (state.netScan) {
+    netBtns.forEach((b) => { b.hidden = false; b.addEventListener('click', () => addNetworkPage(b)); });
+  }
 
   $('#scCloseBtn', root).addEventListener('click', () => {
     if (state.pages.length > 0 && !confirm('Scanner schließen? Die aufgenommenen Seiten gehen verloren.')) return;
@@ -1288,21 +1304,32 @@ export function openScanner(onDone, opts = {}) {
   window.addEventListener('resize', onResize);
 
   // Kommen schon Bilder mit (z. B. frisch vom Netzwerk-Scanner), direkt in den
-  // Zuschnitt-Editor springen statt die Kamera zu öffnen.
+  // Zuschnitt-Editor springen – ohne die Kamera anzufordern (am iPhone würde
+  // das sonst unnötig nach Kameraerlaubnis fragen).
   if (opts.initialFiles && opts.initialFiles.length) {
-    view('capture');
     importFiles(opts.initialFiles);
   } else {
     view('capture');
   }
 }
 
-// Für Netzwerk-Scans: eine bereits gescannte Seite (Bild) hinzufügen. Öffnet
-// den Scanner (falls nötig) und legt die Seite in den Zuschnitt-Editor.
-export function scanIntoOpen(file) {
-  if (!state.root) return false;
-  importFiles([file]);
-  return true;
+// Weitere Seite vom Netzwerk-Scanner holen und an den laufenden Scan anhängen.
+async function addNetworkPage(btn) {
+  if (!state.netScan || state.netBusy) return;
+  state.netBusy = true;
+  const buttons = [$('#scNetScanBtn', state.root), $('#scAddNetBtn', state.root)].filter(Boolean);
+  const labels = buttons.map((b) => b.innerHTML);
+  buttons.forEach((b) => { b.disabled = true; b.classList.add('busy'); });
+  if (btn) btn.innerHTML = '<span>Scanne … bitte Vorlage auflegen</span>';
+  try {
+    const file = await state.netScan();
+    importFiles([file]);
+  } catch (e) {
+    alert(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}`);
+  } finally {
+    state.netBusy = false;
+    buttons.forEach((b, i) => { b.disabled = false; b.classList.remove('busy'); b.innerHTML = labels[i]; });
+  }
 }
 
 // Für die automatisierten Tests

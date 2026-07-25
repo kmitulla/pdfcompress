@@ -6,7 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>PDF Presser – Lokaler PDF-Kompressor</title>
   <meta name="description" content="PDF-Dateien direkt im Browser verkleinern – 100 % lokal, ohne Upload, offline nutzbar. Mit einstellbarer Kompression, S/W-Scan-Modus und optionalem OCR-Textlayer.">
-  <meta name="theme-color" content="#0f172a">
+  <meta name="theme-color" content="#070a12" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#eef1f7" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PDF Presser">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -17,15 +21,15 @@
     <div class="topbar-inner">
       <img src="icons/favicon-32.png" alt="" width="28" height="28" class="logo">
       <h1>PDF&nbsp;Presser</h1>
-      <span class="badge badge-local" title="Alle Daten bleiben auf diesem Gerät. Es findet kein Upload statt.">🔒 100&nbsp;% lokal – kein Upload</span>
-      <span class="badge badge-offline hidden" id="offlineReadyBadge" title="Die App ist im Browser zwischengespeichert und funktioniert auch ohne Internet.">✈️ Offline bereit</span>
+      <span class="badge badge-local" id="localBadge" title="Verarbeitung läuft auf diesem Gerät. Es findet kein Upload statt."><i data-icon="lock" data-icon-size="14"></i> Verarbeitung auf diesem Gerät</span>
+      <span class="badge badge-offline hidden" id="offlineReadyBadge" title="Die App ist im Browser zwischengespeichert und funktioniert auch ohne Internet."><i data-icon="offline" data-icon-size="14"></i> Offline bereit</span>
     </div>
   </header>
 
   <main class="layout">
     <!-- ───────────────── Einstellungen ───────────────── -->
     <aside class="panel settings" aria-label="Einstellungen">
-      <h2>Kompression</h2>
+      <h2><i data-icon="sliders"></i> Kompression</h2>
 
       <div class="preset-list" id="presetList" role="radiogroup" aria-label="Kompressionsstufe">
         <label class="preset">
@@ -126,7 +130,7 @@
         <small>+ heller (mehr Weiß) · − dunkler (mehr Details/Schwarz). Wirkung unten in der Vorschau prüfen.</small>
       </div>
 
-      <h2>Texterkennung (OCR)</h2>
+      <h2><i data-icon="text_search"></i> Texterkennung (OCR)</h2>
       <div class="field field-row">
         <input type="checkbox" id="ocrEnabled">
         <label for="ocrEnabled">Unsichtbaren OCR-Textlayer einfügen<br><small>macht gescannte PDFs durchsuchbar &amp; kopierbar</small></label>
@@ -139,33 +143,41 @@
           <option value="deu+eng">Deutsch + Englisch</option>
         </select>
       </div>
-      <p class="hint hidden" id="ocrLosslessHint">ℹ️ OCR ist nur bei den Bild-Modi verfügbar, nicht bei „Verlustfrei“.</p>
+      <p class="hint hidden" id="ocrLosslessHint">OCR ist nur bei den Bild-Modi verfügbar, nicht bei „Verlustfrei“.</p>
 
-      <p class="hint">Hinweis: Bei allen Stufen außer „Verlustfrei“ werden die Seiten neu als Bild aufgebaut. Vorhandener Text ist danach nicht mehr auswählbar – aktiviere OCR, um ihn wieder durchsuchbar zu machen.</p>
+      <p class="hint">Bei allen Stufen außer „Verlustfrei“ werden die Seiten neu als Bild aufgebaut. Vorhandener Text ist danach nicht mehr auswählbar – aktiviere OCR, um ihn wieder durchsuchbar zu machen.</p>
 
-      <h2>Speichern</h2>
+      <h2><i data-icon="folder"></i> Speichern</h2>
       <div id="saveSection">
-        <button class="btn btn-small" id="pickOutDirBtn">Zielordner wählen …</button>
+        <div class="field field-row hidden" id="autoPaperlessField">
+          <input type="checkbox" id="autoPaperless">
+          <label for="autoPaperless">Nach dem Komprimieren automatisch an Paperless senden<br><small>fertige PDFs landen direkt im überwachten Ordner</small></label>
+        </div>
+        <button class="btn btn-small" id="pickOutDirBtn"><i data-icon="folder"></i> Zielordner wählen …</button>
         <p class="hint hidden" id="outDirInfo"></p>
         <div class="field field-row hidden" id="autoSaveField">
           <input type="checkbox" id="autoSave" checked>
           <label for="autoSave">Ergebnisse automatisch in den Zielordner speichern</label>
         </div>
-        <p class="hint hidden" id="fsUnsupportedHint">ℹ️ Direktes Speichern in einen Ordner unterstützt dein Browser nicht (nur Chrome/Edge). Der normale Download funktioniert immer.</p>
+        <p class="hint hidden" id="fsUnsupportedHint">Direktes Speichern in einen Ordner unterstützt dein Browser nicht (nur Chrome/Edge). Der normale Download funktioniert immer.</p>
       </div>
 
-      <h2>Import-Ordner</h2>
+      <h2><i data-icon="upload"></i> Import-Ordner</h2>
       <div id="importSection">
-        <button class="btn btn-small" id="pickImportDirBtn">Import-Ordner wählen …</button>
-        <button class="btn btn-small btn-ghost hidden" id="rescanImportBtn">Neu scannen</button>
+        <button class="btn btn-small" id="pickImportDirBtn"><i data-icon="folder"></i> Import-Ordner wählen …</button>
+        <button class="btn btn-small btn-ghost hidden" id="rescanImportBtn"><i data-icon="rotate"></i> Neu scannen</button>
         <div class="import-list hidden" id="importList"></div>
       </div>
 
-      <h2>Meine Daten</h2>
+      <h2><i data-icon="device"></i> Meine Daten</h2>
       <div id="dataSection">
         <p class="hint">Unterschriften &amp; Einstellungen bleiben lokal in diesem Browser gespeichert. Zum Umzug: exportieren und im anderen Browser importieren.</p>
-        <button class="btn btn-small" id="exportDataBtn">Daten exportieren</button>
-        <button class="btn btn-small" id="importDataBtn">Daten importieren</button>
+        <div class="sync-row hidden" id="syncRow">
+          <i data-icon="cloud"></i>
+          <span id="syncInfo">Server-Speicher aktiv – Unterschriften &amp; Einstellungen gelten auf allen deinen Geräten.</span>
+        </div>
+        <button class="btn btn-small" id="exportDataBtn"><i data-icon="download"></i> Daten exportieren</button>
+        <button class="btn btn-small" id="importDataBtn"><i data-icon="upload"></i> Daten importieren</button>
         <input type="file" id="importDataInput" accept="application/json,.json" hidden>
         <p class="hint hidden" id="dataInfo"></p>
       </div>
@@ -175,45 +187,46 @@
     <section class="panel work" aria-label="Dateien">
       <div class="source-row">
         <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF-Dateien auswählen oder hierher ziehen">
-          <div class="dropzone-icon">📄⬇️</div>
-          <p class="dropzone-title">PDF hierher ziehen<br>oder klicken zum Auswählen</p>
-          <p class="dropzone-sub">Mehrere Dateien möglich · verlässt nie deinen Rechner</p>
+          <div class="dropzone-icon"><i data-icon="docPlus" data-icon-size="34"></i></div>
+          <p class="dropzone-title">PDF hierher ziehen<br>oder tippen zum Auswählen</p>
+          <p class="dropzone-sub">Mehrere Dateien möglich · verlässt nie dein Gerät</p>
           <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
         </div>
         <div class="dropzone scanzone" id="scanBtn" tabindex="0" role="button" aria-label="Dokument mit Kamera oder aus Bildern scannen">
-          <div class="dropzone-icon">📷</div>
-          <p class="dropzone-title">Dokument scannen</p>
-          <p class="dropzone-sub">Kamera (mit Blitz) oder Bilddateien · automatische Randerkennung · A4 &amp; Perspektiv&shy;korrektur</p>
+          <div class="dropzone-icon"><i data-icon="camera" data-icon-size="30"></i></div>
+          <p class="dropzone-title">Kamera-Scan</p>
+          <p class="dropzone-sub">Kamera oder Bilddateien · automatische Randerkennung · A4 &amp; Perspektivkorrektur</p>
         </div>
         <div class="dropzone scanzone hidden" id="netScanBtn" tabindex="0" role="button" aria-label="Seite vom Netzwerk-Scanner einlesen">
-          <div class="dropzone-icon">🖨️</div>
+          <div class="dropzone-icon"><i data-icon="scanner" data-icon-size="30"></i></div>
           <p class="dropzone-title">Netzwerk-Scanner</p>
-          <p class="dropzone-sub" id="netScanSub">Epson im Netz · Seite von der Glasfläche einlesen, dann zuschneiden &amp; bearbeiten</p>
+          <p class="dropzone-sub" id="netScanSub">Seite von der Glasfläche einlesen – mehrere Seiten sammeln, zuschneiden &amp; bearbeiten</p>
         </div>
       </div>
 
-      <p class="hint scan-hint hidden" id="scanHint">✅ Scan als PDF hinzugefügt – wähle jetzt links die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> (z.&nbsp;B. „Extrem S/W – Scanner-Stil“) und klicke auf <strong>Komprimieren</strong>.</p>
+      <p class="hint scan-hint hidden" id="scanHint">Scan als PDF hinzugefügt – wähle jetzt die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> und starte <strong>Komprimieren</strong>.</p>
 
       <ul class="file-list" id="fileList"></ul>
 
       <div class="actions hidden" id="actions">
-        <button class="btn btn-primary" id="startBtn">Komprimieren</button>
-        <button class="btn" id="previewBtn">Vorschau</button>
-        <button class="btn" id="downloadAllBtn" disabled>Alle herunterladen</button>
-        <button class="btn hidden" id="mergeBtn">Zu einer PDF zusammenführen</button>
-        <button class="btn btn-ghost" id="clearBtn">Liste leeren</button>
+        <button class="btn btn-primary" id="startBtn"><i data-icon="archive"></i> Komprimieren</button>
+        <button class="btn" id="previewBtn"><i data-icon="eye"></i> Vorschau</button>
+        <button class="btn" id="downloadAllBtn" disabled><i data-icon="download"></i> Alle herunterladen</button>
+        <button class="btn hidden" id="sendAllBtn"><i data-icon="upload"></i> Alle an Paperless</button>
+        <button class="btn hidden" id="mergeBtn"><i data-icon="docStack"></i> Zu einer PDF zusammenführen</button>
+        <button class="btn btn-ghost" id="clearBtn"><i data-icon="trash"></i> Liste leeren</button>
       </div>
 
       <div class="panel preview-card hidden" id="previewCard">
         <div class="preview-head">
-          <strong>Vorschau</strong>
+          <strong><i data-icon="eye"></i> Vorschau</strong>
           <span class="preview-nav">
-            <button class="btn btn-small" id="prevPageBtn" title="Vorherige Seite">‹</button>
+            <button class="btn btn-small" id="prevPageBtn" title="Vorherige Seite" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="15"></i></button>
             <span id="previewPageInfo" class="preview-pageinfo">1/1</span>
-            <button class="btn btn-small" id="nextPageBtn" title="Nächste Seite">›</button>
+            <button class="btn btn-small" id="nextPageBtn" title="Nächste Seite" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="15"></i></button>
           </span>
           <span id="previewInfo" class="preview-info"></span>
-          <button class="btn btn-small btn-ghost" id="closePreviewBtn">Schließen</button>
+          <button class="btn btn-small btn-ghost" id="closePreviewBtn"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
         </div>
         <div class="preview-override">
           <label for="pageOverrideSel">Nur diese Seite:</label>
@@ -238,8 +251,10 @@
   </main>
 
   <footer class="footer">
-    <p>PDF Presser verarbeitet alles direkt in deinem Browser (pdf.js, pdf-lib, Tesseract-OCR als WebAssembly). Es werden keine Dateien hochgeladen. Als installierte Web-App funktioniert das Tool auch komplett offline.</p>
+    <p>PDF Presser verarbeitet alles direkt auf deinem Gerät (pdf.js, pdf-lib, Tesseract-OCR als WebAssembly). Als installierte Web-App funktioniert das Tool auch komplett offline.</p>
   </footer>
+
+  <div class="toast-host" id="toastHost" aria-live="polite"></div>
 
   <script src="vendor/pdflib/pdf-lib.min.js"></script>
   <script src="vendor/tesseract/tesseract.min.js"></script>

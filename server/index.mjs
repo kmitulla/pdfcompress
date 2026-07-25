@@ -22,6 +22,13 @@ const SCANNER_HOST = (process.env.SCANNER_HOST || '').trim();
 const CONSUME_DIR = (process.env.CONSUME_DIR || '').trim();
 const MAX_UPLOAD = 200 * 1024 * 1024; // 200 MB Obergrenze fürs Speichern
 
+// Serverseitiger Speicher für Einstellungen & Unterschriften. Nur in der
+// selbst gehosteten Variante aktiv – die öffentliche GitHub-Pages-Version hat
+// kein Backend und bleibt damit automatisch rein lokal.
+const DATA_DIR = (process.env.DATA_DIR || '/data/app').trim();
+const PROFILE_FILE = path.join(DATA_DIR, 'profile.json');
+const MAX_PROFILE = 8 * 1024 * 1024; // Unterschriften sind Bilder – etwas Luft
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css',
@@ -78,8 +85,38 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, {
       scanner: !!SCANNER_HOST,
       consume: !!CONSUME_DIR,
-      version: 1,
+      profile: profileEnabled,
+      version: 2,
     });
+  }
+
+  // Profil (Einstellungen + Unterschriften + Stempel) vom Server lesen.
+  if (url.pathname === '/api/profile' && req.method === 'GET') {
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar.' });
+    try {
+      const raw = await fsp.readFile(PROFILE_FILE, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(raw);
+    } catch (e) {
+      if (e.code === 'ENOENT') return sendJson(res, 200, {}); // noch nichts gespeichert
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Profil auf dem Server ablegen (ersetzt den bisherigen Stand).
+  if (url.pathname === '/api/profile' && req.method === 'PUT') {
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar.' });
+    try {
+      const data = await readBody(req, MAX_PROFILE);
+      JSON.parse(data.toString('utf8')); // nur gültiges JSON annehmen
+      await fsp.mkdir(DATA_DIR, { recursive: true });
+      const tmp = `${PROFILE_FILE}.tmp`;
+      await fsp.writeFile(tmp, data);
+      await fsp.rename(tmp, PROFILE_FILE);
+      return sendJson(res, 200, { ok: true, bytes: data.length });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
   }
 
   // Scanner erreichbar? Modell zurückgeben.
@@ -155,6 +192,17 @@ async function serveStatic(req, res, url) {
 
 // -------------------------------------------------------------------- Server
 
+// Server-Speicher nur anbieten, wenn das Datenverzeichnis wirklich beschreibbar
+// ist – sonst würde die App eine Funktion zeigen, die beim Speichern scheitert.
+let profileEnabled = false;
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.accessSync(DATA_DIR, fs.constants.W_OK);
+  profileEnabled = true;
+} catch {
+  profileEnabled = false;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
@@ -171,8 +219,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`PDF Presser läuft auf http://0.0.0.0:${port}`);
-  console.log(`  Scanner:     ${SCANNER_HOST ? SCANNER_HOST : '— (nicht konfiguriert)'}`);
-  console.log(`  Zielordner:  ${CONSUME_DIR ? CONSUME_DIR : '— (nicht konfiguriert)'}`);
+  console.log(`  Scanner:      ${SCANNER_HOST ? SCANNER_HOST : '— (nicht konfiguriert)'}`);
+  console.log(`  Zielordner:   ${CONSUME_DIR ? CONSUME_DIR : '— (nicht konfiguriert)'}`);
+  console.log(`  Profilspeicher: ${profileEnabled ? DATA_DIR : '— (nicht beschreibbar)'}`);
   if (CONSUME_DIR && !fs.existsSync(CONSUME_DIR)) {
     console.log('  ⚠️  Zielordner existiert noch nicht – wird beim ersten Speichern angelegt.');
   }

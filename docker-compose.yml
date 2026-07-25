@@ -1,43 +1,75 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # PDF Presser – Stack für Portainer / Docker Compose
 #
-# In Portainer:  Stacks → Add stack → "Repository" → diese URL + Compose-Pfad
-#                docker-compose.yml, oder den Inhalt hier per "Web editor" einfügen.
+# In Portainer:  Stacks → Add stack → "Web editor" → diesen Inhalt einfügen,
+#                unten die drei Werte anpassen → Deploy the stack.
 #
-# Danach unter "Environment variables" die Werte unten setzen (SCANNER_HOST usw.)
-# oder direkt hier eintragen. Details: docs/portainer-nas-scanner-setup.md
+# Ausführliche Anleitung: docs/portainer-nas-scanner-setup.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
   pdfpresser:
     container_name: pdfpresser
-    # Aus diesem Repo bauen (Portainer klont es beim Stack-Deploy selbst):
+    # Direkt aus dem Repository bauen – kein Vorab-Build, kein Klonen nötig.
     build:
-      context: .
-    # Alternativ ein fertiges Image nutzen statt zu bauen – dann "build:" oben
-    # auskommentieren und die nächste Zeile aktivieren:
-    # image: ghcr.io/kmitulla/pdfcompress:latest
+      context: "https://github.com/kmitulla/pdfcompress.git#main"
+    image: pdfpresser:latest
     restart: unless-stopped
+    # Als root laufen, damit der gemountete Zielordner sicher beschreibbar ist.
+    # Weglassen, wenn der Ordner dem Benutzer mit uid 1000 gehört.
+    user: "0:0"
     ports:
       - "8823:8823"
     environment:
-      # IP oder Hostname deines Epson ET-2720 im gleichen Netz.
-      # Leer lassen, um die Scanner-Funktion zu deaktivieren.
+      # ── 1. Scanner ────────────────────────────────────────────────────────
+      # IP/Hostname des Netzwerk-Scanners. WICHTIG: Viele Epson-Geräte (z. B.
+      # ET-2720) sprechen eSCL nur über HTTPS – dann "https://" voranstellen.
+      # Leer lassen, um die Scanner-Funktion abzuschalten.
       SCANNER_HOST: "${SCANNER_HOST:-}"
-      # Zielordner IM CONTAINER. Wird unten auf den NAS-/Paperless-Consume-Ordner
-      # gemountet. Nicht ändern, außer du passt auch das Volume an.
+
+      # ── 2. Zielordner ─────────────────────────────────────────────────────
+      # Pfad IM CONTAINER – wird unten auf den Paperless-Ordner gemountet.
       CONSUME_DIR: "/data/consume"
+
+      # ── 3. Profilspeicher ─────────────────────────────────────────────────
+      # Einstellungen & Unterschriften liegen auf dem eigenen Server, damit sie
+      # auf iPhone UND Laptop gelten. Nur in dieser selbst gehosteten Variante –
+      # die öffentliche GitHub-Pages-Version bleibt rein lokal im Browser.
+      DATA_DIR: "/data/app"
+
     volumes:
-      # Linke Seite = Paperless-"consume"-Ordner auf deinem NAS bzw. Host.
-      # Beispiele:
-      #   - /mnt/nas/paperless/consume:/data/consume
-      #   - paperless_consume:/data/consume          (gemeinsames Named Volume)
+      # Linke Seite = der Ordner, den Paperless als "consume" überwacht.
+      #   lokaler Ordner (ZimaOS/Host):  /DATA/scannerinput:/data/consume
+      #   gemountete NAS-Freigabe:       /mnt/nas/scannerinput:/data/consume
+      #   gemeinsames Docker-Volume:     paperless_consume:/data/consume
       - "${CONSUME_HOST_PATH:-./consume}:/data/consume"
 
+      # Profilspeicher – eigenes Volume, sonst sind Unterschriften nach einem
+      # Container-Update weg.
+      - pdfpresser_data:/data/app
+
+volumes:
+  pdfpresser_data:
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Optional: Paperless-ngx im selben Stack mitlaufen lassen. Dann teilen sich
-# beide denselben "consume"-Ordner (Named Volume) und du brauchst kein NAS-Mount.
-# Zum Aktivieren die folgenden Zeilen einkommentieren.
+# Variante: NAS-Freigabe direkt einbinden (statt sie auf dem Host zu mounten).
+# Dann oben "- ${CONSUME_HOST_PATH...}" durch "- paperless_consume:/data/consume"
+# ersetzen und diesen Block aktivieren.
+#
+# ACHTUNG: Das Passwort darf KEIN Komma enthalten – die Optionen sind
+# kommagetrennt, ein Komma im Passwort zerreißt sie ("invalid argument").
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   paperless_consume:
+#     driver: local
+#     driver_opts:
+#       type: cifs
+#       device: "//192.168.178.94/scannerinput"
+#       o: "username=NAS_USER,password=NAS_PASSWORT_OHNE_KOMMA,uid=1000,gid=1000,vers=3.0,file_mode=0664,dir_mode=0775"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Optional: Paperless-ngx im selben Stack mitlaufen lassen – dann teilen sich
+# beide denselben consume-Ordner und du brauchst gar kein NAS-Mount.
 # ─────────────────────────────────────────────────────────────────────────────
 #
 #   paperless-broker:
@@ -57,14 +89,7 @@ services:
 #       PAPERLESS_REDIS: redis://paperless-broker:6379
 #       PAPERLESS_OCR_LANGUAGE: deu
 #       PAPERLESS_TIME_ZONE: Europe/Berlin
-#       PAPERLESS_URL: http://minipc:8010
 #     volumes:
 #       - paperless_data:/usr/src/paperless/data
 #       - paperless_media:/usr/src/paperless/media
 #       - paperless_consume:/usr/src/paperless/consume
-#
-# volumes:
-#   redisdata:
-#   paperless_data:
-#   paperless_media:
-#   paperless_consume:      # ← dann oben bei pdfpresser: "paperless_consume:/data/consume"

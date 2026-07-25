@@ -159,6 +159,73 @@ verwenden.
 
 ---
 
+## Wo läuft eigentlich die Rechenarbeit?
+
+**Auf deinem Gerät – nicht auf dem Mini-PC.** Rendern, Zuschneiden, Kompression
+und OCR laufen als WebAssembly/JavaScript im Browser (iPhone bzw. Laptop). Der
+Mini-PC liefert nur die App aus und erledigt die zwei Dinge, die ein Browser
+nicht darf:
+
+| Aufgabe | Läuft auf |
+| --- | --- |
+| Seiten rendern, zuschneiden, entzerren | **Handy/Laptop** (Browser) |
+| Kompression (JPEG, CCITT-G4, Palette) | **Handy/Laptop** (Browser) |
+| OCR (Tesseract) | **Handy/Laptop** (Browser) |
+| Scanner ansprechen (eSCL) | Mini-PC (Server) |
+| Datei in den Ordner schreiben | Mini-PC (Server) |
+| Einstellungen/Unterschriften ablegen | Mini-PC (Server) |
+
+Der Mini-PC bleibt also praktisch unbelastet. Umgekehrt heißt das: bei sehr
+großen Scans rechnet das iPhone spürbar. Die „Scanner-Stil“-Stufen sind dafür
+die effizientesten.
+
+---
+
+## Mehrseitige PDFs am Stück scannen
+
+Genau dafür ist der Ablauf gebaut – Beispiel „3 Seiten, dann 4, dann 1“:
+
+1. **„Netzwerk-Scanner“** antippen → erste Seite wird eingelesen und öffnet sich
+   im Zuschnitt-Editor → **Übernehmen**.
+2. In der Seitenübersicht **„Nächste Seite scannen“** → nächste Vorlage auflegen
+   → übernehmen. Beliebig oft wiederholen (hier also 3×).
+3. **„Als PDF übernehmen“** → alle gesammelten Seiten werden **eine** PDF.
+4. Kompressionsstufe wählen → **Komprimieren** → **„An Paperless“**.
+5. Für die nächste PDF (4 Seiten) einfach wieder bei 1. anfangen. Die zuletzt
+   gewählte **Kompressionsstufe bleibt erhalten** – du musst nichts neu
+   einstellen.
+
+**Einstellungen pro Seite:** Standardmäßig gilt eine Stufe für alle Seiten.
+Braucht eine einzelne Seite etwas anderes (z. B. Seite 3 in Farbe, Rest S/W),
+in der **Vorschau** zur Seite blättern und dort unter „Nur diese Seite“ eine
+eigene Stufe samt Helligkeit setzen.
+
+**Ohne Extra-Tipp speichern:** Unter *Speichern* die Option **„Nach dem
+Komprimieren automatisch an Paperless senden“** aktivieren – dann landet jede
+fertige PDF direkt im überwachten Ordner.
+
+---
+
+## Einstellungen & Unterschriften auf allen Geräten
+
+In der **selbst gehosteten Variante** liegen Einstellungen, Unterschriften und
+Stempel zusätzlich auf deinem Server (`DATA_DIR`, eigenes Docker-Volume). Du
+unterschreibst also einmal am Laptop und hast die Unterschrift auch am iPhone.
+In der Seitenleiste unter *Meine Daten* zeigt eine Zeile den Status an.
+
+**Die öffentliche Version auf GitHub Pages hat kein Backend** – dort bleibt
+weiterhin alles ausschließlich lokal im Browser (IndexedDB), es wird nichts
+übertragen. Dasselbe Programm, zwei Betriebsarten:
+
+| | GitHub Pages (öffentlich) | Selbst gehostet (dein Mini-PC) |
+| --- | --- | --- |
+| Verarbeitung | im Browser | im Browser |
+| Speicherung von Einstellungen/Unterschriften | nur lokal im Browser | lokal **+** auf deinem Server |
+| Netzwerk-Scanner | – | ✔ |
+| An Paperless senden | – | ✔ |
+
+---
+
 ## Teil 6 – Vom Handy nutzen
 
 1. Am Handy **http://MINIPC-IP:8823** öffnen (gleiches WLAN).
@@ -182,16 +249,52 @@ verwenden.
 
 ---
 
+## Updates einspielen
+
+Der Stack baut das Image **aus dem Repository**. Ein Update ist deshalb immer
+derselbe Dreisatz – wichtig ist nur, dass wirklich **neu gebaut** wird
+(ein bloßer Container-Neustart nimmt weiter das alte Image):
+
+**In Portainer (empfohlen):**
+1. **Stacks → pdfpresser → Editor** öffnen.
+2. Rechts **„Re-pull image and redeploy“** bzw. beim Update-Dialog
+   **„Re-build image“** aktivieren.
+3. **Update the stack**.
+
+Falls Portainer hartnäckig das alte Image nimmt:
+1. **Stacks → pdfpresser → Remove** (Volumes NICHT löschen – deine
+   Unterschriften liegen in `pdfpresser_data`).
+2. **Images →** `pdfpresser:latest` **→ Remove**.
+3. **Stacks → Add stack** → dieselbe YAML → **Deploy**.
+
+**Auf der Kommandozeile:**
+```bash
+docker compose build --no-cache && docker compose up -d
+```
+
+**Im Browser nachladen:** Die App ist eine PWA und hält sich einen Offline-Cache.
+Nach einem Update lädt sie sich normalerweise **einmal automatisch neu**. Falls
+doch etwas alt aussieht: Seite neu laden (am iPhone die Web-App einmal schließen
+und wieder öffnen).
+
+---
+
 ## Fehlersuche
 
 | Symptom | Ursache / Lösung |
 | --- | --- |
 | Kachel „Netzwerk-Scanner" fehlt | `SCANNER_HOST` nicht gesetzt oder App über GitHub Pages statt über den Container geöffnet. `/api/config` prüfen. |
-| `scanner status` → `ok:false` | Drucker aus/anderes Netz, falsche IP, oder eSCL nur über HTTPS → `SCANNER_HOST=https://IP`. |
-| Scan bricht mit HTTP 503/409 ab | Drucker im Energiesparmodus oder belegt – kurz warten, erneut. |
+| `scanner status` → `ok:false`, Scan endet mit **HTTP 404** | eSCL läuft nur über **HTTPS** → `SCANNER_HOST: "https://192.168.178.69"`. Testen: `https://IP/eSCL/ScannerCapabilities` im Browser (Zertifikatswarnung ist normal, das Gerät hat ein selbstsigniertes Zertifikat). |
+| Scan endet mit **HTTP 503** („belegt") | Ein vorheriger Auftrag hing. Wird jetzt automatisch sauber geschlossen und bis zu 4× wiederholt. Bleibt es dabei: Scanner einmal aus-/einschalten. |
+| **EACCES** beim Speichern | Der Zielordner gehört root, der Container läuft als `node`. `user: "0:0"` beim Service setzen (steht in der Compose). |
+| CIFS-Mount: **invalid argument** | Das NAS-Passwort enthält ein **Komma** – die Optionen sind kommagetrennt. Passwort ohne Komma/Sonderzeichen vergeben. |
+| CIFS-Mount: **Permission denied (13)** | Falscher Benutzer/Passwort oder fehlendes Schreibrecht auf die Freigabe. |
+| CIFS-Mount: **Fehler 112 / Protokoll** | `vers=3.0` auf `vers=2.1` ändern, ggf. `,sec=ntlmssp` ergänzen. |
+| Portainer: **pull access denied for pdfpresser** | Das Image existiert noch nicht. Die Compose enthält einen `build:`-Block – sicherstellen, dass er drinsteht, bzw. Image vorher unter *Images → Build a new image* bauen. |
 | Button „An Paperless" fehlt | `CONSUME_DIR`/Volume nicht gemountet. `/api/config` → `consume` muss `true` sein. |
-| Paperless sieht die Datei nicht | Mountet der Container denselben Ordner, den Paperless überwacht? Rechte (uid/gid) des NAS-Mounts prüfen. |
-| Kamera-Scan am Handy geht nicht | http ist kein sicherer Kontext → HTTPS voranstellen (siehe oben). |
+| Paperless sieht die Datei nicht | Mountet der Container denselben Ordner, den Paperless überwacht? Rechte (uid/gid) prüfen. |
+| Unterschriften nach Update weg | Volume `pdfpresser_data` fehlt oder wurde mitgelöscht. |
+| Kamera-Scan am Handy geht nicht | http ist kein sicherer Kontext → HTTPS voranstellen. Der **Netzwerk-Scanner** ist davon nicht betroffen. |
 
 ---
 

@@ -5,6 +5,7 @@
 
 import { processSignatureImage, strokeToSvgPath, normalizeStrokes } from './signature.js';
 import { listSignatures, saveSignature, deleteSignature, listStamps, saveStamp, deleteStamp } from './store.js';
+import { hydrateIcons, icon } from './icons.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -260,29 +261,29 @@ function buildUi() {
   <div class="ed-overlay">
     <div class="ed-topbar">
       <div class="ed-tools" role="toolbar">
-        <button data-tool="pan" class="ed-btn active" title="Auswählen/Verschieben">✥</button>
-        <button data-tool="sign" class="ed-btn" title="Unterschrift">✒️</button>
-        <button data-tool="text" class="ed-btn" title="Text">T</button>
-        <button data-tool="draw" class="ed-btn" title="Stift">✏️</button>
-        <button data-tool="erase" class="ed-btn" title="Striche-Radierer: entfernt gezeichnete Stift-/Marker-Striche">🧽</button>
-        <button data-tool="image" class="ed-btn" title="Bild einfügen">🖼️</button>
-        <button data-tool="stamp" class="ed-btn" title="Stempel (BEZAHLT/KOPIE …)">🏷️</button>
-        <button data-tool="redact" class="ed-btn" title="Schwärzen">⬛</button>
-        <button data-tool="crop" class="ed-btn" title="Zuschneiden">⛶</button>
-        <button id="edPagesBtn" class="ed-btn" title="Seiten verwalten">🗂️</button>
-        <button id="edFormBtn" class="ed-btn hidden" title="Formular ausfüllen">📋</button>
-        <button id="edUndoBtn" class="ed-btn" title="Rückgängig">↶</button>
-        <button id="edRedoBtn" class="ed-btn" title="Wiederholen">↷</button>
-        <button id="edHistBtn" class="ed-btn" title="Verlauf">🕘</button>
-        <button id="edDeleteBtn" class="ed-btn hidden" title="Objekt löschen">🗑️</button>
+        <button data-tool="pan" class="ed-btn active" title="Auswählen/Verschieben" aria-label="Auswählen/Verschieben"><i data-icon="crop" data-icon-size="18"></i></button>
+        <button data-tool="sign" class="ed-btn" title="Unterschrift" aria-label="Unterschrift"><i data-icon="signature" data-icon-size="18"></i></button>
+        <button data-tool="text" class="ed-btn" title="Text" aria-label="Text"><i data-icon="text" data-icon-size="18"></i></button>
+        <button data-tool="draw" class="ed-btn" title="Stift" aria-label="Stift"><i data-icon="pen" data-icon-size="18"></i></button>
+        <button data-tool="erase" class="ed-btn" title="Striche-Radierer: entfernt gezeichnete Stift-/Marker-Striche" aria-label="Striche-Radierer"><i data-icon="eraser" data-icon-size="18"></i></button>
+        <button data-tool="image" class="ed-btn" title="Bild einfügen" aria-label="Bild einfügen"><i data-icon="image" data-icon-size="18"></i></button>
+        <button data-tool="stamp" class="ed-btn" title="Stempel (BEZAHLT/KOPIE …)" aria-label="Stempel"><i data-icon="stamp" data-icon-size="18"></i></button>
+        <button data-tool="redact" class="ed-btn" title="Schwärzen" aria-label="Schwärzen"><i data-icon="marker" data-icon-size="18"></i></button>
+        <button data-tool="crop" class="ed-btn" title="Zuschneiden" aria-label="Zuschneiden"><i data-icon="scanFrame" data-icon-size="18"></i></button>
+        <button id="edPagesBtn" class="ed-btn" title="Seiten verwalten" aria-label="Seiten verwalten"><i data-icon="docStack" data-icon-size="18"></i></button>
+        <button id="edFormBtn" class="ed-btn hidden" title="Formular ausfüllen" aria-label="Formular ausfüllen"><i data-icon="doc" data-icon-size="18"></i></button>
+        <button id="edUndoBtn" class="ed-btn" title="Rückgängig" aria-label="Rückgängig"><i data-icon="undo" data-icon-size="18"></i></button>
+        <button id="edRedoBtn" class="ed-btn" title="Wiederholen" aria-label="Wiederholen"><i data-icon="redo" data-icon-size="18"></i></button>
+        <button id="edHistBtn" class="ed-btn" title="Verlauf" aria-label="Verlauf"><i data-icon="rotate" data-icon-size="18"></i></button>
+        <button id="edDeleteBtn" class="ed-btn hidden" title="Objekt löschen" aria-label="Objekt löschen"><i data-icon="trash" data-icon-size="18"></i></button>
       </div>
       <div class="ed-nav">
-        <button id="edPrev" class="ed-btn">‹</button>
+        <button id="edPrev" class="ed-btn" title="Vorherige Seite" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="17"></i></button>
         <span id="edPageInfo">1/1</span>
-        <button id="edNext" class="ed-btn">›</button>
-        <button id="edZoomOut" class="ed-btn">−</button>
-        <button id="edZoomIn" class="ed-btn">+</button>
-        <button id="edZoomFit" class="ed-btn">Fit</button>
+        <button id="edNext" class="ed-btn" title="Nächste Seite" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="17"></i></button>
+        <button id="edZoomOut" class="ed-btn" title="Verkleinern" aria-label="Verkleinern"><i data-icon="minus" data-icon-size="17"></i></button>
+        <button id="edZoomIn" class="ed-btn" title="Vergrößern" aria-label="Vergrößern"><i data-icon="plus" data-icon-size="17"></i></button>
+        <button id="edZoomFit" class="ed-btn" title="Einpassen">Fit</button>
       </div>
       <div class="ed-actions">
         <button id="edCancel" class="btn btn-small btn-ghost">Abbrechen</button>
@@ -300,6 +301,7 @@ function buildUi() {
     <input type="file" id="edImageInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" hidden>
     <input type="file" id="edSigPhotoInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" hidden>
   </div>`;
+  hydrateIcons(root);
   document.body.appendChild(root);
   return root;
 }
@@ -577,7 +579,7 @@ function updateProps() {
     $('#edStampBrand').oninput = (e) => { o.brand = e.target.value; renderOverlay(); };
     $('#edStampSaveTpl').onclick = async () => {
       await saveStamp({ kind: 'text', title: o.title, brand: o.brand || '', note: o.note || '', color: o.color, style: o.style || 'frame', dateAuto: true });
-      $('#edStampSaveTpl').textContent = 'Gespeichert ✓';
+      $('#edStampSaveTpl').textContent = 'Gespeichert';
       setTimeout(() => { $('#edStampSaveTpl').textContent = 'Als Vorlage speichern'; }, 1500);
     };
     $('#edStampTpls').onclick = openStampTplModal;
@@ -587,7 +589,7 @@ function updateProps() {
     props.classList.remove('hidden');
     $('#edAspect').onchange = (e) => { ed.aspectLock = e.target.checked; };
   } else if (ed.tool === 'erase') {
-    props.innerHTML = '<span class="hint-inline">🧽 Striche-Radierer: über mit dem Stift ✏️ gezeichnete Striche ziehen, um sie zu entfernen. Original-Inhalt des PDFs wird nicht radiert – dafür „Schwärzen“ ⬛ verwenden.</span>';
+    props.innerHTML = '<span class="hint-inline">Striche-Radierer: über mit dem Stift gezeichnete Striche ziehen, um sie zu entfernen. Original-Inhalt des PDFs wird nicht radiert – dafür „Schwärzen“ ⬛ verwenden.</span>';
     props.classList.remove('hidden');
   } else if (ed.tool === 'redact') {
     props.innerHTML = '<span class="hint-inline">Rechteck über den Inhalt ziehen. Wichtig: ECHT entfernt ist der Inhalt nach Kompression mit einer Bild-Stufe (z. B. Mittel oder Extrem S/W) – „Verlustfrei“ deckt nur ab.</span>';
@@ -879,7 +881,7 @@ async function openSignModal() {
       <div class="ed-row"><button class="btn btn-small btn-primary" id="sigUseDrawn">Einfügen</button></div>
     </div>
     <div id="photoTab" class="ed-tabpane hidden">
-      <div class="ed-row"><button class="btn btn-small" id="sigPhotoPick">📷 Foto/Bild wählen</button>
+      <div class="ed-row"><button class="btn btn-small" id="sigPhotoPick">Foto/Bild wählen</button>
         <span class="hint-inline">Fertig freigestellte PNGs (transparent) werden direkt übernommen.</span></div>
       <canvas id="sigPhotoPreview" class="hidden"></canvas>
       <div class="ed-row hidden" id="sigPhotoCtrls">
@@ -1036,7 +1038,7 @@ async function openSignModal() {
       use.onclick = () => insertSignature(sig);
       const del = document.createElement('button');
       del.className = 'btn btn-small btn-ghost';
-      del.textContent = '🗑';
+      del.innerHTML = icon('trash', { size: 15 });
       del.onclick = async () => { await deleteSignature(sig.id); renderSaved(); };
       row.append(preview, name, use, del);
       listEl.appendChild(row);
@@ -1081,7 +1083,7 @@ async function openStampTplModal() {
   const box = $('#edModalBox');
   const stamps = await listStamps();
   box.innerHTML = `<h3>Stempel-Vorlagen</h3><div class="ed-savedlist" id="edTplList">${stamps.length ? '' : '<p>Noch keine Vorlagen gespeichert.</p>'}</div>
-    <div class="ed-row"><button class="btn btn-small" id="edStampFromImg">🖼️ Stempel aus Bild erstellen</button>
+    <div class="ed-row"><button class="btn btn-small" id="edStampFromImg">Stempel aus Bild erstellen</button>
     <button class="btn btn-small btn-ghost" id="edTplClose">Schließen</button></div>`;
   $('#edModal').classList.remove('hidden');
   $('#edTplClose').onclick = () => $('#edModal').classList.add('hidden');
@@ -1121,7 +1123,7 @@ async function openStampTplModal() {
     };
     const del = document.createElement('button');
     del.className = 'btn btn-small btn-ghost';
-    del.textContent = '🗑';
+    del.innerHTML = icon('trash', { size: 15 });
     del.onclick = async () => { await deleteStamp(st.id); openStampTplModal(); };
     row.append(prev, name, use, del);
     list.appendChild(row);
@@ -1180,7 +1182,7 @@ async function openPagesModal() {
         mk('←', () => { [ed.state.pages[i - 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i - 1]]; }, i === 0),
         mk('→', () => { [ed.state.pages[i + 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i + 1]]; }, i === ed.state.pages.length - 1),
         mk('⧉', () => { ed.state.pages.splice(i + 1, 0, JSON.parse(JSON.stringify(entry))); }),
-        mk('🗑', () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
+        mk(icon('trash', { size: 15 }), () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
       );
       const label = document.createElement('div');
       label.textContent = `Seite ${i + 1}${entry.src == null ? ' (leer)' : ''}${entry.rotate ? ` ↻${entry.rotate}°` : ''}`;

@@ -29,9 +29,84 @@ async function idb(mode, fn) {
   }
 }
 
-export const kvGet = (key) => idb('readonly', (s) => s.get(key));
-export const kvSet = (key, value) => idb('readwrite', (s) => s.put(value, key));
+const kvGetLocal = (key) => idb('readonly', (s) => s.get(key));
+const kvSetLocal = (key, value) => idb('readwrite', (s) => s.put(value, key));
+
+export const kvGet = kvGetLocal;
 export const kvDel = (key) => idb('readwrite', (s) => s.delete(key));
+
+// ---------------------------------------------------------------- Server-Profil
+//
+// Nur in der selbst gehosteten Variante: Einstellungen, Unterschriften und
+// Stempel liegen zusätzlich auf dem eigenen Server, damit iPhone und Laptop
+// denselben Stand sehen. Ohne Backend (z. B. GitHub Pages) bleibt alles rein
+// lokal in IndexedDB – dort wird nie etwas nach außen geschickt.
+
+const SYNC_KEYS = ['signatures', 'stamps', 'settings'];
+let serverProfile = false;      // Backend bietet Profilspeicher an?
+let syncTimer = null;
+let syncListener = null;
+
+/** Wird von der App aufgerufen, sobald /api/config bekannt ist. */
+export function enableServerProfile(on) {
+  serverProfile = !!on;
+}
+export const hasServerProfile = () => serverProfile;
+
+/** Callback für die Statusanzeige: ('syncing' | 'ok' | 'error', text). */
+export function onSyncStatus(fn) {
+  syncListener = fn;
+}
+function status(state, text) {
+  if (syncListener) syncListener(state, text);
+}
+
+/** Lokalen Stand zum Server schieben (gebündelt, damit nicht jeder Tastendruck sendet). */
+function scheduleUpload() {
+  if (!serverProfile) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    try {
+      status('syncing', 'Wird auf dem Server gespeichert …');
+      const payload = {};
+      for (const k of SYNC_KEYS) payload[k] = (await kvGetLocal(k)) ?? (k === 'settings' ? {} : []);
+      const res = await fetch('/api/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      status('ok', 'Auf dem Server gespeichert – gilt auf allen deinen Geräten.');
+    } catch (e) {
+      status('error', `Server-Speicher nicht erreichbar: ${e?.message || e}`);
+    }
+  }, 800);
+}
+
+/** Beim Start: Serverstand holen und lokal übernehmen. */
+export async function pullServerProfile() {
+  if (!serverProfile) return false;
+  try {
+    const res = await fetch('/api/profile', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    let got = false;
+    for (const k of SYNC_KEYS) {
+      if (data[k] !== undefined) { await kvSetLocal(k, data[k]); got = true; }
+    }
+    status('ok', 'Server-Speicher aktiv – Unterschriften & Einstellungen gelten auf allen deinen Geräten.');
+    return got;
+  } catch (e) {
+    status('error', `Server-Speicher nicht erreichbar: ${e?.message || e}`);
+    return false;
+  }
+}
+
+// Schreiben geht immer zuerst lokal (offline-fähig) und wird dann hochgeschoben.
+export async function kvSet(key, value) {
+  await kvSetLocal(key, value);
+  if (SYNC_KEYS.includes(key)) scheduleUpload();
+}
 
 // Browser bitten, die Daten dauerhaft zu behalten (nicht bei Platzmangel löschen)
 export async function requestPersistence() {

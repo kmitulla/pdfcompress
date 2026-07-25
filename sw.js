@@ -14,6 +14,7 @@ const ASSETS = [
   './js/scanner.js',
   './js/signature.js',
   './js/store.js',
+  './js/icons.js',
   './icons/favicon-32.png',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',

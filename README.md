@@ -8,6 +8,11 @@ installierbare Web-App (PWA) funktioniert das Tool nach dem ersten Aufruf auch
 
 ![Screenshot](docs/screenshot.png)
 
+Die Oberfläche ist im **„Liquid Glass"-Stil (iOS 26)** gehalten: durchscheinende
+Materialien, weiche Übergänge, durchgehendes SVG-Icon-Set (keine Emojis), hell
+und dunkel automatisch. Am iPhone stehen Scannen und Dateien oben, am Desktop
+gilt das zweispaltige Layout.
+
 ## Funktionen
 
 - **Kein Upload:** Alle Verarbeitung (Rendern, Komprimieren, OCR) läuft per
@@ -118,20 +123,24 @@ npm test
 ## Selbst hosten: Netzwerk-Scanner & „an Paperless" (Docker/Portainer)
 
 Zusätzlich zum reinen Browser-Betrieb lässt sich die App als **Docker-Container**
-auf einem eigenen Server/Mini-PC betreiben. Dann kommen zwei Funktionen dazu, die
+auf einem eigenen Server/Mini-PC betreiben. Dann kommen drei Funktionen dazu, die
 im Browser allein nicht möglich sind:
 
 - **Netzwerk-Scanner (eSCL/AirScan):** Seiten direkt von einem Netzwerk-Scanner
   wie dem **Epson ET-2720** einlesen – auch vom Handy. Der Scan öffnet sich im
-  gewohnten Zuschnitt-/A4-/Perspektiv-Editor.
-- **„📥 An Paperless (NAS)":** Das fertige, komprimierte PDF landet per Klick in
-  einem überwachten Ordner (z. B. auf dem NAS), aus dem **Paperless** es
-  automatisch weiterverarbeitet.
+  gewohnten Zuschnitt-/A4-/Perspektiv-Editor; **weitere Seiten lassen sich
+  anfügen**, bis das mehrseitige PDF vollständig ist.
+- **„An Paperless":** Das fertige, komprimierte PDF landet per Tipp (auf Wunsch
+  automatisch) in einem überwachten Ordner, aus dem **Paperless** es
+  weiterverarbeitet. Geschrieben wird atomar, damit Paperless nie eine halbe
+  Datei sieht.
+- **Profil auf dem eigenen Server:** Einstellungen, Unterschriften und Stempel
+  gelten auf **allen** Geräten (iPhone + Laptop).
 
 Das mitgelieferte Backend (`server/`) liefert die Web-App aus **und** stellt die
-API dafür bereit (`/api/scanner/scan`, `/api/save`) – alles same-origin, ohne
+API bereit (`/api/scanner/scan`, `/api/save`, `/api/profile`) – same-origin, ohne
 externe Abhängigkeiten. Ist kein Backend vorhanden (z. B. auf GitHub Pages),
-bleiben die beiden Funktionen einfach ausgeblendet.
+blenden sich diese Funktionen einfach aus und **alles bleibt rein lokal**.
 
 ```bash
 # Schnellstart ohne Docker:
@@ -142,14 +151,21 @@ docker compose up -d --build
 ```
 
 **Komplette Schritt-für-Schritt-Anleitung** (Portainer, Epson-Einrichtung,
-NAS-Mount, Paperless, Handy-Nutzung, Fehlersuche):
+NAS-Mount, Paperless, mehrseitiges Scannen, Updates, Fehlersuche):
 [`docs/portainer-nas-scanner-setup.md`](docs/portainer-nas-scanner-setup.md).
 
 | Umgebungsvariable | Zweck |
 | --- | --- |
-| `SCANNER_HOST` | IP/Host des Scanners (z. B. `192.168.1.50`) – leer = Scanner aus |
-| `CONSUME_DIR` | Zielordner im Container (Standard `/data/consume`, aufs NAS gemountet) |
+| `SCANNER_HOST` | IP/Host des Scanners (z. B. `192.168.1.50`, bei Bedarf `https://…`) – leer = Scanner aus |
+| `CONSUME_DIR` | Zielordner im Container (Standard `/data/consume`, auf den Paperless-Ordner gemountet) |
+| `DATA_DIR` | Profilspeicher für Einstellungen/Unterschriften (Standard `/data/app`) |
 | `PORT` | Server-Port (Standard `8823`) |
+
+### Wo läuft die Rechenarbeit?
+
+**Auf dem Gerät, an dem du sitzt** – nicht auf dem Server. Rendern, Zuschneiden,
+Kompression und OCR laufen im Browser (iPhone/Laptop). Der Server macht nur
+Scanner-Zugriff, Dateiablage und Profilspeicher.
 
 ## Deployment (GitHub Pages)
 

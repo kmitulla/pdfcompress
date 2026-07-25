@@ -71,7 +71,10 @@ test('Vorschau: Seiten blättern & Seiten-individuelle Kompression', async ({ pa
   await expect(page.locator('#previewPageInfo')).toHaveText('1/2');
   expect(await page.locator('#pageOverrideSel').inputValue()).toBe('');
 
-  // Komprimieren (global „Mittel“): Seite 1 bleibt bunt, Seite 2 wird S/W
+  // Komprimieren (global „Mittel“): Seite 1 bleibt bunt, Seite 2 wird S/W.
+  // Stufe ausdrücklich setzen – Einstellungen können aus dem Serverprofil
+  // stammen (selbst gehostete Variante) und sind damit nicht garantiert Standard.
+  await page.locator('input[name="preset"][value="mittel"]').check();
   await page.click('#startBtn');
   await expect(page.locator('.file-item .file-status')).toContainText('Fertig', { timeout: 120000 });
   const colorFracs = await page.evaluate(async () => {
