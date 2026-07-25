@@ -1169,20 +1169,23 @@ async function openPagesModal() {
       }
       const bar = document.createElement('div');
       bar.className = 'ed-pagecell-bar';
-      const mk = (label, fn, disabled) => {
+      // Beschriftung ist Markup (Icons) aus dem eigenen Set – keine Benutzereingabe.
+      const mk = (html, title, fn, disabled) => {
         const b = document.createElement('button');
         b.className = 'btn btn-small';
-        b.textContent = label;
+        b.innerHTML = html;
+        b.title = title;
+        b.setAttribute('aria-label', title);
         b.disabled = !!disabled;
         b.onclick = () => { snapshot(); fn(); renderGrid(); };
         return b;
       };
       bar.append(
-        mk('↻', () => { entry.rotate = ((entry.rotate || 0) + 90) % 360; }),
-        mk('←', () => { [ed.state.pages[i - 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i - 1]]; }, i === 0),
-        mk('→', () => { [ed.state.pages[i + 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i + 1]]; }, i === ed.state.pages.length - 1),
-        mk('⧉', () => { ed.state.pages.splice(i + 1, 0, JSON.parse(JSON.stringify(entry))); }),
-        mk(icon('trash', { size: 15 }), () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
+        mk(icon('rotate', { size: 15 }), 'Seite drehen', () => { entry.rotate = ((entry.rotate || 0) + 90) % 360; }),
+        mk(icon('chevronLeft', { size: 15 }), 'Nach vorne schieben', () => { [ed.state.pages[i - 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i - 1]]; }, i === 0),
+        mk(icon('chevronRight', { size: 15 }), 'Nach hinten schieben', () => { [ed.state.pages[i + 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i + 1]]; }, i === ed.state.pages.length - 1),
+        mk(icon('duplicate', { size: 15 }), 'Seite duplizieren', () => { ed.state.pages.splice(i + 1, 0, JSON.parse(JSON.stringify(entry))); }),
+        mk(icon('trash', { size: 15 }), 'Seite löschen', () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
       );
       const label = document.createElement('div');
       label.textContent = `Seite ${i + 1}${entry.src == null ? ' (leer)' : ''}${entry.rotate ? ` ↻${entry.rotate}°` : ''}`;

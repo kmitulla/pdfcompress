@@ -26,6 +26,7 @@ const P = {
   trash: '<path d="M4 7h16M9 7V5.5A1.5 1.5 0 0110.5 4h3A1.5 1.5 0 0115 5.5V7M6 7l1 12.5A1.5 1.5 0 008.5 21h7a1.5 1.5 0 001.5-1.5L18 7"/>',
   share: '<path d="M12 15V4M8 7.5L12 3.5l4 4M5 13v6a2 2 0 002 2h10a2 2 0 002-2v-6"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 002 2h10a2 2 0 002-2V9M10 13h4"/>',
+  duplicate: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 5.5A2.5 2.5 0 0012.5 3h-7A2.5 2.5 0 003 5.5v7A2.5 2.5 0 005.5 15"/>',
 
   // Scannen & Kamera
   camera: '<path d="M4 8.5a2 2 0 012-2h1.8l1.3-2h7.8l1.3 2H20a2 2 0 012 2V18a2 2 0 01-2 2H6a2 2 0 01-2-2z" transform="translate(-1 0)"/><circle cx="11" cy="13" r="3.4"/>',

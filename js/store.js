@@ -46,6 +46,11 @@ const SYNC_KEYS = ['signatures', 'stamps', 'settings'];
 let serverProfile = false;      // Backend bietet Profilspeicher an?
 let syncTimer = null;
 let syncListener = null;
+// Schlüssel, die seit dem Start lokal geändert wurden. Der (asynchron
+// eintreffende) Serverstand darf sie nicht überschreiben – sonst geht eine
+// Änderung verloren, die man direkt nach dem Öffnen macht, während das Profil
+// noch geladen wird.
+const locallyChanged = new Set();
 
 /** Wird von der App aufgerufen, sobald /api/config bekannt ist. */
 export function enableServerProfile(on) {
@@ -92,7 +97,10 @@ export async function pullServerProfile() {
     const data = await res.json();
     let got = false;
     for (const k of SYNC_KEYS) {
-      if (data[k] !== undefined) { await kvSetLocal(k, data[k]); got = true; }
+      if (data[k] === undefined) continue;
+      if (locallyChanged.has(k)) continue;   // frische lokale Änderung hat Vorrang
+      await kvSetLocal(k, data[k]);
+      got = true;
     }
     status('ok', 'Server-Speicher aktiv – Unterschriften & Einstellungen gelten auf allen deinen Geräten.');
     return got;
@@ -105,7 +113,10 @@ export async function pullServerProfile() {
 // Schreiben geht immer zuerst lokal (offline-fähig) und wird dann hochgeschoben.
 export async function kvSet(key, value) {
   await kvSetLocal(key, value);
-  if (SYNC_KEYS.includes(key)) scheduleUpload();
+  if (SYNC_KEYS.includes(key)) {
+    locallyChanged.add(key);
+    scheduleUpload();
+  }
 }
 
 // Browser bitten, die Daten dauerhaft zu behalten (nicht bei Platzmangel löschen)

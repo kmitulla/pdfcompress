@@ -1096,11 +1096,14 @@ function renderPages() {
     label.textContent = `Seite ${idx + 1} · ${fmt}`;
     const bar = document.createElement('div');
     bar.className = 'sc-pagecell-bar';
-    const mk = (txt, title, fn, disabled = false) => {
+    // Beschriftung ist Markup (Icons) – die Werte stammen ausschließlich aus
+    // dem eigenen Icon-Set, nicht aus Benutzereingaben.
+    const mk = (html, title, fn, disabled = false) => {
       const b = document.createElement('button');
       b.className = 'btn btn-small';
-      b.textContent = txt;
+      b.innerHTML = html;
       b.title = title;
+      b.setAttribute('aria-label', title);
       b.disabled = disabled;
       b.addEventListener('click', fn);
       return b;
@@ -1108,11 +1111,11 @@ function renderPages() {
     bar.append(
       mk(icon('crop', { size: 15 }), 'Zuschnitt/Format bearbeiten', () => openCrop(null, idx, 'pages')),
       mk(icon('eraser', { size: 15 }), 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
-      mk('←', 'Nach vorne schieben', () => {
+      mk(icon('chevronLeft', { size: 15 }), 'Nach vorne schieben', () => {
         [state.pages[idx - 1], state.pages[idx]] = [state.pages[idx], state.pages[idx - 1]];
         renderPages();
       }, idx === 0),
-      mk('→', 'Nach hinten schieben', () => {
+      mk(icon('chevronRight', { size: 15 }), 'Nach hinten schieben', () => {
         [state.pages[idx + 1], state.pages[idx]] = [state.pages[idx], state.pages[idx + 1]];
         renderPages();
       }, idx === state.pages.length - 1),
@@ -1126,7 +1129,7 @@ function renderPages() {
     cell.append(thumb, label, bar);
     grid.appendChild(cell);
   });
-  $('#scDoneBtn', state.root).textContent = `${icon('check', { size: 16 })} Als PDF übernehmen (${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'})`;
+  $('#scDoneBtn', state.root).innerHTML = `${icon('check', { size: 16 })} Als PDF übernehmen (${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'})`;
   updatePageCount();
 }
 
