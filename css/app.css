@@ -601,41 +601,168 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
 }
 .ed-tools, .ed-nav, .ed-actions { display: flex; gap: 6px; align-items: center; }
 .ed-actions { margin-left: auto; }
-.ed-btn {
-  min-width: 40px;
-  height: 40px;
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
+
+/* Werkzeuge: eine ruhige, scrollbare Leiste statt umbrechender Kacheln */
+.ed-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 3px;
+  gap: 4px;
   background: var(--glass-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.ed-tools::-webkit-scrollbar { display: none; }
+
+.ed-btn {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  flex: none;
   font: inherit;
   font-size: 13.5px;
-  transition: transform var(--fast) var(--spring), background var(--fast), border-color var(--fast);
+  transition: transform var(--fast) var(--spring), background var(--fast), color var(--fast);
 }
-.ed-btn:active { transform: scale(0.94); }
+.ed-btn:hover:not(.active) { background: hsl(var(--tint) / 0.12); }
+.ed-btn:active { transform: scale(0.9); }
 .ed-btn.active {
-  border-color: hsl(var(--tint) / 0.7);
-  background: var(--accent-soft);
-  color: var(--accent);
-  box-shadow: 0 0 0 3px hsl(var(--tint) / 0.14);
+  background: var(--accent-strong);
+  background-image: linear-gradient(to bottom, hsl(0 0% 100% / 0.25), transparent 60%);
+  color: #fff;
+  box-shadow: 0 4px 14px -4px hsl(var(--tint) / 0.9);
 }
+/* Navigation und Aktionen behalten die Glaskante */
+.ed-nav .ed-btn, .ed-actions .ed-btn {
+  border-color: var(--border);
+  background: var(--glass-2);
+}
+
+/* Eigenschaftsleiste: klar gruppiert statt loser Regler */
 .ed-props {
   display: flex;
-  gap: 10px;
-  align-items: center;
+  gap: 14px;
+  align-items: flex-end;
   flex-wrap: wrap;
-  padding: 10px 12px;
+  padding: 12px 14px;
   background: var(--glass-2);
   border-bottom: 1px solid var(--border);
   font-size: 13.5px;
 }
-.ed-props textarea { min-width: 200px; }
+.ed-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ed-group-grow { flex: 1 1 220px; }
+.ed-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 650;
+}
+.ed-props textarea { min-width: 200px; width: 100%; resize: vertical; }
+.ed-props input[type="color"] {
+  width: 46px;
+  height: 44px;
+  padding: 3px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--glass-2);
+  cursor: pointer;
+}
+.ed-props select, .ed-props input[type="text"] { min-height: 44px; }
+.ed-props input[type="range"] { width: 160px; }
+
+/* Zahlenfeld mit Schritt-Tasten – Tippen statt Zielen */
+.ed-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--glass-2);
+  overflow: hidden;
+  height: 44px;
+}
+.ed-stepper input[type="number"] {
+  width: 74px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: center;
+  font: inherit;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  padding: 0 2px;
+}
+.ed-stepper input[type="number"]::-webkit-outer-spin-button,
+.ed-stepper input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ed-stepper input:focus-visible { outline: none; box-shadow: none; background: var(--accent-soft); }
+.ed-step {
+  width: 44px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--fast);
+}
+.ed-step:hover { background: hsl(var(--tint) / 0.15); }
+.ed-step:active { background: hsl(var(--tint) / 0.28); }
+
+/* Pinselvorschau des weißen Radierers */
+.ed-brushdot {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  align-self: center;
+  transition: width var(--fast) var(--ease), height var(--fast) var(--ease);
+}
+
+/* Schalter im iOS-Stil statt nacktem Kästchen */
+.ed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--glass-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ed-toggle input { accent-color: var(--accent-strong); width: 18px; height: 18px; }
+.ed-toggle:has(input:checked) {
+  border-color: hsl(var(--tint) / 0.7);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .ed-topbar { gap: 8px; }
+  .ed-tools { order: 3; width: 100%; flex: 1 0 100%; }
+  .ed-actions { margin-left: auto; }
+  .ed-props { gap: 10px; padding: 10px 12px; }
+  .ed-props input[type="range"] { width: 120px; }
+  .ed-group-grow { flex-basis: 100%; }
+}
 .ed-stage {
   flex: 1;
   overflow: hidden;
@@ -910,18 +1037,68 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
   overflow: auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
+  gap: 18px;
   justify-content: center;
   align-content: flex-start;
-  padding: 6px;
+  padding: 8px;
 }
-.sc-pagecell { display: flex; flex-direction: column; align-items: center; gap: 7px; animation: rise var(--fast) var(--ease) both; }
+.sc-pagecell { display: flex; flex-direction: column; align-items: center; gap: 8px; animation: rise var(--fast) var(--ease) both; }
+/* Große, antippbare Miniatur – man muss den Scan beurteilen können */
 .sc-thumb {
   border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: #fff;
+  width: auto;
+  max-width: min(46vw, 300px);
+  max-height: 52vh;
+  box-shadow: var(--shadow);
+  cursor: zoom-in;
+  transition: transform var(--fast) var(--spring), box-shadow var(--fast);
+}
+.sc-thumb:hover { transform: scale(1.02); }
+.sc-thumb:active { transform: scale(0.99); }
+@media (max-width: 700px) {
+  .sc-thumb { max-width: min(88vw, 460px); max-height: 58vh; }
+}
+
+/* Vollbild-Seitenvorschau */
+.sc-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(3, 7, 16, 0.82);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  display: flex;
+  flex-direction: column;
+  animation: fade var(--fast) var(--ease) both;
+}
+.sc-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: max(env(safe-area-inset-top), 10px) 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sc-preview-label { color: var(--muted); font-size: 13px; margin-right: auto; font-weight: 550; }
+.sc-preview-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14px;
+  padding-bottom: max(env(safe-area-inset-bottom), 14px);
+}
+.sc-preview-img {
+  max-width: 100%;
+  height: auto;
   border-radius: var(--r-sm);
   background: #fff;
-  max-width: 160px;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
+  animation: rise var(--fast) var(--ease) both;
 }
 .sc-pagelabel { color: var(--muted); font-size: 12px; }
 .sc-pagecell-bar { display: flex; gap: 4px; }

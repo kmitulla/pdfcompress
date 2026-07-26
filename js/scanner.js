@@ -436,6 +436,8 @@ const TEMPLATE = `
   <!-- Zuschnitt -->
   <div class="sc-view hidden" id="scCropView">
     <div class="sc-toolbar">
+      <button class="btn btn-small hidden" id="scA4BedBtn" hidden><i data-icon="scanFrame" data-icon-size="15"></i> A4 aus Scannerfläche</button>
+      <button class="btn btn-small hidden" id="scA4CornerBtn" hidden title="Ecke wechseln, an der die Vorlage anliegt"><i data-icon="rotate" data-icon-size="15"></i> Ecke</button>
       <button class="btn btn-small" id="scAutoBtn"><i data-icon="wand" data-icon-size="15"></i> Automatisch erkennen</button>
       <button class="btn btn-small" id="scFullBtn"><i data-icon="square" data-icon-size="15"></i> Ganze Seite</button>
       <span class="sc-sep"></span>
@@ -493,6 +495,20 @@ const TEMPLATE = `
     <div class="sc-bottombar">
       <button class="btn btn-primary" id="scDoneBtn"><i data-icon="check" data-icon-size="16"></i> Als PDF übernehmen</button>
     </div>
+  </div>
+
+  <!-- Große Seitenvorschau -->
+  <div class="sc-preview hidden" id="scPreview" role="dialog" aria-modal="true" aria-label="Seitenvorschau">
+    <div class="sc-preview-bar">
+      <span class="sc-preview-label" id="scPreviewLabel"></span>
+      <button class="btn btn-small" id="scPreviewPrev" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="15"></i></button>
+      <button class="btn btn-small" id="scPreviewNext" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="15"></i></button>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small" id="scPreviewCrop"><i data-icon="crop" data-icon-size="15"></i> Zuschnitt</button>
+      <button class="btn btn-small" id="scPreviewErase"><i data-icon="eraser" data-icon-size="15"></i> Radieren</button>
+      <button class="btn btn-small btn-ghost" id="scPreviewClose"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
+    </div>
+    <div class="sc-preview-stage" id="scPreviewStage"></div>
   </div>
 </div>`;
 
@@ -673,7 +689,41 @@ async function fileToCanvas(file) {
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
   if (bmp.close) bmp.close();
   if (bmp.src) URL.revokeObjectURL(bmp.src);
+  // Originalmaße & Scanauflösung anhängen – daraus lässt sich die reale Größe
+  // der Vorlage in Millimetern bestimmen (für den A4-Ausschnitt).
+  if (file.scanDpi) {
+    c.scanDpi = file.scanDpi;
+    c.sourcePx = { w, h };
+  }
   return c;
+}
+
+/**
+ * A4-Ausschnitt für einen Flachbett-Scan.
+ *
+ * Die Glasfläche ist meist größer als A4 (der Epson ET-2720 z. B. 215,9 × 297 mm
+ * – Letter-Breite bei A4-Höhe). Die Vorlage liegt bündig in der Ecke am
+ * Nullpunkt. Aus Pixelgröße und Scanauflösung ergibt sich die reale Größe der
+ * Glasfläche, daraus der A4-Bereich ab der Ecke.
+ *
+ * @returns normierte Ecken (0..1) oder null, wenn die Maße unbekannt sind
+ */
+export function a4CornersForScan(canvas, { originX = 'left', originY = 'top' } = {}) {
+  const dpi = canvas?.scanDpi;
+  const px = canvas?.sourcePx;
+  if (!dpi || !px?.w || !px?.h) return null;
+  const bedW = (px.w / dpi) * 25.4;   // Breite der Glasfläche in mm
+  const bedH = (px.h / dpi) * 25.4;
+  // Ist die Fläche kleiner als A4, gibt es nichts zuzuschneiden.
+  const fw = Math.min(1, 210 / bedW);
+  const fh = Math.min(1, 297 / bedH);
+  // Weniger als 1 % Überstand: Zuschnitt lohnt nicht.
+  if (fw > 0.99 && fh > 0.99) return null;
+  const x0 = originX === 'left' ? 0 : 1 - fw;
+  const y0 = originY === 'top' ? 0 : 1 - fh;
+  const x1 = x0 + fw;
+  const y1 = y0 + fh;
+  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
 }
 
 async function importFiles(fileList) {
@@ -701,12 +751,20 @@ async function importFiles(fileList) {
 function openCrop(srcCanvas, pageIndex, returnTo) {
   const existing = pageIndex != null ? state.pages[pageIndex] : null;
   state.cropReturn = returnTo;
+  // Bei Flachbett-Scans nicht raten: Der A4-Bereich steht rechnerisch fest
+  // (Vorlage liegt bündig in der Ecke). Das trifft jede Seite gleich – anders
+  // als die Kantenerkennung, die bei weißem Blatt auf weißem Deckel scheitert.
+  const a4 = existing ? null : a4CornersForScan(srcCanvas, {
+    originX: state.scanOriginX || 'left',
+    originY: state.scanOriginY || 'top',
+  });
   state.editing = {
     src: existing ? existing.src : srcCanvas,
     corners: existing ? existing.corners.map((p) => ({ ...p }))
-      : (detectCornersOnCanvas(srcCanvas) || defaultCorners()),
-    format: existing ? existing.format : state.lastFormat,
+      : (a4 || detectCornersOnCanvas(srcCanvas) || defaultCorners()),
+    format: existing ? existing.format : (a4 ? 'a4p' : state.lastFormat),
     stretch: existing ? !!existing.stretch : state.lastStretch,
+    isBedScan: !!srcCanvas?.scanDpi,
     pageIndex,
   };
   state.activeHandle = null;
@@ -747,6 +805,18 @@ function renderCrop() {
   });
   $('#scStretchWrap', state.root).classList.toggle('hidden', ed.format === 'auto');
   $('#scStretch', state.root).checked = !!ed.stretch;
+
+  // A4-Werkzeuge nur zeigen, wenn die Vorlage vom Flachbett kommt und die
+  // Glasfläche tatsächlich größer als A4 ist.
+  const bedA4 = ed.isBedScan && !!a4CornersForScan(ed.src, {
+    originX: state.scanOriginX || 'left',
+    originY: state.scanOriginY || 'top',
+  });
+  for (const id of ['#scA4BedBtn', '#scA4CornerBtn']) {
+    const b = $(id, state.root);
+    b.hidden = !bedA4;
+    b.classList.toggle('hidden', !bedA4);
+  }
 }
 
 function drawCropOverlay() {
@@ -1081,14 +1151,44 @@ function composeThumb(page, thumbH = 190) {
   return c;
 }
 
+// Große Vorschau einer Seite – zum Prüfen vor dem Übernehmen. Von hier aus
+// lassen sich Zuschnitt und Radierer direkt öffnen.
+function openPagePreview(idx) {
+  const page = state.pages[idx];
+  if (!page) return;
+  const box = $('#scPreview', state.root);
+  const stage = $('#scPreviewStage', state.root);
+  const big = composeThumb(page, Math.max(900, Math.round(window.innerHeight * 1.6)));
+  big.className = 'sc-preview-img';
+  stage.innerHTML = '';
+  stage.appendChild(big);
+  $('#scPreviewLabel', state.root).textContent = `Seite ${idx + 1} von ${state.pages.length}`;
+  $('#scPreviewPrev', state.root).disabled = idx === 0;
+  $('#scPreviewNext', state.root).disabled = idx === state.pages.length - 1;
+  state.previewIdx = idx;
+  box.classList.remove('hidden');
+}
+
+function closePagePreview() {
+  $('#scPreview', state.root)?.classList.add('hidden');
+  state.previewIdx = null;
+}
+
 function renderPages() {
   const grid = $('#scPageGrid', state.root);
   grid.innerHTML = '';
   state.pages.forEach((page, idx) => {
     const cell = document.createElement('div');
     cell.className = 'sc-pagecell';
-    const thumb = composeThumb(page);
+    const thumb = composeThumb(page, 420);
     thumb.className = 'sc-thumb';
+    thumb.title = 'Tippen für große Vorschau';
+    thumb.setAttribute('role', 'button');
+    thumb.setAttribute('tabindex', '0');
+    thumb.addEventListener('click', () => openPagePreview(idx));
+    thumb.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPagePreview(idx); }
+    });
     const label = document.createElement('div');
     label.className = 'sc-pagelabel';
     let fmt = page.format === 'a4p' ? 'A4 hoch' : page.format === 'a4l' ? 'A4 quer' : 'Auto';
@@ -1204,7 +1304,10 @@ function closeScanner() {
 }
 
 function onGlobalKeydown(e) {
-  if (e.key === 'Escape' && state.root) closeScanner();
+  if (e.key !== 'Escape' || !state.root) return;
+  // Erst die Vorschau schließen, nicht gleich den ganzen Scanner.
+  if (state.previewIdx != null) { closePagePreview(); return; }
+  closeScanner();
 }
 
 function onResize() {
@@ -1249,7 +1352,47 @@ export function openScanner(onDone, opts = {}) {
     fileInput.value = '';
   });
   $('#scToPagesBtn', root).addEventListener('click', () => view('pages'));
+
+  // Große Seitenvorschau
+  $('#scPreviewClose', root).addEventListener('click', closePagePreview);
+  $('#scPreviewPrev', root).addEventListener('click', () => openPagePreview(state.previewIdx - 1));
+  $('#scPreviewNext', root).addEventListener('click', () => openPagePreview(state.previewIdx + 1));
+  $('#scPreviewCrop', root).addEventListener('click', () => {
+    const i = state.previewIdx;
+    closePagePreview();
+    openCrop(null, i, 'pages');
+  });
+  $('#scPreviewErase', root).addEventListener('click', () => {
+    const i = state.previewIdx;
+    closePagePreview();
+    openErase(i);
+  });
   $('#scAddCamBtn', root).addEventListener('click', () => view('capture'));
+
+  // A4-Ausschnitt der Glasfläche erneut setzen
+  $('#scA4BedBtn', root).addEventListener('click', () => {
+    if (!state.editing) return;
+    const c = a4CornersForScan(state.editing.src, {
+      originX: state.scanOriginX || 'left',
+      originY: state.scanOriginY || 'top',
+    });
+    if (!c) return;
+    state.editing.corners = c;
+    state.editing.format = 'a4p';
+    renderCrop();
+  });
+  // Liegt die Vorlage an einer anderen Ecke an? Durch alle vier durchschalten.
+  $('#scA4CornerBtn', root).addEventListener('click', () => {
+    if (!state.editing) return;
+    const order = [['left', 'top'], ['right', 'top'], ['right', 'bottom'], ['left', 'bottom']];
+    const cur = order.findIndex(([x, y]) => x === (state.scanOriginX || 'left') && y === (state.scanOriginY || 'top'));
+    const [nx, ny] = order[(cur + 1) % order.length];
+    state.scanOriginX = nx;
+    state.scanOriginY = ny;
+    const c = a4CornersForScan(state.editing.src, { originX: nx, originY: ny });
+    if (c) { state.editing.corners = c; renderCrop(); }
+    $('#scA4CornerBtn', root).title = `Vorlage liegt an: ${ny === 'top' ? 'oben' : 'unten'} ${nx === 'left' ? 'links' : 'rechts'}`;
+  });
 
   $('#scAutoBtn', root).addEventListener('click', () => {
     if (!state.editing) return;

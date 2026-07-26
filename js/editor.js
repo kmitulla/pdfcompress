@@ -265,6 +265,7 @@ function buildUi() {
         <button data-tool="sign" class="ed-btn" title="Unterschrift" aria-label="Unterschrift"><i data-icon="signature" data-icon-size="18"></i></button>
         <button data-tool="text" class="ed-btn" title="Text" aria-label="Text"><i data-icon="text" data-icon-size="18"></i></button>
         <button data-tool="draw" class="ed-btn" title="Stift" aria-label="Stift"><i data-icon="pen" data-icon-size="18"></i></button>
+        <button data-tool="whiteout" class="ed-btn" title="Weiß übermalen – Ränder, Schatten oder Störungen entfernen (wie der Scanner-Radierer)" aria-label="Weiß übermalen"><i data-icon="whiteout" data-icon-size="18"></i></button>
         <button data-tool="erase" class="ed-btn" title="Striche-Radierer: entfernt gezeichnete Stift-/Marker-Striche" aria-label="Striche-Radierer"><i data-icon="eraser" data-icon-size="18"></i></button>
         <button data-tool="image" class="ed-btn" title="Bild einfügen" aria-label="Bild einfügen"><i data-icon="image" data-icon-size="18"></i></button>
         <button data-tool="stamp" class="ed-btn" title="Stempel (BEZAHLT/KOPIE …)" aria-label="Stempel"><i data-icon="stamp" data-icon-size="18"></i></button>
@@ -467,7 +468,8 @@ function renderOverlay() {
     parts.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="rgba(56,189,248,0.15)" stroke="#38bdf8" stroke-width="1"/>`);
   }
   if (ed.tempStroke) {
-    parts.push(`<path d="${strokeToSvgPath(ed.tempStroke)}" fill="none" stroke="${ed.penColor}" stroke-width="${ed.penWidth}" stroke-linecap="round" stroke-linejoin="round"/>`);
+    const white = ed.tool === 'whiteout';
+    parts.push(`<path d="${strokeToSvgPath(ed.tempStroke)}" fill="none" stroke="${white ? '#ffffff' : ed.penColor}" stroke-width="${white ? ed.whiteWidth : ed.penWidth}" stroke-linecap="round" stroke-linejoin="round"/>`);
   }
   svg.innerHTML = parts.join('');
   $('#edDeleteBtn').classList.toggle('hidden', ed.selected == null);
@@ -516,6 +518,13 @@ function hitObject(pt) {
   return null;
 }
 
+// Benutzertext sicher in Markup einsetzen (z. B. eingegebener Text mit < >)
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function setTool(tool) {
   ed.tool = tool;
   document.querySelectorAll('.ed-tools [data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
@@ -529,32 +538,134 @@ function setTool(tool) {
 function updateProps() {
   const props = $('#edProps');
   const o = ed.selected != null ? curPage().objects[ed.selected] : null;
-  if (ed.tool === 'draw') {
-    props.innerHTML = `Stift: <input type="color" id="edPenColor" value="${ed.penColor}">
-      Breite <input type="range" id="edPenWidth" min="0.5" max="8" step="0.5" value="${ed.penWidth}">
-      <label><input type="checkbox" id="edMarker" ${ed.marker ? 'checked' : ''}> Marker (transparent)</label>`;
+  if (ed.tool === 'whiteout') {
+    props.innerHTML = `
+      <div class="ed-group">
+        <label class="ed-label" for="edWhiteWidthNum">Pinselgröße</label>
+        <div class="ed-stepper">
+          <button type="button" class="ed-step" id="edWhiteDown" aria-label="Schmaler">${icon('minus', { size: 16 })}</button>
+          <input type="number" id="edWhiteWidthNum" value="${ed.whiteWidth}" step="1" min="1" inputmode="decimal" aria-label="Pinselgröße">
+          <button type="button" class="ed-step" id="edWhiteUp" aria-label="Breiter">${icon('plus', { size: 16 })}</button>
+        </div>
+        <input type="range" id="edWhiteWidth" min="2" max="120" step="1" value="${Math.min(120, ed.whiteWidth)}" aria-label="Pinselgröße grob einstellen">
+      </div>
+      <div class="ed-group">
+        <span class="ed-label">Vorschau</span>
+        <span class="ed-brushdot" id="edWhiteDot"></span>
+      </div>
+      <span class="hint-inline">Über Ränder, Schatten oder Störungen ziehen – deckt in Weiß ab. Wird beim Übernehmen fest ins PDF eingebrannt.</span>`;
+    props.classList.remove('hidden');
+    const wNum = $('#edWhiteWidthNum');
+    const wRange = $('#edWhiteWidth');
+    const dot = $('#edWhiteDot');
+    const syncDot = () => {
+      const d = Math.min(52, Math.max(6, ed.whiteWidth * 1.6));
+      dot.style.width = `${d}px`;
+      dot.style.height = `${d}px`;
+    };
+    const setW = (v, from) => {
+      const val = Math.max(1, Number(v) || 1);
+      ed.whiteWidth = val;
+      if (from !== 'num') wNum.value = Math.round(val * 100) / 100;
+      if (from !== 'range') wRange.value = Math.min(parseFloat(wRange.max), val);
+      syncDot();
+    };
+    wNum.oninput = (e) => setW(e.target.value, 'num');
+    wRange.oninput = (e) => setW(e.target.value, 'range');
+    $('#edWhiteDown').onclick = () => setW(ed.whiteWidth - (ed.whiteWidth <= 10 ? 1 : 4));
+    $('#edWhiteUp').onclick = () => setW(ed.whiteWidth + (ed.whiteWidth < 10 ? 1 : 4));
+    syncDot();
+  } else if (ed.tool === 'draw') {
+    props.innerHTML = `
+      <div class="ed-group">
+        <label class="ed-label" for="edPenColor">Farbe</label>
+        <input type="color" id="edPenColor" value="${ed.penColor}">
+      </div>
+      <div class="ed-group">
+        <label class="ed-label" for="edPenWidthNum">Strichbreite</label>
+        <div class="ed-stepper">
+          <button type="button" class="ed-step" id="edPenDown" aria-label="Schmaler">${icon('minus', { size: 16 })}</button>
+          <input type="number" id="edPenWidthNum" value="${ed.penWidth}" step="0.5" min="0.1" inputmode="decimal" aria-label="Strichbreite">
+          <button type="button" class="ed-step" id="edPenUp" aria-label="Breiter">${icon('plus', { size: 16 })}</button>
+        </div>
+        <input type="range" id="edPenWidth" min="0.5" max="40" step="0.5" value="${Math.min(40, ed.penWidth)}" aria-label="Strichbreite grob einstellen">
+      </div>
+      <div class="ed-group">
+        <span class="ed-label">Modus</span>
+        <label class="ed-toggle"><input type="checkbox" id="edMarker" ${ed.marker ? 'checked' : ''}> Marker (transparent)</label>
+      </div>`;
     props.classList.remove('hidden');
     $('#edPenColor').oninput = (e) => { ed.penColor = e.target.value; };
-    $('#edPenWidth').oninput = (e) => { ed.penWidth = parseFloat(e.target.value); };
+    const pNum = $('#edPenWidthNum');
+    const pRange = $('#edPenWidth');
+    const setP = (v, from) => {
+      const val = Math.max(0.1, Number(v) || 0.1);
+      ed.penWidth = val;
+      if (from !== 'num') pNum.value = Math.round(val * 100) / 100;
+      if (from !== 'range') pRange.value = Math.min(parseFloat(pRange.max), val);
+    };
+    pNum.oninput = (e) => setP(e.target.value, 'num');
+    pRange.oninput = (e) => setP(e.target.value, 'range');
+    $('#edPenDown').onclick = () => setP(ed.penWidth - (ed.penWidth <= 4 ? 0.5 : 2));
+    $('#edPenUp').onclick = () => setP(ed.penWidth + (ed.penWidth < 4 ? 0.5 : 2));
     $('#edMarker').onchange = (e) => { ed.marker = e.target.checked; };
   } else if (o && o.type === 'text') {
-    props.innerHTML = `<textarea id="edTextInput" rows="2">${o.text}</textarea>
-      Größe <input type="range" id="edTextSize" min="6" max="60" step="1" value="${o.size}">
-      <input type="color" id="edTextColor" value="${o.color}">
-      <select id="edTextFont"><option value="helv">Helvetica</option><option value="times">Times</option><option value="courier">Courier</option></select>`;
+    props.innerHTML = `
+      <div class="ed-group ed-group-grow">
+        <label class="ed-label" for="edTextInput">Text</label>
+        <textarea id="edTextInput" rows="2" placeholder="Text eingeben …">${escapeHtml(o.text)}</textarea>
+      </div>
+      <div class="ed-group">
+        <label class="ed-label" for="edTextSizeNum">Größe</label>
+        <div class="ed-stepper">
+          <button type="button" class="ed-step" id="edTextSizeDown" aria-label="Kleiner">${icon('minus', { size: 16 })}</button>
+          <input type="number" id="edTextSizeNum" value="${o.size}" step="1" min="1" inputmode="decimal" aria-label="Schriftgröße in Punkt">
+          <button type="button" class="ed-step" id="edTextSizeUp" aria-label="Größer">${icon('plus', { size: 16 })}</button>
+        </div>
+        <input type="range" id="edTextSize" min="6" max="200" step="1" value="${Math.min(200, o.size)}" aria-label="Schriftgröße grob einstellen">
+      </div>
+      <div class="ed-group">
+        <label class="ed-label" for="edTextColor">Farbe</label>
+        <input type="color" id="edTextColor" value="${o.color}">
+      </div>
+      <div class="ed-group">
+        <label class="ed-label" for="edTextFont">Schrift</label>
+        <select id="edTextFont">
+          <option value="helv">Helvetica</option>
+          <option value="times">Times</option>
+          <option value="courier">Courier</option>
+        </select>
+      </div>`;
     props.classList.remove('hidden');
     $('#edTextFont').value = o.font || 'helv';
     $('#edTextInput').oninput = (e) => { o.text = e.target.value || ' '; renderOverlay(); };
-    $('#edTextSize').oninput = (e) => { o.size = parseInt(e.target.value, 10); renderOverlay(); };
+
+    // Größe: Zahlenfeld ohne Obergrenze, Schieber nur zur groben Einstellung.
+    const num = $('#edTextSizeNum');
+    const range = $('#edTextSize');
+    const setSize = (v, from) => {
+      const val = Math.max(1, Number(v) || 1);
+      o.size = val;
+      if (from !== 'num') num.value = Math.round(val * 100) / 100;
+      if (from !== 'range') range.value = Math.min(parseFloat(range.max), val);
+      renderOverlay();
+    };
+    num.oninput = (e) => setSize(e.target.value, 'num');
+    range.oninput = (e) => setSize(e.target.value, 'range');
+    // Schrittweite wächst mit der Größe – so kommt man auch bei 300 pt flott voran.
+    const stepFor = (v) => (v < 20 ? 1 : v < 60 ? 2 : v < 150 ? 5 : 10);
+    $('#edTextSizeDown').onclick = () => setSize(o.size - stepFor(o.size));
+    $('#edTextSizeUp').onclick = () => setSize(o.size + stepFor(o.size));
+
     $('#edTextColor').oninput = (e) => { o.color = e.target.value; renderOverlay(); };
     $('#edTextFont').onchange = (e) => { o.font = e.target.value; renderOverlay(); };
   } else if (o && o.type === 'stamp') {
     props.innerHTML = `Stempel:
       <select id="edStampTitle"><option>BEZAHLT</option><option>KOPIE</option><option>ERLEDIGT</option><option>ENTWURF</option><option>GEPRÜFT</option><option>ERHALTEN</option><option value="__custom">Eigener…</option></select>
       <input type="text" id="edStampCustom" class="hidden" size="10" placeholder="Eigener Text">
-      Datum <input type="text" id="edStampDate" value="${o.date || ''}" size="9">
-      Notiz <input type="text" id="edStampNote" value="${(o.note || '').replace(/"/g, '&quot;')}" size="16" placeholder="z. B. per Überweisung">
-      Name/Firma <input type="text" id="edStampBrand" value="${(o.brand || '').replace(/"/g, '&quot;')}" size="12" placeholder="z. B. Peter Müller">
+      Datum <input type="text" id="edStampDate" value="${escapeHtml(o.date || '')}" size="9">
+      Notiz <input type="text" id="edStampNote" value="${escapeHtml(o.note || '')}" size="16" placeholder="z. B. per Überweisung">
+      Name/Firma <input type="text" id="edStampBrand" value="${escapeHtml(o.brand || '')}" size="12" placeholder="z. B. Peter Müller">
       Stil <select id="edStampStyle"><option value="frame">Einfach</option><option value="stamp">Stempel</option><option value="round">Stempel rund</option></select>
       <input type="color" id="edStampColor" value="${o.color}">
       <button class="btn btn-small" id="edStampSaveTpl">Als Vorlage speichern</button>
@@ -622,9 +733,23 @@ function attachPointerHandlers() {
   let dragging = null;
 
   stage.addEventListener('pointerdown', (e) => {
-    stage.setPointerCapture(e.pointerId);
+    // Ein primärer Zeiger startet immer eine frische Geste. Reste aus
+    // verpassten pointerup/pointercancel-Ereignissen (kommt auf iOS vor) hier
+    // verwerfen – sonst zählt die Gestenerkennung dauerhaft einen Finger zu
+    // viel und ein einzelner Finger löst bereits den Pinch-Zoom aus.
+    if (e.isPrimary) {
+      pointers.clear();
+      pinchStart = null;
+      dragging = null;
+      ed.tempStroke = null;
+      ed.tempRect = null;
+    }
+    // Zeigererfassung ist nur eine Verbesserung – schlägt sie fehl, läuft die
+    // Bedienung über die globalen Aufräumer weiter.
+    try { stage.setPointerCapture(e.pointerId); } catch { /* nicht kritisch */ }
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 2) {
+    // Zoomen nur mit echten Fingern – Maus/Stift bleiben einzeigrig.
+    if (pointers.size === 2 && e.pointerType === 'touch') {
       const [a, b] = [...pointers.values()];
       pinchStart = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: ed.zoom, pan: { ...ed.pan }, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
       dragging = null;
@@ -662,8 +787,8 @@ function attachPointerHandlers() {
         updateProps();
         renderOverlay();
       }
-    } else if (ed.tool === 'draw') {
-      snapshot('Stift-Strich');
+    } else if (ed.tool === 'draw' || ed.tool === 'whiteout') {
+      snapshot(ed.tool === 'whiteout' ? 'Weiß übermalt' : 'Stift-Strich');
       ed.tempStroke = [pt];
       dragging = { kind: 'draw' };
     } else if (ed.tool === 'erase') {
@@ -742,7 +867,7 @@ function attachPointerHandlers() {
     } else if (dragging.kind === 'resize') {
       const o = curPage().objects[dragging.i];
       if (o.type === 'text') {
-        o.size = Math.max(6, Math.min(80, ((pt.y - o.y) / 1.25)));
+        o.size = Math.max(1, (pt.y - o.y) / 1.25);   // keine Obergrenze
       } else if ((o.type === 'image' || o.type === 'rect' || o.type === 'stamp') && !ed.aspectLock) {
         o.w = Math.max(12, pt.x - o.x);
         o.h = Math.max(12, pt.y - o.y);
@@ -786,10 +911,16 @@ function attachPointerHandlers() {
       const last = objs[objs.length - 1];
       const stroke = ed.tempStroke;
       ed.tempStroke = null;
-      if (last && last.type === 'ink' && last.color === ed.penColor && last.width === ed.penWidth && (last.opacity ?? 1) === (ed.marker ? 0.45 : 1)) {
+      // Weißer Radierer ist ein deckender Strich in Weiß – deshalb dieselbe
+      // Ink-Struktur, nur mit eigener Farbe/Breite und ohne Transparenz.
+      const white = ed.tool === 'whiteout';
+      const color = white ? '#ffffff' : ed.penColor;
+      const width = white ? ed.whiteWidth : ed.penWidth;
+      const opacity = white ? 1 : (ed.marker ? 0.45 : 1);
+      if (last && last.type === 'ink' && last.color === color && last.width === width && (last.opacity ?? 1) === opacity) {
         last.paths.push(stroke);
       } else {
-        objs.push({ type: 'ink', color: ed.penColor, width: ed.penWidth, opacity: ed.marker ? 0.45 : 1, paths: [stroke] });
+        objs.push({ type: 'ink', color, width, opacity, paths: [stroke] });
       }
       renderOverlay();
     }
@@ -797,6 +928,20 @@ function attachPointerHandlers() {
   };
   stage.addEventListener('pointerup', finish);
   stage.addEventListener('pointercancel', finish);
+  // Zusätzlich global aufräumen: endet ein Zeiger außerhalb der Bühne oder
+  // verliert der Browser die Zeigererfassung, bliebe er sonst als "Geisterfinger"
+  // in der Liste stehen.
+  const cleanup = (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    finish(e);
+  };
+  window.addEventListener('pointerup', cleanup);
+  window.addEventListener('pointercancel', cleanup);
+  stage.addEventListener('lostpointercapture', cleanup);
+  ed.detachPointerCleanup = () => {
+    window.removeEventListener('pointerup', cleanup);
+    window.removeEventListener('pointercancel', cleanup);
+  };
 
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1242,6 +1387,7 @@ export async function openEditor(item, onApplied) {
     penColor: '#d21f1f',
     aspectLock: true,
     penWidth: 2,
+    whiteWidth: 16,   // weißer Radierer: standardmäßig deutlich breiter
     marker: false,
     selected: null,
     pending: null,
@@ -1342,9 +1488,11 @@ export async function openEditor(item, onApplied) {
 
 function closeEditor() {
   ed?.pdf?.destroy();
+  ed?.detachPointerCleanup?.();   // globale Zeiger-Aufräumer wieder abmelden
   document.getElementById('editorRoot')?.classList.add('hidden');
   $('#edModal')?.classList.add('hidden');
 }
 
 // Für Tests
 window.__pdfeditor = { applyEdits, processSignatureImage, strokeToSvgPath, normalizeStrokes };
+window.__pdfeditorState = () => ed;

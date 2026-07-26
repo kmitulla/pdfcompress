@@ -39,6 +39,7 @@ const P = {
   wand: '<path d="M4 20L15 9M17.5 6.5l-2-2M18 3v3M21 6h-3M13 4.5l1.5 1.5M20 11l-1.5-1.5"/>',
   square: '<rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/>',
   eraser: '<path d="M8 20l-4-4a2 2 0 010-2.8l8-8a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8L13 20zM10 20h10"/>',
+  whiteout: '<rect x="3.5" y="8" width="17" height="8" rx="2.5"/><path d="M7 8V6.2A2.2 2.2 0 019.2 4h5.6A2.2 2.2 0 0117 6.2V8M4 20h16"/>',
   undo: '<path d="M4 9h11a5 5 0 010 10h-6M4 9l4-4M4 9l4 4"/>',
   redo: '<path d="M20 9H9a5 5 0 000 10h6M20 9l-4-4M20 9l-4 4"/>',
 

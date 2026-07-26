@@ -328,7 +328,11 @@ async function fetchScannedPage() {
   const blob = await res.blob();
   const type = blob.type || 'image/jpeg';
   const ext = type.includes('png') ? 'png' : 'jpg';
-  return new File([blob], `scan_${Date.now()}.${ext}`, { type });
+  const file = new File([blob], `scan_${Date.now()}.${ext}`, { type });
+  // Auflösung merken – daraus errechnet der Scanner die echte Größe der
+  // Glasfläche in Millimetern und damit den A4-Ausschnitt.
+  file.scanDpi = parseInt(res.headers.get('X-Scan-Dpi'), 10) || 300;
+  return file;
 }
 
 async function launchNetworkScan() {

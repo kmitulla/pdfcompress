@@ -142,6 +142,9 @@ async function handleApi(req, res, url) {
         'Content-Type': contentType,
         'Content-Length': buffer.length,
         'Cache-Control': 'no-store',
+        // Auflösung mitgeben: damit kann die App aus der Pixelgröße die echten
+        // Millimeter der Glasfläche berechnen und den A4-Ausschnitt exakt setzen.
+        'X-Scan-Dpi': String(parseInt(resolution, 10) || 300),
       });
       return res.end(buffer);
     } catch (e) {
