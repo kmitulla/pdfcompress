@@ -478,11 +478,19 @@ const TEMPLATE = `
         <span class="sc-brush-dot" id="scBrushDot"></span>
       </label>
       <span class="sc-sep"></span>
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Zoom</span>
+        <button class="btn btn-small" id="scEraseZoomOut" title="Herauszoomen" aria-label="Herauszoomen"><i data-icon="minus" data-icon-size="15"></i></button>
+        <span class="sc-zoomlabel" id="scEraseZoomLabel">100 %</span>
+        <button class="btn btn-small" id="scEraseZoomIn" title="Hineinzoomen" aria-label="Hineinzoomen"><i data-icon="plus" data-icon-size="15"></i></button>
+        <button class="btn btn-small" id="scEraseZoomFit" title="Einpassen">Fit</button>
+      </span>
+      <span class="sc-sep"></span>
       <button class="btn btn-small" id="scEraseUndoBtn" title="Rückgängig" aria-label="Rückgängig"><i data-icon="undo" data-icon-size="15"></i></button>
       <button class="btn btn-small" id="scEraseRedoBtn" title="Wiederholen" aria-label="Wiederholen"><i data-icon="redo" data-icon-size="15"></i></button>
     </div>
     <div class="sc-erase-stage" id="scEraseStage"><canvas id="scEraseCanvas"></canvas></div>
-    <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen, um sie zu entfernen.</p>
+    <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen. <span class="sc-hint-long">Zum Feinarbeiten hineinzoomen – mit zwei Fingern oder über die Zoom-Tasten; ein Finger radiert.</span></p>
     <div class="sc-bottombar">
       <button class="btn" id="scEraseCancelBtn">Verwerfen</button>
       <button class="btn btn-primary" id="scEraseOkBtn"><i data-icon="check" data-icon-size="16"></i> Fertig</button>
@@ -714,82 +722,179 @@ async function fileToCanvas(file) {
  *
  * @returns normierte Ecken (0..1) oder null, wenn die Maße unbekannt sind
  */
-export function a4CornersForScan(canvas, { originX = 'left', originY = 'top', refine = true } = {}) {
-  const dpi = canvas?.scanDpi;
-  const px = canvas?.sourcePx;
-  if (!dpi || !px?.w || !px?.h) return null;
-  const bedW = (px.w / dpi) * 25.4;   // Breite der Glasfläche in mm
-  const bedH = (px.h / dpi) * 25.4;
-  // Ist die Fläche kleiner als A4, gibt es nichts zuzuschneiden.
-  let fw = Math.min(1, 210 / bedW);
-  let fh = Math.min(1, 297 / bedH);
-  // Weniger als 1 % Überstand: Zuschnitt lohnt nicht.
-  if (fw > 0.99 && fh > 0.99) return null;
+export function a4CornersForScan(canvas, { originX = 'left', originY = 'top', detect = true } = {}) {
+  // Nur für Flachbett-Scans. Kamerafotos brauchen die perspektivische
+  // Eckenerkennung – dort wäre eine achsparallele Blattsuche falsch.
+  if (!canvas?.scanDpi) return null;
 
-  // Rechnung ist nur die Ausgangsschätzung: Liegt die Vorlage nicht exakt im
-  // Nullpunkt, stimmt sie nicht. Deshalb in der Nähe der berechneten Kante nach
-  // dem tatsächlichen Helligkeitssprung suchen (unbedeckte Glasfläche ist im
-  // Scan dunkler als Papier). Findet sich keiner, bleibt es bei der Rechnung.
-  if (refine) {
-    const w = 210 / bedW < 1 ? findBedEdge(canvas, 'x', fw, originX === 'left') : null;
-    const h = 297 / bedH < 1 ? findBedEdge(canvas, 'y', fh, originY === 'top') : null;
-    if (w != null) fw = w;
-    if (h != null) fh = h;
+  // Zwei Erkenntnisquellen, je Achse getrennt ausgewertet:
+  //   A) gemessene Blattkante (dunklere Glasfläche oder Schattenlinie)
+  //   B) Rechnung aus Pixelgröße und Scanauflösung (Glasfläche minus A4)
+  // Gemessen schlägt gerechnet – aber nur dort, wo wirklich etwas gefunden
+  // wurde. Im echten Scan ist z. B. die untere Kante sichtbar, die rechte
+  // nicht (weißes Papier vor weißem Deckel).
+  const found = detect ? detectSheetOnBed(canvas) : null;
+  const EPS = 0.002;
+
+  const dpi = canvas.scanDpi;
+  const px = canvas.sourcePx;
+  let calc = null;
+  if (dpi && px?.w && px?.h) {
+    const fw = Math.min(1, 210 / ((px.w / dpi) * 25.4));
+    const fh = Math.min(1, 297 / ((px.h / dpi) * 25.4));
+    const cx0 = originX === 'left' ? 0 : 1 - fw;
+    const cy0 = originY === 'top' ? 0 : 1 - fh;
+    calc = { x0: cx0, y0: cy0, x1: cx0 + fw, y1: cy0 + fh };
   }
+  if (!found && !calc) return null;
 
-  const x0 = originX === 'left' ? 0 : 1 - fw;
-  const y0 = originY === 'top' ? 0 : 1 - fh;
-  return [{ x: x0, y: y0 }, { x: x0 + fw, y: y0 }, { x: x0 + fw, y: y0 + fh }, { x: x0, y: y0 + fh }];
+  // Je Kante die Messung nehmen, wenn sie etwas gefunden hat, sonst die Rechnung
+  const pick = (measured, computed, isStart) => {
+    const hit = isStart ? measured > EPS : measured < 1 - EPS;
+    if (hit) return measured;
+    return computed ?? measured;
+  };
+  const r = {
+    x0: found ? pick(found.x0, calc?.x0, true) : calc.x0,
+    y0: found ? pick(found.y0, calc?.y0, true) : calc.y0,
+    x1: found ? pick(found.x1, calc?.x1, false) : calc.x1,
+    y1: found ? pick(found.y1, calc?.y1, false) : calc.y1,
+  };
+  // Nichts zu holen? Dann keinen Zuschnitt anbieten.
+  if (r.x0 <= EPS && r.y0 <= EPS && r.x1 >= 1 - EPS && r.y1 >= 1 - EPS) return null;
+  return [
+    { x: r.x0, y: r.y0 }, { x: r.x1, y: r.y0 },
+    { x: r.x1, y: r.y1 }, { x: r.x0, y: r.y1 },
+  ];
+}
+
+/** Hoch- oder Querformat für eine Auswahl bestimmen (in Quellpixeln gemessen) */
+function a4FormatFor(src, corners) {
+  const w = Math.abs(corners[1].x - corners[0].x) * (src?.width || 1);
+  const h = Math.abs(corners[3].y - corners[0].y) * (src?.height || 1);
+  return h >= w ? 'a4p' : 'a4l';
+}
+
+const SHEET_ANALYZE = 700;   // Analysebreite für die Blatterkennung
+const SHEET_SEARCH = 0.14;   // Suchtiefe je Rand (Anteil der Kantenlänge)
+
+function medianOf(arr) {
+  const a = [...arr].sort((p, q) => p - q);
+  return a[a.length >> 1];
 }
 
 /**
- * Sucht die Papierkante nahe der berechneten Position.
+ * Findet die Blattkante von einem Rand aus.
  *
- * @param axis 'x' (senkrechte Kante) oder 'y' (waagerechte Kante)
- * @param expected erwarteter Anteil (0..1) der Papierausdehnung
- * @param fromStart liegt das Papier am Anfang der Achse?
- * @returns verfeinerter Anteil oder null
+ * Zwei Erscheinungsformen werden erkannt, in dieser Reihenfolge von außen nach
+ * innen (die äußerste Fundstelle gewinnt – dadurch stört Dokumentinhalt weiter
+ * innen nicht):
+ *   1. Ein Bereich, der klar dunkler ist als das Papier – die unbedeckte
+ *      Glasfläche bzw. der offene Deckel.
+ *   2. Eine feine dunkle Linie – der Schattenwurf direkt an der Blattkante.
+ *      Die ist oft nur wenige Helligkeitsstufen tief, aber eindeutig.
+ *
+ * @param prof Helligkeitsprofil, Index 0 = äußerster Rand
+ * @returns Index der Blattkante (0 = kein Rand gefunden)
  */
-function findBedEdge(canvas, axis, expected, fromStart) {
-  try {
-    const W = canvas.width;
-    const H = canvas.height;
-    if (!W || !H) return null;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const horizontal = axis === 'x';
-    // Nur im Suchfenster ±6 % um die erwartete Kante messen
-    const span = horizontal ? W : H;
-    const edgePos = fromStart ? expected * span : (1 - expected) * span;
-    const win = Math.max(6, Math.round(span * 0.06));
-    const from = clamp(Math.round(edgePos - win), 1, span - 2);
-    const to = clamp(Math.round(edgePos + win), 2, span - 1);
-    if (to - from < 4) return null;
+export function sheetEdgeFromProfile(prof) {
+  const search = Math.max(3, Math.round(prof.length * SHEET_SEARCH));
+  const paper = medianOf(prof.slice(search));           // sicher Papier
+  if (!(paper > 0)) return 0;
 
-    // Mittlere Helligkeit je Spalte/Zeile im mittleren Drittel der anderen Achse
-    // (dort stört der Dokumentinhalt am wenigsten).
-    const oSpan = horizontal ? H : W;
-    const o0 = Math.round(oSpan * 0.15);
-    const oLen = Math.max(1, Math.round(oSpan * 0.7));
-    const prof = [];
-    for (let i = from; i <= to; i++) {
-      const d = horizontal
-        ? ctx.getImageData(i, o0, 1, oLen).data
-        : ctx.getImageData(o0, i, oLen, 1).data;
-      let s = 0;
-      for (let p = 0; p < d.length; p += 4) s += (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
-      prof.push(s / (d.length / 4));
+  // 1. Deutlich dunkler Bereich am Rand: freie Glasfläche bzw. Deckel.
+  //    Der reicht vom äußersten Rand nach innen – Dokumentinhalt kann das
+  //    nicht vortäuschen, weil er nie bis an den Rand durchläuft.
+  let i = 0;
+  while (i < search && prof[i] < paper - 6) i++;
+  if (i > 0) {
+    while (i < search && prof[i] < paper - 2) i++;   // bis wirklich Papier
+    return i;
+  }
+
+  // 2. Feine Schattenlinie an der Blattkante. Nur ganz nah am Rand suchen und
+  //    nur schmale Senken akzeptieren – sonst würde eine Textzeile in Randnähe
+  //    fälschlich als Blattkante gelten.
+  const near = Math.max(2, Math.round(prof.length * 0.045));
+  const maxWidth = Math.max(3, Math.round(prof.length * 0.02));
+  const MAX_DEPTH = 40;   // tiefer = Druckinhalt, nicht Blattkante
+  for (let j = 1; j < near; j++) {
+    const depth = paper - prof[j];
+    if (depth < 2.5 || depth > MAX_DEPTH) continue;
+    if (!(prof[j] <= prof[j - 1] && prof[j] <= prof[j + 1])) continue;
+    // Ausdehnung der Senke bestimmen: eine Textzeile ist breiter und dunkler
+    let a = j;
+    while (a > 0 && paper - prof[a - 1] >= 2) a--;
+    let b = j;
+    while (b < prof.length - 1 && paper - prof[b + 1] >= 2) b++;
+    if (b - a + 1 > maxWidth) continue;
+    return b + 1;   // hinter der Linie beginnt das Papier
+  }
+  return 0;
+}
+
+/**
+ * Sucht das Blatt auf der Scanfläche und liefert seine Ränder als Anteile
+ * (0..1). Gibt null zurück, wenn das Bild nicht auswertbar ist.
+ */
+export function detectSheetOnBed(canvas) {
+  try {
+    const W = canvas?.width;
+    const H = canvas?.height;
+    if (!W || !H) return null;
+    // Ergebnis am Bild merken – die Ansicht zeichnet oft neu, die Analyse
+    // muss deshalb nicht jedes Mal laufen.
+    if (canvas.__sheet !== undefined) return canvas.__sheet;
+
+    // Verkleinert auswerten – schnell und unempfindlich gegen Rauschen
+    const s = Math.min(1, SHEET_ANALYZE / Math.max(W, H));
+    const aw = Math.max(40, Math.round(W * s));
+    const ah = Math.max(40, Math.round(H * s));
+    const c = document.createElement('canvas');
+    c.width = aw;
+    c.height = ah;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0, aw, ah);
+    const px = ctx.getImageData(0, 0, aw, ah).data;
+    const lum = (x, y) => {
+      const i = (y * aw + x) * 4;
+      return (px[i] * 77 + px[i + 1] * 151 + px[i + 2] * 28) >> 8;
+    };
+
+    // Profile über die mittleren 60 % der jeweils anderen Achse (Median statt
+    // Mittelwert: einzelne Textzeilen ziehen das Ergebnis nicht herunter)
+    const colProf = [];
+    const y0 = Math.round(ah * 0.2);
+    const y1 = Math.round(ah * 0.8);
+    for (let x = 0; x < aw; x++) {
+      const vals = [];
+      for (let y = y0; y < y1; y++) vals.push(lum(x, y));
+      colProf.push(medianOf(vals));
     }
-    // Größter Helligkeitsabfall Richtung Glasfläche
-    let best = 0;
-    let bestAt = -1;
-    for (let i = 1; i < prof.length; i++) {
-      const drop = fromStart ? prof[i - 1] - prof[i] : prof[i] - prof[i - 1];
-      if (drop > best) { best = drop; bestAt = i; }
+    const rowProf = [];
+    const x0 = Math.round(aw * 0.2);
+    const x1 = Math.round(aw * 0.8);
+    for (let y = 0; y < ah; y++) {
+      const vals = [];
+      for (let x = x0; x < x1; x++) vals.push(lum(x, y));
+      rowProf.push(medianOf(vals));
     }
-    // Nur übernehmen, wenn der Sprung deutlich ist (Papier -> Glas)
-    if (bestAt < 0 || best < 18) return null;
-    const pos = from + bestAt;
-    return fromStart ? pos / span : 1 - pos / span;
+
+    const left = sheetEdgeFromProfile(colProf);
+    const right = sheetEdgeFromProfile([...colProf].reverse());
+    const top = sheetEdgeFromProfile(rowProf);
+    const bottom = sheetEdgeFromProfile([...rowProf].reverse());
+
+    const r = {
+      x0: left / aw,
+      y0: top / ah,
+      x1: (aw - right) / aw,
+      y1: (ah - bottom) / ah,
+    };
+    // Unsinnige Ergebnisse verwerfen (Blatt füllt immer den Großteil)
+    const ok = (r.x1 - r.x0 >= 0.55 && r.y1 - r.y0 >= 0.55) ? r : null;
+    try { canvas.__sheet = ok; } catch { /* nicht beschreibbar: egal */ }
+    return ok;
   } catch {
     return null;   // z. B. wenn das Canvas nicht auslesbar ist
   }
@@ -832,8 +937,10 @@ function openCrop(srcCanvas, pageIndex, returnTo) {
     src,
     corners: existing ? existing.corners.map((p) => ({ ...p }))
       : (a4 || detectCornersOnCanvas(srcCanvas) || defaultCorners()),
-    format: existing ? existing.format : (a4 ? 'a4p' : state.lastFormat),
-    stretch: existing ? !!existing.stretch : state.lastStretch,
+    // Erkanntes Blatt: Hoch- oder Querformat aus dem Seitenverhältnis ableiten
+    // und strecken – so wird die Ausgabe exakt A4 statt „A4 mit weißem Rand“.
+    format: existing ? existing.format : (a4 ? a4FormatFor(src, a4) : state.lastFormat),
+    stretch: existing ? !!existing.stretch : (a4 ? true : state.lastStretch),
     // Aus der Quelle lesen, nicht aus srcCanvas: beim erneuten Öffnen einer
     // bestehenden Seite ist srcCanvas null – dann verschwanden die A4-Knöpfe.
     isBedScan: !!src?.scanDpi,
@@ -1098,6 +1205,8 @@ function nextFromQueueOrPages(backToCapture = false) {
 
 // ------------------------------------------------ Radierer (weiß übermalen)
 
+const ERASE_BASE_MAX = 2200;   // Auflösung der Arbeitskopie im Radierer
+
 function openErase(pageIndex) {
   const page = state.pages[pageIndex];
   page.erase = page.erase || [];
@@ -1108,29 +1217,110 @@ function openErase(pageIndex) {
     redo: [],
     base: null,
     drawing: null,
+    zoom: 1,          // 1 = eingepasst
+    pan: { x: 0, y: 0 },  // linke obere Ecke des Sichtfensters in Basispixeln
+    pinch: null,
+    pointers: new Map(),
   };
   view('erase');
   renderErase();
   updateEraseButtons();
 }
 
+/** Umrechnung zwischen Basisbild und Anzeige – Grundlage für Zoom & Zeichnen */
+function eraseMetrics() {
+  const er = state.erasing;
+  const stage = $('#scEraseStage', state.root);
+  const bw = er.base.width;
+  const bh = er.base.height;
+  const vw = Math.max(40, stage.clientWidth - 12);
+  const vh = Math.max(40, stage.clientHeight - 12);
+  const fit = Math.min(vw / bw, vh / bh);
+  const scale = fit * er.zoom;
+  // Sichtbarer Ausschnitt des Basisbildes
+  const visW = Math.min(bw, vw / scale);
+  const visH = Math.min(bh, vh / scale);
+  er.pan.x = clamp(er.pan.x, 0, Math.max(0, bw - visW));
+  er.pan.y = clamp(er.pan.y, 0, Math.max(0, bh - visH));
+  return { bw, bh, vw, vh, fit, scale, visW, visH, cssW: visW * scale, cssH: visH * scale };
+}
+
 function renderErase() {
   const er = state.erasing;
   if (!er) return;
   const page = state.pages[er.pageIndex];
-  const stage = $('#scEraseStage', state.root);
-  const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
-  const fit = Math.min((stage.clientWidth - 16) / w, (stage.clientHeight - 16) / h, 1);
-  const dw = Math.max(1, Math.round(w * fit));
-  const dh = Math.max(1, Math.round(h * fit));
-  if (!er.base || er.base.width !== dw || er.base.height !== dh) {
-    er.base = warpPerspective(page.src, page.corners, dw, dh);
+
+  // Arbeitskopie in guter Auflösung – nur einmal berechnen. Beim Hineinzoomen
+  // wird daraus ausschnittweise gezeichnet, dadurch sieht man wirklich mehr.
+  if (!er.base) {
+    const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
+    const s = Math.min(1, ERASE_BASE_MAX / Math.max(w, h));
+    er.base = warpPerspective(page.src, page.corners, Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
   }
+
+  const m = eraseMetrics();
   const canvas = $('#scEraseCanvas', state.root);
-  canvas.width = dw;
-  canvas.height = dh;
-  canvas.getContext('2d').drawImage(er.base, 0, 0);
-  applyErase(canvas, page.erase);
+  const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+  canvas.style.width = `${Math.round(m.cssW)}px`;
+  canvas.style.height = `${Math.round(m.cssH)}px`;
+  canvas.width = Math.max(1, Math.round(m.cssW * dpr));
+  canvas.height = Math.max(1, Math.round(m.cssH * dpr));
+
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(er.base, er.pan.x, er.pan.y, m.visW, m.visH, 0, 0, canvas.width, canvas.height);
+
+  // Radierspuren im selben Ausschnitt zeichnen (Striche sind normiert
+  // gespeichert und damit unabhängig von Zoom und Auflösung)
+  const k = canvas.width / m.visW;       // Basispixel -> Zeichenpixel
+  ctx.save();
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const s of page.erase || []) {
+    const width = Math.max(1, s.size * m.bw * k);
+    const px = (p) => (p.x * m.bw - er.pan.x) * k;
+    const py = (p) => (p.y * m.bh - er.pan.y) * k;
+    if (s.points.length === 1) {
+      ctx.beginPath();
+      ctx.arc(px(s.points[0]), py(s.points[0]), width / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      s.points.forEach((p, i) => (i === 0 ? ctx.moveTo(px(p), py(p)) : ctx.lineTo(px(p), py(p))));
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  updateEraseZoomUi();
+}
+
+function updateEraseZoomUi() {
+  const er = state.erasing;
+  if (!er || !state.root) return;
+  const out = $('#scEraseZoomOut', state.root);
+  const inn = $('#scEraseZoomIn', state.root);
+  const lbl = $('#scEraseZoomLabel', state.root);
+  if (lbl) lbl.textContent = `${Math.round(er.zoom * 100)} %`;
+  if (out) out.disabled = er.zoom <= 1.01;
+  if (inn) inn.disabled = er.zoom >= 7.9;
+}
+
+/** Zoomen um einen Bildpunkt herum (Standard: Mitte des Sichtfensters) */
+function eraseZoomTo(zoom, focus) {
+  const er = state.erasing;
+  if (!er?.base) return;
+  const m = eraseMetrics();
+  const f = focus || { x: er.pan.x + m.visW / 2, y: er.pan.y + m.visH / 2 };
+  const rel = { x: (f.x - er.pan.x) / m.visW, y: (f.y - er.pan.y) / m.visH };
+  er.zoom = clamp(zoom, 1, 8);
+  const n = eraseMetrics();
+  er.pan.x = f.x - rel.x * n.visW;
+  er.pan.y = f.y - rel.y * n.visH;
+  renderErase();
 }
 
 function updateEraseButtons() {
@@ -1139,12 +1329,26 @@ function updateEraseButtons() {
   $('#scEraseRedoBtn', state.root).disabled = !er || er.redo.length === 0;
 }
 
+// Bildschirmpunkt -> normierte Seitenkoordinate (0..1), zoomrichtig
 function erasePoint(e) {
+  const er = state.erasing;
   const canvas = $('#scEraseCanvas', state.root);
   const r = canvas.getBoundingClientRect();
+  const m = eraseMetrics();
+  const bx = er.pan.x + clamp((e.clientX - r.left) / r.width, 0, 1) * m.visW;
+  const by = er.pan.y + clamp((e.clientY - r.top) / r.height, 0, 1) * m.visH;
+  return { x: clamp(bx / m.bw, 0, 1), y: clamp(by / m.bh, 0, 1) };
+}
+
+// Basispunkt unter dem Zeiger (für Zoom-Fokus und Verschieben)
+function eraseBasePoint(clientX, clientY) {
+  const er = state.erasing;
+  const canvas = $('#scEraseCanvas', state.root);
+  const r = canvas.getBoundingClientRect();
+  const m = eraseMetrics();
   return {
-    x: clamp((e.clientX - r.left) / r.width, 0, 1),
-    y: clamp((e.clientY - r.top) / r.height, 0, 1),
+    x: er.pan.x + clamp((clientX - r.left) / r.width, 0, 1) * m.visW,
+    y: er.pan.y + clamp((clientY - r.top) / r.height, 0, 1) * m.visH,
   };
 }
 
@@ -1152,13 +1356,46 @@ function onErasePointerDown(e) {
   const er = state.erasing;
   if (!er) return;
   e.preventDefault();
+  // Ein primärer Zeiger startet eine frische Geste – verhindert „Geisterfinger“
+  // nach einem verlorenen pointerup (siehe Editor).
+  if (e.isPrimary) {
+    er.pointers.clear();
+    er.pinch = null;
+    er.drawing = null;
+  }
   const canvas = $('#scEraseCanvas', state.root);
-  canvas.setPointerCapture?.(e.pointerId);
+  try { canvas.setPointerCapture?.(e.pointerId); } catch { /* nicht kritisch */ }
+  er.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  // Zwei Finger: zoomen und verschieben statt radieren
+  if (er.pointers.size === 2 && e.pointerType === 'touch') {
+    const [a, b] = [...er.pointers.values()];
+    er.pinch = {
+      dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      zoom: er.zoom,
+      base: eraseBasePoint((a.x + b.x) / 2, (a.y + b.y) / 2),
+    };
+    // angefangenen Strich zurücknehmen – die Geste war als Zoom gemeint
+    if (er.drawing) {
+      const page = state.pages[er.pageIndex];
+      const i = page.erase.indexOf(er.drawing);
+      if (i >= 0) page.erase.splice(i, 1);
+      er.drawing = null;
+      if (er.undo.length) er.undo.pop();
+      renderErase();
+      updateEraseButtons();
+    }
+    return;
+  }
+  if (er.pointers.size > 1) return;
+
   const page = state.pages[er.pageIndex];
   er.undo.push(JSON.stringify(page.erase));
   if (er.undo.length > 60) er.undo.shift();
   er.redo = [];
-  const size = parseInt($('#scBrushSize', state.root).value, 10) / canvas.width;
+  // Pinselgröße in Seitenanteil: beim Hineinzoomen wird feiner radiert
+  const m = eraseMetrics();
+  const size = (parseInt($('#scBrushSize', state.root).value, 10) / m.cssW) * (m.visW / m.bw);
   er.drawing = { size, points: [erasePoint(e)] };
   page.erase.push(er.drawing);
   renderErase();
@@ -1167,14 +1404,28 @@ function onErasePointerDown(e) {
 
 function onErasePointerMove(e) {
   const er = state.erasing;
-  if (!er?.drawing) return;
+  if (!er) return;
+  if (er.pointers.has(e.pointerId)) er.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (er.pinch && er.pointers.size === 2) {
+    e.preventDefault();
+    const [a, b] = [...er.pointers.values()];
+    const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    eraseZoomTo(er.pinch.zoom * (dist / er.pinch.dist), er.pinch.base);
+    return;
+  }
+  if (!er.drawing) return;
   e.preventDefault();
   er.drawing.points.push(erasePoint(e));
   renderErase();
 }
 
-function onErasePointerUp() {
-  if (state.erasing) state.erasing.drawing = null;
+function onErasePointerUp(e) {
+  const er = state.erasing;
+  if (!er) return;
+  if (e?.pointerId != null) er.pointers.delete(e.pointerId);
+  if (er.pointers.size < 2) er.pinch = null;
+  er.drawing = null;
 }
 
 function eraseUndo() {
@@ -1463,7 +1714,8 @@ export function openScanner(onDone, opts = {}) {
     });
     if (!c) return;
     state.editing.corners = c;
-    state.editing.format = 'a4p';
+    state.editing.format = a4FormatFor(state.editing.src, c);
+    state.editing.stretch = true;   // erkanntes Blatt exakt auf A4 abbilden
     renderCrop();
   });
   // Liegt die Vorlage an einer anderen Ecke an? Durch alle vier durchschalten.
@@ -1519,6 +1771,21 @@ export function openScanner(onDone, opts = {}) {
   eraseCanvas.addEventListener('pointermove', onErasePointerMove);
   eraseCanvas.addEventListener('pointerup', onErasePointerUp);
   eraseCanvas.addEventListener('pointercancel', onErasePointerUp);
+  $('#scEraseZoomIn', root).addEventListener('click', () => eraseZoomTo((state.erasing?.zoom || 1) * 1.6));
+  $('#scEraseZoomOut', root).addEventListener('click', () => eraseZoomTo((state.erasing?.zoom || 1) / 1.6));
+  $('#scEraseZoomFit', root).addEventListener('click', () => {
+    if (!state.erasing) return;
+    state.erasing.pan = { x: 0, y: 0 };
+    eraseZoomTo(1);
+  });
+  // Mausrad/Trackpad am Rechner
+  $('#scEraseStage', root).addEventListener('wheel', (e) => {
+    if (!state.erasing) return;
+    e.preventDefault();
+    const f = eraseBasePoint(e.clientX, e.clientY);
+    eraseZoomTo(state.erasing.zoom * (e.deltaY > 0 ? 0.85 : 1.18), f);
+  }, { passive: false });
+
   $('#scEraseUndoBtn', root).addEventListener('click', eraseUndo);
   $('#scEraseRedoBtn', root).addEventListener('click', eraseRedo);
   $('#scEraseCancelBtn', root).addEventListener('click', () => closeErase(true));

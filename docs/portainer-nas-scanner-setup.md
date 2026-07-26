@@ -214,22 +214,51 @@ die Höhe stimmt exakt. Weil die Vorlage bündig in der Ecke liegt, steht der
 A4-Bereich rechnerisch fest – Kantenerkennung ist dafür gar nicht nötig (und
 würde bei weißem Blatt auf weißem Deckel ohnehin scheitern).
 
-Die App bekommt vom Server die Scanauflösung mitgeliefert (`X-Scan-Dpi`),
-rechnet aus der Pixelgröße die echten Millimeter der Glasfläche aus und legt
-den A4-Ausschnitt automatisch an. Der Zuschnitt-Editor öffnet sich damit bereits
-**passend vorbereitet**, für **jede** Seite gleich.
+Die Blattkante wird **gemessen**, nicht geraten – und zwar je Achse getrennt,
+weil sie nicht immer auf allen Seiten sichtbar ist:
 
-- **„A4 aus Scannerfläche“** setzt den Ausschnitt jederzeit neu.
+1. **Gemessen:** Wo die Glasfläche frei bleibt, ist der Scan dunkler – oder es
+   zeigt sich zumindest eine **feine Schattenlinie** direkt an der Blattkante
+   (im echten Scan gemessen: Helligkeit 249 statt 255). Beides wird erkannt;
+   Textzeilen in Randnähe werden über Tiefe und Breite der Senke ausgeschlossen.
+2. **Gerechnet (Rückfall):** Findet sich auf einer Seite keine Kante – weißes
+   Papier vor weißem Deckel gibt schlicht kein Signal –, wird aus Pixelgröße
+   und Scanauflösung (`X-Scan-Dpi` vom Server) die Glasfläche in Millimetern
+   bestimmt und A4 ab der Anlegeecke abgezogen.
+
+Das erkannte Blatt wird anschließend **exakt auf A4 abgebildet** (Hoch- oder
+Querformat nach Seitenverhältnis, mit Strecken). Damit ist die Ausgabe genau
+A4 – ohne weißen Rand und ohne abgeschnittene Kante. Nebeneffekt: eine leichte
+Maßabweichung des Scanners wird dabei mit korrigiert.
+
+- **„A4-Fläche“** setzt den Ausschnitt jederzeit neu.
 - **„Ecke“** schaltet die Anlegekante durch (oben links → oben rechts → unten
   rechts → unten links), falls dein Gerät anders anlegt.
-- Ist die Fläche genau A4 groß, passiert nichts – dann gibt es nichts
-  abzuschneiden.
+- Bei **Kamerafotos** greift diese Automatik nicht – dort bleibt die
+  perspektivische Eckenerkennung zuständig.
+
+### Auswahl und Ausgabeformat sind getrennt
+
+Die Leiste im Zuschnitt hat zwei beschriftete Gruppen, die sich frei
+kombinieren lassen:
+
+| Gruppe | Wirkung |
+| --- | --- |
+| **Auswahl** | *Alles* (ganzes Bild) · *Automatisch* (Ränder erkennen) · *A4-Fläche* · *Ecke* |
+| **Ausgabeformat** | *Auto* (folgt der Auswahl) · *A4 hoch* · *A4 quer* · *strecken* |
+
+Also z. B.: alles auswählen → *A4 quer* → optional *strecken*.
 
 ## Scans prüfen und nachbessern
 
 - In der Seitenübersicht sind die Miniaturen groß; ein Tipp darauf öffnet die
   **Vollbild-Vorschau** mit Blättern und direkten Schaltflächen für
   **Zuschnitt** und **Radieren**.
+- Der **Scan-Radierer lässt sich zoomen** – mit zwei Fingern, über die
+  Zoom-Tasten oder am Rechner per Mausrad. Dabei wird der Ausschnitt aus einer
+  hochauflösenden Arbeitskopie neu gezeichnet, man sieht also wirklich mehr
+  Details statt eines vergrößerten Unschärfebreis. Ein Finger radiert, und der
+  Pinsel wird im Zoom entsprechend feiner.
 - **Nachträglich radieren:** Ist der Scan schon als PDF in der Liste, öffnet
   **„Bearbeiten“** den PDF-Editor. Dort gibt es das Werkzeug **„Weiß
   übermalen“** – dieselbe Wirkung wie der Scanner-Radierer, aber zu jedem

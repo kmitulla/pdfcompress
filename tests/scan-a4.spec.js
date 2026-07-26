@@ -51,6 +51,95 @@ test('A4-Ausschnitt trifft die echten Maße des ET-2720 (215,9 x 297 mm)', async
   expect(res.br[0].x).toBeCloseTo(1 - 210 / 215.9, 3);
 });
 
+// Der gemeldete Fall: Das Blatt endet sichtbar vor dem Rand der Scanfläche –
+// unten nur als feine Schattenlinie (im echten Scan gemessen: 249 statt 255).
+test('Blatterkennung findet die Kante auch als feine Schattenlinie', async ({ page }) => {
+  await ready(page);
+  const r = await page.evaluate(async () => {
+    const { detectSheetOnBed, sheetEdgeFromProfile } = await import('/js/scanner.js');
+
+    // a) Profil wie im echten Scan: Papier 255, bei Index 12 eine flache Senke
+    // Profil wie im echten Scan gemessen: Papier 255, dicht am Rand eine
+    // flache, schmale Senke (die Schattenlinie an der Blattkante).
+    const prof = new Array(300).fill(255);
+    prof[4] = 252; prof[5] = 249; prof[6] = 253;
+    const linie = sheetEdgeFromProfile(prof);
+
+    // b) Vollbild: Blatt endet unten bei 90 %, rechts bei 95 % (dort dunkler)
+    const c = document.createElement('canvas');
+    c.width = 600; c.height = 850;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, 600, 850);
+    x.fillStyle = '#8d8d8d'; x.fillRect(570, 0, 30, 850);      // freie Glasfläche rechts
+    x.fillStyle = '#f2f2f2'; x.fillRect(0, 766, 570, 84);      // Deckel unten, fast weiß
+    x.fillStyle = '#e2e2e2'; x.fillRect(0, 763, 570, 3);       // Schattenlinie an der Blattkante
+    x.fillStyle = '#333';
+    for (let i = 0; i < 8; i++) x.fillRect(60, 80 + i * 70, 420, 12);
+    // Gegenprobe: breite dunkle Zeile weiter innen (Text) ist keine Kante
+    const t = new Array(300).fill(255);
+    for (let i = 20; i < 32; i++) t[i] = 60;
+    const textZeile = sheetEdgeFromProfile(t);
+
+    const sheet = detectSheetOnBed(c);
+    return { linie, textZeile, sheet };
+  });
+
+  // Die Senke markiert die Kante – dahinter beginnt das Papier
+  expect(r.linie).toBeGreaterThan(4);
+  expect(r.linie).toBeLessThan(10);
+  // Eine breite Textzeile weiter innen darf NICHT als Kante gelten
+  expect(r.textZeile).toBe(0);
+
+  // Blatt korrekt eingegrenzt
+  expect(r.sheet).not.toBeNull();
+  expect(r.sheet.x0).toBeCloseTo(0, 1);
+  expect(r.sheet.y0).toBeCloseTo(0, 1);
+  expect(r.sheet.x1, 'rechte Kante bei 95 %').toBeCloseTo(570 / 600, 1);
+  expect(r.sheet.y1, 'untere Kante bei 90 %').toBeCloseTo(766 / 850, 1);
+});
+
+test('Erkanntes Blatt wird exakt als A4 ausgegeben (kein weißer Rand)', async ({ page }) => {
+  await ready(page);
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 850; c.height = 1200;
+    const x = c.getContext('2d');
+    x.fillStyle = '#8d8d8d'; x.fillRect(0, 0, 850, 1200);   // Scanfläche
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, 827, 1170);   // Blatt oben links
+    x.fillStyle = '#333';
+    for (let i = 0; i < 10; i++) x.fillRect(90, 120 + i * 95, 600, 16);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  await page.evaluate(async (bytes) => {
+    const { openScanner } = await import('/js/scanner.js');
+    const f = new File([new Uint8Array(bytes)], 'scan.png', { type: 'image/png' });
+    f.scanDpi = 100;
+    openScanner((pdf) => { window.__scanResult = pdf; }, { initialFiles: [f], netScan: async () => f });
+  }, png);
+  await expect(page.locator('#scCropView')).toBeVisible();
+
+  // Auswahl sitzt auf dem Blatt, Format A4 hoch, gestreckt
+  const st = await page.evaluate(() => window.__pdfscanner.state.editing);
+  expect(st.format).toBe('a4p');
+  expect(st.stretch).toBe(true);
+  expect(st.corners[1].x, 'rechte Kante am Blatt').toBeCloseTo(827 / 850, 1);
+  expect(st.corners[2].y, 'untere Kante am Blatt').toBeCloseTo(1170 / 1200, 1);
+
+  // Ergebnis: exakt A4, und der Inhalt füllt es ohne weißen Rand
+  await page.click('#scCropOkBtn');
+  await page.click('#scDoneBtn');
+  await page.waitForFunction(() => !!window.__scanResult, null, { timeout: 30000 });
+  const res = await page.evaluate(async () => {
+    const { PDFDocument } = window.PDFLib;
+    const doc = await PDFDocument.load(await window.__scanResult.arrayBuffer());
+    const { width, height } = doc.getPage(0).getSize();
+    return { width, height };
+  });
+  expect(res.width).toBeCloseTo(595.28, 0);
+  expect(res.height).toBeCloseTo(841.89, 0);
+});
+
 test('Kantenverfeinerung korrigiert die Rechnung anhand der Glasfläche', async ({ page }) => {
   await ready(page);
   const r = await page.evaluate(async () => {
@@ -74,7 +163,7 @@ test('Kantenverfeinerung korrigiert die Rechnung anhand der Glasfläche', async 
     return {
       exakt: a4CornersForScan(mk(paperW))[1].x,
       verschoben: a4CornersForScan(mk(shifted))[1].x,
-      ohneVerfeinerung: a4CornersForScan(mk(shifted), { refine: false })[1].x,
+      ohneVerfeinerung: a4CornersForScan(mk(shifted), { detect: false })[1].x,
       erwartetVerschoben: shifted / bedW,
       rechnerisch: 210 / 215.9,
     };
@@ -300,6 +389,79 @@ test('Große Seitenvorschau lässt sich öffnen und führt zum Radierer', async 
 // Reproduziert den gemeldeten Fehler: Geht ein pointerup verloren (auf iOS
 // kommt das vor), blieb der Finger als "Geist" in der Liste stehen – der
 // nächste einzelne Finger galt dann als zweiter und löste den Pinch-Zoom aus.
+test('Scan-Radierer: Zoom, feineres Radieren und höhere Auflösung', async ({ page }) => {
+  await ready(page);
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 900; c.height = 1250;
+    const x = c.getContext('2d');
+    x.fillStyle = '#555'; x.fillRect(0, 0, 900, 1250);
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 880, 1230);
+    x.fillStyle = '#111';
+    for (let i = 0; i < 12; i++) x.fillRect(70, 100 + i * 90, 620, 14);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  await page.click('#scanBtn');
+  await page.setInputFiles('#scFileInput', { name: 's.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+  await expect(page.locator('#scCropView')).toBeVisible();
+  await page.click('#scCropOkBtn');
+  await expect(page.locator('#scPagesView')).toBeVisible();
+  await page.click('.sc-pagecell-bar .btn >> nth=1');   // Radierer
+  await expect(page.locator('#scEraseView')).toBeVisible();
+
+  // Startzustand: eingepasst
+  await expect(page.locator('#scEraseZoomLabel')).toHaveText('100 %');
+  const before = await page.evaluate(() => {
+    const c = document.querySelector('#scEraseCanvas');
+    return { w: c.width, h: c.height, zoom: window.__pdfscanner.state.erasing.zoom };
+  });
+
+  // Hineinzoomen: Zeichenfläche zeigt einen Ausschnitt in höherer Auflösung
+  await page.click('#scEraseZoomIn');
+  await page.click('#scEraseZoomIn');
+  const after = await page.evaluate(() => {
+    const er = window.__pdfscanner.state.erasing;
+    const c = document.querySelector('#scEraseCanvas');
+    return {
+      zoom: er.zoom,
+      base: { w: er.base.width, h: er.base.height },
+      cssW: parseFloat(c.style.width),
+    };
+  });
+  expect(after.zoom).toBeGreaterThan(before.zoom * 2);
+  // Die Arbeitskopie liegt in voller Scanauflösung vor und ist deutlich größer
+  // als die Anzeige – nur dadurch zeigt Hineinzoomen echte Details statt Matsch.
+  expect(after.base.w).toBeGreaterThan(850);
+  expect(after.base.w).toBeGreaterThan(after.cssW);
+
+  // Radieren im gezoomten Zustand trifft die richtige Stelle und ist feiner
+  const stage = await page.locator('#scEraseCanvas').boundingBox();
+  await page.mouse.move(stage.x + stage.width * 0.4, stage.y + stage.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.5, { steps: 6 });
+  await page.mouse.up();
+  const stroke = await page.evaluate(() => {
+    const p = window.__pdfscanner.state.pages[0];
+    return { n: p.erase.length, size: p.erase[0].size, pts: p.erase[0].points.length };
+  });
+  expect(stroke.n).toBe(1);
+  expect(stroke.pts).toBeGreaterThan(2);
+  // Der Strich liegt im mittleren Bereich der Seite, nicht am Rand
+  const mid = await page.evaluate(() => {
+    const p = window.__pdfscanner.state.pages[0].erase[0].points;
+    return p[Math.floor(p.length / 2)];
+  });
+  expect(mid.x).toBeGreaterThan(0.1);
+  expect(mid.x).toBeLessThan(0.9);
+  expect(mid.y).toBeGreaterThan(0.1);
+  expect(mid.y).toBeLessThan(0.9);
+
+  // Zurück auf Einpassen
+  await page.click('#scEraseZoomFit');
+  await expect(page.locator('#scEraseZoomLabel')).toHaveText('100 %');
+});
+
 test('Ein Finger zeichnet auch nach einem verlorenen pointerup – erst zwei Finger zoomen', async ({ page }) => {
   await ready(page);
   const bytes = await page.evaluate(async () => {
