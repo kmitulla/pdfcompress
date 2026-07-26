@@ -110,6 +110,10 @@ function currentOptions() {
   if (opts.colorMode === 'bw' || opts.colorMode === 'indexed') {
     opts.bias = parseInt($('#bwBias').value, 10) || 0;
   }
+  if (opts.colorMode === 'bw') {
+    opts.contrast = parseInt($('#bwContrast').value, 10) || 0;
+    opts.darkAreas = $('#darkAreas').value || 'auto';
+  }
   if (opts.mode !== 'lossless' && ocrEnabled.checked) {
     opts.ocr = true;
     opts.ocrLang = $('#ocrLang').value;
@@ -130,6 +134,9 @@ function syncSettingsUi() {
   customPanel.classList.toggle('hidden', preset !== 'custom');
   qualityField.classList.toggle('hidden', preset === 'custom' && ['bw', 'indexed'].includes($('#colorMode').value));
   biasField.classList.toggle('hidden', !['bw', 'indexed'].includes(opts.colorMode));
+  // Kontrast und Umgang mit dunklen Flächen betreffen nur die 1-Bit-Ausgabe
+  $('#contrastField').classList.toggle('hidden', opts.colorMode !== 'bw');
+  $('#darkAreasField').classList.toggle('hidden', opts.colorMode !== 'bw');
   $('#extremeDpiField').classList.toggle('hidden', !preset.startsWith('extrem'));
   const lossless = preset === 'verlustfrei';
   ocrEnabled.disabled = lossless;
@@ -144,6 +151,8 @@ ocrEnabled.addEventListener('change', syncSettingsUi);
 $('#dpi').addEventListener('input', () => { $('#dpiOut').value = $('#dpi').value; schedulePreviewRefresh(); });
 $('#quality').addEventListener('input', () => { $('#qualityOut').value = $('#quality').value; schedulePreviewRefresh(); });
 $('#bwBias').addEventListener('input', () => { $('#bwBiasOut').value = $('#bwBias').value; schedulePreviewRefresh(); });
+$('#bwContrast').addEventListener('input', () => { $('#bwContrastOut').value = $('#bwContrast').value; schedulePreviewRefresh(); });
+$('#darkAreas').addEventListener('change', schedulePreviewRefresh);
 $('#extremeDpi').addEventListener('change', schedulePreviewRefresh);
 
 // ---------------------------------------------------------------- Hilfen
@@ -319,7 +328,9 @@ let netScanBusy = false;
  * damit man Seite für Seite in dieselbe PDF sammeln kann.
  */
 async function fetchScannedPage() {
-  const res = await fetch('/api/scanner/scan?color=color&dpi=300', { method: 'POST' });
+  const dpi = parseInt($('#scanDpi').value, 10) || 300;
+  const color = $('#scanColor').value || 'color';
+  const res = await fetch(`/api/scanner/scan?color=${encodeURIComponent(color)}&dpi=${dpi}`, { method: 'POST' });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
@@ -331,7 +342,7 @@ async function fetchScannedPage() {
   const file = new File([blob], `scan_${Date.now()}.${ext}`, { type });
   // Auflösung merken – daraus errechnet der Scanner die echte Größe der
   // Glasfläche in Millimetern und damit den A4-Ausschnitt.
-  file.scanDpi = parseInt(res.headers.get('X-Scan-Dpi'), 10) || 300;
+  file.scanDpi = parseInt(res.headers.get('X-Scan-Dpi'), 10) || dpi;
   return file;
 }
 
@@ -508,6 +519,12 @@ function pageOverrideOpts(item, pageNum) {
   const o = { ...PRESETS[ov.preset] };
   delete o.mode;
   if (o.colorMode === 'bw' || o.colorMode === 'indexed') o.bias = ov.bias || 0;
+  // Kontrast und Umgang mit dunklen Flächen gelten global weiter, damit eine
+  // Seiten-Ausnahme nicht plötzlich mit anderen Grundeinstellungen rechnet.
+  if (o.colorMode === 'bw') {
+    o.contrast = parseInt($('#bwContrast').value, 10) || 0;
+    o.darkAreas = $('#darkAreas').value || 'auto';
+  }
   return o;
 }
 
@@ -736,6 +753,7 @@ async function detectBackend() {
 
   if (backend.scanner) {
     netScanBtn.classList.remove('hidden');
+    $('#netScanSettings').classList.remove('hidden');
     document.querySelector('.source-row')?.classList.add('has-net');
   }
   if (backend.consume) {
@@ -880,6 +898,10 @@ function collectSettings() {
     dpi: $('#dpi').value,
     quality: $('#quality').value,
     bwBias: $('#bwBias').value,
+    bwContrast: $('#bwContrast').value,
+    darkAreas: $('#darkAreas').value,
+    scanDpi: $('#scanDpi').value,
+    scanColor: $('#scanColor').value,
     extremeDpi: $('#extremeDpi').value,
     ocr: ocrEnabled.checked,
     ocrLang: $('#ocrLang').value,
@@ -901,6 +923,10 @@ async function applyStoredSettings() {
     if (s.dpi) { $('#dpi').value = s.dpi; $('#dpiOut').value = s.dpi; }
     if (s.quality) { $('#quality').value = s.quality; $('#qualityOut').value = s.quality; }
     if (s.bwBias != null) { $('#bwBias').value = s.bwBias; $('#bwBiasOut').value = s.bwBias; }
+    if (s.bwContrast != null) { $('#bwContrast').value = s.bwContrast; $('#bwContrastOut').value = s.bwContrast; }
+    if (s.darkAreas) $('#darkAreas').value = s.darkAreas;
+    if (s.scanDpi) $('#scanDpi').value = s.scanDpi;
+    if (s.scanColor) $('#scanColor').value = s.scanColor;
     if (s.extremeDpi != null) $('#extremeDpi').value = s.extremeDpi;
     if (s.ocr != null) ocrEnabled.checked = s.ocr;
     if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
@@ -910,7 +936,7 @@ async function applyStoredSettings() {
   settingsReady = true;
   syncSettingsUi();
 }
-document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #bwContrast, #darkAreas, #scanDpi, #scanColor, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
   .forEach((el) => el.addEventListener('change', persistSettings));
 applyStoredSettings();
 requestPersistence();

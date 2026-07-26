@@ -130,6 +130,22 @@
         <small>+ heller (mehr Weiß) · − dunkler (mehr Details/Schwarz). Wirkung unten in der Vorschau prüfen.</small>
       </div>
 
+      <div class="field hidden" id="contrastField">
+        <label for="bwContrast">Kontrast: <output id="bwContrastOut">0</output></label>
+        <input type="range" id="bwContrast" min="-50" max="50" step="1" value="0">
+        <small>+ nimmt auch schwachen Text mit (blasse Vorlagen) · − lässt nur kräftige Tinte stehen (weniger Rauschen).</small>
+      </div>
+
+      <div class="field hidden" id="darkAreasField">
+        <label for="darkAreas">Dunkle Flächen</label>
+        <select id="darkAreas">
+          <option value="auto" selected>Automatisch</option>
+          <option value="invert">Als Farbbalken (weiße Schrift lesbar halten)</option>
+          <option value="ignore">Ignorieren (nicht schwärzen)</option>
+        </select>
+        <small>Bei Fotos oder Bildschirmaufnahmen mit dunklen Rändern hilft „Ignorieren“, damit der Rand nicht schwarz zuläuft.</small>
+      </div>
+
       <h2><i data-icon="text_search"></i> Texterkennung (OCR)</h2>
       <div class="field field-row">
         <input type="checkbox" id="ocrEnabled">
@@ -202,6 +218,27 @@
           <p class="dropzone-title">Netzwerk-Scanner</p>
           <p class="dropzone-sub" id="netScanSub">Seite von der Glasfläche einlesen – mehrere Seiten sammeln, zuschneiden &amp; bearbeiten</p>
         </div>
+      </div>
+
+      <div class="scan-settings hidden" id="netScanSettings">
+        <span class="scan-settings-label"><i data-icon="scanner" data-icon-size="15"></i> Scanner</span>
+        <label for="scanDpi">Auflösung
+          <select id="scanDpi">
+            <option value="150">150 dpi · schnell</option>
+            <option value="200">200 dpi</option>
+            <option value="300" selected>300 dpi · empfohlen</option>
+            <option value="400">400 dpi</option>
+            <option value="600">600 dpi · sehr fein, langsam</option>
+          </select>
+        </label>
+        <label for="scanColor">Farbe
+          <select id="scanColor">
+            <option value="color" selected>Farbe</option>
+            <option value="gray">Graustufen</option>
+            <option value="bw">Schwarz-Weiß</option>
+          </select>
+        </label>
+        <small class="hint-inline">Höhere Auflösung liefert feinere Vorlagen – dauert länger und braucht mehr Rechenzeit auf deinem Gerät.</small>
       </div>
 
       <p class="hint scan-hint hidden" id="scanHint">Scan als PDF hinzugefügt – wähle jetzt die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> und starte <strong>Komprimieren</strong>.</p>

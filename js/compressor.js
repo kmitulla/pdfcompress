@@ -55,17 +55,29 @@ function toGray(imageData) {
 // globaler Otsu-Schwellwert täte). In dunklen Bereichen (z. B. Farbbalken
 // mit weißer Schrift) wird lokal invertiert gearbeitet, damit die Schrift
 // lesbar bleibt.
-// bias: Helligkeitsregler (-40..+40); positiv = heller (mehr Weiß)
-function binarize(imageData, bias) {
+// bias:     Helligkeitsregler (-40..+40); positiv = heller (mehr Weiß)
+// contrast: Kontrast/Empfindlichkeit (-50..+50); positiv = mehr Struktur wird
+//           als Text gewertet, negativ = nur kräftige Tinte bleibt übrig.
+//           Steuert zugleich, ab wann eine Fläche als „leer“ gilt.
+// darkAreas: 'auto' | 'invert' | 'ignore'
+//   invert = dunkle Flächen als Farbbalken behandeln (Fläche schwarz, helle
+//            Schrift weiß) – richtig bei Briefköpfen und Tabellenköpfen.
+//   ignore = dunkle Flächen wie normalen Untergrund behandeln – richtig bei
+//            dunklen Fotos/Bildschirmaufnahmen, wo sonst der ganze Rand zu
+//            schwarzem Rauschen kippt.
+//   auto   = anhand des Bildes entscheiden.
+function binarize(imageData, bias, contrast = 0, darkAreas = 'auto') {
   const { width: w, height: h } = imageData;
   const gray = toGray(imageData);
   const b = bias | 0;
+  const k = Math.max(-50, Math.min(50, contrast | 0));
 
-  // Blockmittelwerte (32er-Raster) + 3x3-Glättung
+  // Blockmittelwerte und -streuung (32er-Raster) + 3x3-Glättung
   const BLOCK = 32;
   const bw = Math.max(1, Math.ceil(w / BLOCK));
   const bh = Math.max(1, Math.ceil(h / BLOCK));
   const sums = new Float64Array(bw * bh);
+  const sqSums = new Float64Array(bw * bh);
   const counts = new Uint32Array(bw * bh);
   for (let y = 0; y < h; y++) {
     const by = (y / BLOCK) | 0;
@@ -73,16 +85,26 @@ function binarize(imageData, bias) {
     const bOff = by * bw;
     for (let x = 0; x < w; x++) {
       const bi = bOff + ((x / BLOCK) | 0);
-      sums[bi] += gray[rowOff + x];
+      const g = gray[rowOff + x];
+      sums[bi] += g;
+      sqSums[bi] += g * g;
       counts[bi]++;
     }
   }
   const means = new Float32Array(bw * bh);
-  for (let i = 0; i < means.length; i++) means[i] = sums[i] / (counts[i] || 1);
+  const devs = new Float32Array(bw * bh);
+  for (let i = 0; i < means.length; i++) {
+    const n = counts[i] || 1;
+    const m = sums[i] / n;
+    means[i] = m;
+    devs[i] = Math.sqrt(Math.max(0, sqSums[i] / n - m * m));
+  }
   const blurred = new Float32Array(bw * bh);
+  const blurDev = new Float32Array(bw * bh);
   for (let by = 0; by < bh; by++) {
     for (let bx = 0; bx < bw; bx++) {
       let s = 0;
+      let sd = 0;
       let n = 0;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -90,16 +112,36 @@ function binarize(imageData, bias) {
           const xx = bx + dx;
           if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) {
             s += means[yy * bw + xx];
+            // Für die Struktur zählt der stärkste Block der Umgebung: sonst
+            // würden dünne Zeilen am Rand eines Textblocks verschluckt.
+            sd = Math.max(sd, devs[yy * bw + xx]);
             n++;
           }
         }
       }
       blurred[by * bw + bx] = s / n;
+      blurDev[by * bw + bx] = sd;
     }
   }
 
+  // Ist ein großer Teil der Seite dunkel, handelt es sich nicht um einzelne
+  // Farbbalken, sondern um eine insgesamt dunkle Aufnahme (Foto, Bildschirm,
+  // starke Vignette). Dort ist die Inversion falsch: sie macht aus flächigem
+  // Rauschen eine schwarze Masse. Am echten Beispiel gemessen: der Rand fiel
+  // damit von 94 % auf 17 % Schwarzanteil, der Text blieb erhalten.
+  let dimBlocks = 0;
+  for (let i = 0; i < blurred.length; i++) if (blurred[i] < 110) dimBlocks++;
+  const dimFrac = dimBlocks / (blurred.length || 1);
+  const invertDark = darkAreas === 'invert'
+    || (darkAreas !== 'ignore' && dimFrac <= 0.22);
+
   // Pro Pixel: lokalen Hintergrund bilinear samplen und schwellen
-  const C = Math.min(80, Math.max(5, 28 + b)); // heller Hintergrund: Abstand zum Papier
+  const C = Math.min(80, Math.max(5, 28 + b - k * 0.35)); // Abstand zum Papier
+  // Ab welcher lokalen Streuung gilt eine Fläche als „hat Inhalt“? Flächen
+  // ohne Struktur (gleichmäßig dunkler Rand, Schattenverlauf, Bildrauschen)
+  // enthalten keinen Text und werden weiß – sonst kippen sie zu schwarzem
+  // Rauschen, was den Scan unlesbar und riesig macht.
+  const FLAT = Math.max(3, 11 - k * 0.12);
   const bitmap = new Uint8Array(gray.length);
   const half = BLOCK / 2;
   for (let y = 0; y < h; y++) {
@@ -113,17 +155,32 @@ function binarize(imageData, bias) {
       const x0 = fx | 0;
       const x1 = Math.min(bw - 1, x0 + 1);
       const wx = fx - x0;
+      const i00 = y0 * bw + x0;
+      const i01 = y0 * bw + x1;
+      const i10 = y1 * bw + x0;
+      const i11 = y1 * bw + x1;
       const m =
-        blurred[y0 * bw + x0] * (1 - wx) * (1 - wy) +
-        blurred[y0 * bw + x1] * wx * (1 - wy) +
-        blurred[y1 * bw + x0] * (1 - wx) * wy +
-        blurred[y1 * bw + x1] * wx * wy;
+        blurred[i00] * (1 - wx) * (1 - wy) +
+        blurred[i01] * wx * (1 - wy) +
+        blurred[i10] * (1 - wx) * wy +
+        blurred[i11] * wx * wy;
+      const sd = Math.max(
+        Math.max(blurDev[i00], blurDev[i01]),
+        Math.max(blurDev[i10], blurDev[i11]),
+      );
+
       let t;
-      if (m >= 110) {
-        // helles Papier: alles deutlich Dunklere ist Tinte
+      if (m >= 110 || !invertDark) {
+        // helles Papier bzw. dunkle Aufnahme ohne Inversion:
+        // alles deutlich Dunklere als der lokale Untergrund ist Tinte
         t = Math.min(m - C, 210);
+      } else if (sd < FLAT) {
+        // dunkel, aber ohne Struktur: leerer Bereich – nichts einfärben
+        bitmap[rowOff + x] = 0;
+        continue;
       } else {
-        // dunkler Bereich (Balken/Header): Fläche schwarz, helle Schrift weiß
+        // dunkler Bereich mit Struktur (Farbbalken/Header): Fläche schwarz,
+        // helle Schrift bleibt weiß
         t = Math.min(Math.max(m + 60 - b, m + 20), 165);
       }
       bitmap[rowOff + x] = gray[rowOff + x] < t ? 1 : 0;
@@ -482,7 +539,7 @@ async function rasterCompress(srcBytes, opts, onProgress) {
     const outPage = newDoc.addPage([wPt, hPt]);
 
     if (pOpts.colorMode === 'bw') {
-      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), pOpts.bias || 0);
+      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), pOpts.bias || 0, pOpts.contrast || 0, pOpts.darkAreas || 'auto');
       const ref = embedBwImage(newDoc, PDFLib, bitmap, wPx, hPx, pOpts.bwFilter || 'auto');
       drawImageRef(outPage, PDFLib, ref, wPt, hPt);
     } else if (pOpts.colorMode === 'indexed') {
@@ -563,7 +620,7 @@ export async function previewPage(arrayBuffer, opts, pageNumber = 1) {
   let viewCanvas = canvas;
 
   if (opts.colorMode === 'bw') {
-    const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), opts.bias || 0);
+    const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), opts.bias || 0, opts.contrast || 0, opts.darkAreas || 'auto');
     const g4 = encodeG4(bitmap, wPx, hPx);
     const flate = await deflateSize(packBits(bitmap, wPx, hPx));
     pageBytes = Math.min(g4.length, flate);

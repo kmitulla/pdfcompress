@@ -383,6 +383,33 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
   50%      { opacity: 1;    transform: scale(1.06); }
 }
 
+/* Scanner-Einstellungen unter den Quellen-Kacheln */
+.scan-settings {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--glass-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 13px;
+}
+.scan-settings-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.scan-settings label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.scan-settings select { min-height: 40px; }
+.scan-settings .hint-inline { flex-basis: 100%; }
+
 .scan-hint {
   border-left-color: var(--ok);
   background: hsl(160 84% 50% / 0.1);

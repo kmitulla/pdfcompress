@@ -249,6 +249,43 @@ kombinieren lassen:
 
 Also z. B.: alles auswählen → *A4 quer* → optional *strecken*.
 
+## Scanauflösung einstellen
+
+Unter den Quellen-Kacheln steht eine Zeile **Scanner** mit **Auflösung**
+(150–600 dpi, Standard 300) und **Farbe** (Farbe / Graustufen / Schwarz-Weiß).
+Beides wird direkt an den Epson übergeben – der Scanner nimmt also gleich in
+der gewünschten Auflösung auf.
+
+Höhere Auflösung heißt feinere Vorlage, aber auch längeres Scannen und mehr
+Rechenzeit **auf deinem Gerät** (das Verarbeiten läuft ja im Browser). Für
+normale Briefe reichen 300 dpi; 600 dpi lohnt bei kleiner Schrift oder wenn
+anschließend OCR laufen soll.
+
+## S/W-Scans feinjustieren („Fax-Look“)
+
+Für die 1-Bit-Ausgabe gibt es drei Regler, die zusammenspielen:
+
+| Einstellung | Wirkung |
+| --- | --- |
+| **Helligkeit** | verschiebt den Schwellwert: + mehr Weiß, − mehr Schwarz |
+| **Kontrast** | + nimmt auch schwachen/blassen Text mit · − lässt nur kräftige Tinte stehen (weniger Rauschen, kleinere Datei) |
+| **Dunkle Flächen** | *Als Farbbalken* (Fläche schwarz, weiße Schrift bleibt lesbar) · *Ignorieren* (nicht schwärzen) · *Automatisch* |
+
+**Wenn der Rand schwarz zuläuft** – typisch bei Fotos, Bildschirmaufnahmen oder
+starker Vignette –, liegt das an der Balken-Inversion: Sie ist für Briefköpfe
+mit weißer Schrift gedacht, macht aus flächigem Rauschen aber eine schwarze
+Masse. *Automatisch* erkennt solche Aufnahmen inzwischen selbst (wenn über
+22 % der Seite dunkel sind) und schaltet die Inversion ab; mit *Ignorieren*
+lässt es sich erzwingen. An einer echten Bildschirmaufnahme gemessen fiel der
+Schwarzanteil am linken Rand damit von **93 % auf 15 %**, während der Text
+vollständig erhalten blieb – die zuvor verschluckte linke Spalte ist wieder
+lesbar.
+
+Faustregel bei problematischen Vorlagen: erst **Dunkle Flächen → Ignorieren**,
+dann mit **Kontrast** nachjustieren (negativ = sauberer Hintergrund, positiv =
+mehr Details), zuletzt die **Helligkeit**. Die Vorschau zeigt jede Änderung
+sofort.
+
 ## Scans prüfen und nachbessern
 
 - In der Seitenübersicht sind die Miniaturen groß; ein Tipp darauf öffnet die

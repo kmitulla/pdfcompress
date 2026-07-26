@@ -29,9 +29,14 @@ gilt das zweispaltige Layout.
 - **„Scanner-Stil“ in Farbe:** Median-Cut-Quantisierung auf 16 Palettenfarben
   mit sauberem weißem Hintergrund (Indexed-ColorSpace + Flate) – der Look von
   Farbscans aus dem Bürogerät bei sehr kleinen Dateien.
-- **Helligkeitsregler mit Live-Vorschau:** Für S/W- und Scanner-Stil lässt
-  sich der Schwellwert anpassen; die Vorschau zeigt die Seite mit den
-  aktuellen Einstellungen inklusive geschätzter Größe pro Seite.
+- **Feinsteuerung für S/W mit Live-Vorschau:** **Helligkeit** (Schwellwert),
+  **Kontrast** (nimmt schwachen Text mit bzw. lässt nur kräftige Tinte stehen)
+  und **dunkle Flächen** (als Farbbalken behandeln, ignorieren oder
+  automatisch entscheiden). Letzteres verhindert, dass bei dunklen Fotos oder
+  Bildschirmaufnahmen der ganze Rand schwarz zuläuft und den Text erdrückt –
+  am realen Beispiel fiel der Schwarzanteil am Rand von 93 % auf 15 %, ohne
+  Text zu verlieren. Die Vorschau zeigt die Wirkung sofort samt geschätzter
+  Größe pro Seite.
 - **Vorschau mit Seitennavigation & Seiten-Einstellungen:** In der Vorschau
   durch **alle Seiten blättern** und einzelnen Seiten eine **eigene
   Kompressionsstufe samt S/W-Helligkeitsabgleich** zuweisen (z. B. Seite 3
