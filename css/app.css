@@ -869,8 +869,16 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
 }
 .sc-topbar strong { font-size: 16px; display: inline-flex; align-items: center; gap: 8px; letter-spacing: -0.015em; }
 .sc-pagecount { color: var(--accent); font-size: 13px; flex: 1; font-weight: 550; }
-.sc-view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px; gap: 11px; }
-.sc-hint { color: var(--muted); font-size: 12.5px; margin: 0; text-align: center; line-height: 1.5; }
+/* Die Ansicht füllt exakt den Bildschirm – nichts darf herausragen, sonst
+   liegen die Eckpunkte außerhalb und lassen sich nicht anfassen. */
+.sc-view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px; gap: 11px; overflow: hidden; }
+.sc-hint { color: var(--muted); font-size: 12.5px; margin: 0; text-align: center; line-height: 1.5; flex: none; }
+/* Am Handy den Hinweis kurz halten – Platz gehört der Bühne */
+@media (max-width: 700px) {
+  .sc-view { padding: 8px; gap: 8px; }
+  .sc-hint { font-size: 11.5px; }
+  .sc-hint-long { display: none; }
+}
 .sc-bottombar {
   display: flex;
   gap: 10px;
@@ -951,8 +959,50 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
 .sc-round-btn .icn { width: 23px; height: 23px; }
 .sc-round-btn.active { background: var(--warn); border-color: var(--warn); color: #1f2937; }
 
-.sc-toolbar { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
-.sc-sep { width: 1px; height: 22px; background: var(--border); }
+/* Werkzeugleiste im Zuschnitt: eine Zeile, waagerecht scrollbar. Vorher
+   brach sie in vier Zeilen um und schob die Bühne so weit nach unten, dass
+   die Eckpunkte außerhalb des Bildschirms lagen und nicht greifbar waren. */
+.sc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  flex: none;
+  padding: 2px 2px 4px;
+  scroll-padding: 8px;
+}
+.sc-toolbar::-webkit-scrollbar { display: none; }
+.sc-toolbar > * { flex: none; }
+.sc-toolbar .btn { min-height: 40px; }
+@media (min-width: 900px) {
+  .sc-toolbar { flex-wrap: wrap; justify-content: center; overflow: visible; }
+}
+.sc-sep { width: 1px; height: 34px; background: var(--border); flex: none; }
+
+/* Gruppen in der Zuschnitt-Leiste: „Auswahl“ und „Ausgabeformat“ sind zwei
+   verschiedene Dinge – die Beschriftung macht das sichtbar. */
+.sc-tgroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--glass-2);
+}
+.sc-tlabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+  padding-right: 2px;
+  white-space: nowrap;
+}
 .sc-seg {
   display: inline-flex;
   border: 1px solid var(--border);

@@ -436,21 +436,27 @@ const TEMPLATE = `
   <!-- Zuschnitt -->
   <div class="sc-view hidden" id="scCropView">
     <div class="sc-toolbar">
-      <button class="btn btn-small hidden" id="scA4BedBtn" hidden><i data-icon="scanFrame" data-icon-size="15"></i> A4 aus Scannerfläche</button>
-      <button class="btn btn-small hidden" id="scA4CornerBtn" hidden title="Ecke wechseln, an der die Vorlage anliegt"><i data-icon="rotate" data-icon-size="15"></i> Ecke</button>
-      <button class="btn btn-small" id="scAutoBtn"><i data-icon="wand" data-icon-size="15"></i> Automatisch erkennen</button>
-      <button class="btn btn-small" id="scFullBtn"><i data-icon="square" data-icon-size="15"></i> Ganze Seite</button>
-      <span class="sc-sep"></span>
-      <span class="sc-seg" role="radiogroup" aria-label="Ausgabeformat">
-        <button class="sc-seg-btn" data-format="auto">Auto</button>
-        <button class="sc-seg-btn" data-format="a4p">A4 hoch</button>
-        <button class="sc-seg-btn" data-format="a4l">A4 quer</button>
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Auswahl</span>
+        <button class="btn btn-small" id="scFullBtn" title="Das ganze Bild auswählen"><i data-icon="square" data-icon-size="15"></i> Alles</button>
+        <button class="btn btn-small" id="scAutoBtn" title="Dokumentränder automatisch erkennen"><i data-icon="wand" data-icon-size="15"></i> Automatisch</button>
+        <button class="btn btn-small hidden" id="scA4BedBtn" hidden title="A4-Bereich der Scannerfläche auswählen"><i data-icon="scanFrame" data-icon-size="15"></i> A4-Fläche</button>
+        <button class="btn btn-small hidden" id="scA4CornerBtn" hidden title="Ecke wechseln, an der die Vorlage anliegt"><i data-icon="rotate" data-icon-size="15"></i> Ecke</button>
       </span>
-      <label class="sc-check hidden" id="scStretchWrap" title="Scan auf das ganze A4-Blatt dehnen – verzerrt das Seitenverhältnis. Ohne Häkchen wird der Scan unverzerrt auf A4 eingepasst.">
-        <input type="checkbox" id="scStretch"> auf A4 strecken
-      </label>
       <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scRotateBtn"><i data-icon="rotate" data-icon-size="15"></i> Drehen 90°</button>
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Ausgabeformat</span>
+        <span class="sc-seg" role="radiogroup" aria-label="Ausgabeformat">
+          <button class="sc-seg-btn" data-format="auto" title="Format folgt der Auswahl">Auto</button>
+          <button class="sc-seg-btn" data-format="a4p" title="Auswahl auf A4 hochkant ausgeben">A4 hoch</button>
+          <button class="sc-seg-btn" data-format="a4l" title="Auswahl auf A4 quer ausgeben">A4 quer</button>
+        </span>
+        <label class="sc-check hidden" id="scStretchWrap" title="Auswahl auf das ganze A4-Blatt dehnen – verzerrt das Seitenverhältnis. Ohne Häkchen wird unverzerrt eingepasst.">
+          <input type="checkbox" id="scStretch"> strecken
+        </label>
+      </span>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small" id="scRotateBtn" title="Bild um 90° drehen"><i data-icon="rotate" data-icon-size="15"></i> Drehen</button>
     </div>
     <div class="sc-crop-stage" id="scCropStage">
       <canvas id="scCropCanvas"></canvas>
@@ -708,22 +714,85 @@ async function fileToCanvas(file) {
  *
  * @returns normierte Ecken (0..1) oder null, wenn die Maße unbekannt sind
  */
-export function a4CornersForScan(canvas, { originX = 'left', originY = 'top' } = {}) {
+export function a4CornersForScan(canvas, { originX = 'left', originY = 'top', refine = true } = {}) {
   const dpi = canvas?.scanDpi;
   const px = canvas?.sourcePx;
   if (!dpi || !px?.w || !px?.h) return null;
   const bedW = (px.w / dpi) * 25.4;   // Breite der Glasfläche in mm
   const bedH = (px.h / dpi) * 25.4;
   // Ist die Fläche kleiner als A4, gibt es nichts zuzuschneiden.
-  const fw = Math.min(1, 210 / bedW);
-  const fh = Math.min(1, 297 / bedH);
+  let fw = Math.min(1, 210 / bedW);
+  let fh = Math.min(1, 297 / bedH);
   // Weniger als 1 % Überstand: Zuschnitt lohnt nicht.
   if (fw > 0.99 && fh > 0.99) return null;
+
+  // Rechnung ist nur die Ausgangsschätzung: Liegt die Vorlage nicht exakt im
+  // Nullpunkt, stimmt sie nicht. Deshalb in der Nähe der berechneten Kante nach
+  // dem tatsächlichen Helligkeitssprung suchen (unbedeckte Glasfläche ist im
+  // Scan dunkler als Papier). Findet sich keiner, bleibt es bei der Rechnung.
+  if (refine) {
+    const w = 210 / bedW < 1 ? findBedEdge(canvas, 'x', fw, originX === 'left') : null;
+    const h = 297 / bedH < 1 ? findBedEdge(canvas, 'y', fh, originY === 'top') : null;
+    if (w != null) fw = w;
+    if (h != null) fh = h;
+  }
+
   const x0 = originX === 'left' ? 0 : 1 - fw;
   const y0 = originY === 'top' ? 0 : 1 - fh;
-  const x1 = x0 + fw;
-  const y1 = y0 + fh;
-  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+  return [{ x: x0, y: y0 }, { x: x0 + fw, y: y0 }, { x: x0 + fw, y: y0 + fh }, { x: x0, y: y0 + fh }];
+}
+
+/**
+ * Sucht die Papierkante nahe der berechneten Position.
+ *
+ * @param axis 'x' (senkrechte Kante) oder 'y' (waagerechte Kante)
+ * @param expected erwarteter Anteil (0..1) der Papierausdehnung
+ * @param fromStart liegt das Papier am Anfang der Achse?
+ * @returns verfeinerter Anteil oder null
+ */
+function findBedEdge(canvas, axis, expected, fromStart) {
+  try {
+    const W = canvas.width;
+    const H = canvas.height;
+    if (!W || !H) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const horizontal = axis === 'x';
+    // Nur im Suchfenster ±6 % um die erwartete Kante messen
+    const span = horizontal ? W : H;
+    const edgePos = fromStart ? expected * span : (1 - expected) * span;
+    const win = Math.max(6, Math.round(span * 0.06));
+    const from = clamp(Math.round(edgePos - win), 1, span - 2);
+    const to = clamp(Math.round(edgePos + win), 2, span - 1);
+    if (to - from < 4) return null;
+
+    // Mittlere Helligkeit je Spalte/Zeile im mittleren Drittel der anderen Achse
+    // (dort stört der Dokumentinhalt am wenigsten).
+    const oSpan = horizontal ? H : W;
+    const o0 = Math.round(oSpan * 0.15);
+    const oLen = Math.max(1, Math.round(oSpan * 0.7));
+    const prof = [];
+    for (let i = from; i <= to; i++) {
+      const d = horizontal
+        ? ctx.getImageData(i, o0, 1, oLen).data
+        : ctx.getImageData(o0, i, oLen, 1).data;
+      let s = 0;
+      for (let p = 0; p < d.length; p += 4) s += (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
+      prof.push(s / (d.length / 4));
+    }
+    // Größter Helligkeitsabfall Richtung Glasfläche
+    let best = 0;
+    let bestAt = -1;
+    for (let i = 1; i < prof.length; i++) {
+      const drop = fromStart ? prof[i - 1] - prof[i] : prof[i] - prof[i - 1];
+      if (drop > best) { best = drop; bestAt = i; }
+    }
+    // Nur übernehmen, wenn der Sprung deutlich ist (Papier -> Glas)
+    if (bestAt < 0 || best < 18) return null;
+    const pos = from + bestAt;
+    return fromStart ? pos / span : 1 - pos / span;
+  } catch {
+    return null;   // z. B. wenn das Canvas nicht auslesbar ist
+  }
 }
 
 async function importFiles(fileList) {
@@ -754,17 +823,20 @@ function openCrop(srcCanvas, pageIndex, returnTo) {
   // Bei Flachbett-Scans nicht raten: Der A4-Bereich steht rechnerisch fest
   // (Vorlage liegt bündig in der Ecke). Das trifft jede Seite gleich – anders
   // als die Kantenerkennung, die bei weißem Blatt auf weißem Deckel scheitert.
-  const a4 = existing ? null : a4CornersForScan(srcCanvas, {
+  const src = existing ? existing.src : srcCanvas;
+  const a4 = existing ? null : a4CornersForScan(src, {
     originX: state.scanOriginX || 'left',
     originY: state.scanOriginY || 'top',
   });
   state.editing = {
-    src: existing ? existing.src : srcCanvas,
+    src,
     corners: existing ? existing.corners.map((p) => ({ ...p }))
       : (a4 || detectCornersOnCanvas(srcCanvas) || defaultCorners()),
     format: existing ? existing.format : (a4 ? 'a4p' : state.lastFormat),
     stretch: existing ? !!existing.stretch : state.lastStretch,
-    isBedScan: !!srcCanvas?.scanDpi,
+    // Aus der Quelle lesen, nicht aus srcCanvas: beim erneuten Öffnen einer
+    // bestehenden Seite ist srcCanvas null – dann verschwanden die A4-Knöpfe.
+    isBedScan: !!src?.scanDpi,
     pageIndex,
   };
   state.activeHandle = null;
@@ -772,11 +844,16 @@ function openCrop(srcCanvas, pageIndex, returnTo) {
   renderCrop();
 }
 
+// Rand um das Bild herum. Ecken liegen oft genau auf der Bildkante – ohne
+// diesen Rand läge der halbe Anfasser außerhalb der Zeichenfläche und ließe
+// sich nicht greifen.
+const CROP_PAD = 34;
+
 function cropDisplayMetrics() {
   const stage = $('#scCropStage', state.root);
   const src = state.editing.src;
-  const maxW = stage.clientWidth - 16;
-  const maxH = stage.clientHeight - 16;
+  const maxW = stage.clientWidth - 16 - CROP_PAD * 2;
+  const maxH = stage.clientHeight - 16 - CROP_PAD * 2;
   const fit = Math.min(maxW / src.width, maxH / src.height);
   return { dw: Math.max(1, src.width * fit), dh: Math.max(1, src.height * fit) };
 }
@@ -794,9 +871,11 @@ function renderCrop() {
   canvas.style.height = `${dh}px`;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(ed.src, 0, 0, canvas.width, canvas.height);
-  svg.setAttribute('viewBox', `0 0 ${dw} ${dh}`);
-  svg.style.width = `${dw}px`;
-  svg.style.height = `${dh}px`;
+  // Zeichenfläche ist rundum größer als das Bild; der Nullpunkt des Bildes
+  // liegt dadurch bei (CROP_PAD, CROP_PAD).
+  svg.setAttribute('viewBox', `${-CROP_PAD} ${-CROP_PAD} ${dw + CROP_PAD * 2} ${dh + CROP_PAD * 2}`);
+  svg.style.width = `${dw + CROP_PAD * 2}px`;
+  svg.style.height = `${dh + CROP_PAD * 2}px`;
   drawCropOverlay();
   // Formatwahl markieren
   state.root.querySelectorAll('.sc-seg-btn').forEach((b) => {
@@ -834,14 +913,14 @@ function drawCropOverlay() {
     <path d="${quadPath}" fill="none" stroke="#38bdf8" stroke-width="2.5"></path>
     ${mids.map((m, i) => `
       <g class="sc-handle sc-handle-edge" data-edge="${i}">
-        <circle cx="${m.x}" cy="${m.y}" r="20" fill="transparent"></circle>
-        <circle cx="${m.x}" cy="${m.y}" r="7" fill="#38bdf8" stroke="#06232f" stroke-width="2"></circle>
+        <circle cx="${m.x}" cy="${m.y}" r="26" fill="transparent"></circle>
+        <circle cx="${m.x}" cy="${m.y}" r="8" fill="#38bdf8" stroke="#06232f" stroke-width="2"></circle>
       </g>`).join('')}
     ${pts.map((p, i) => `
       <g class="sc-handle sc-handle-corner" data-corner="${i}">
-        <circle cx="${p.x}" cy="${p.y}" r="26" fill="transparent"></circle>
-        <circle cx="${p.x}" cy="${p.y}" r="11" fill="rgba(56,189,248,0.25)" stroke="#38bdf8" stroke-width="3"></circle>
-        <circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#38bdf8"></circle>
+        <circle cx="${p.x}" cy="${p.y}" r="40" fill="transparent"></circle>
+        <circle cx="${p.x}" cy="${p.y}" r="15" fill="rgba(56,189,248,0.28)" stroke="#38bdf8" stroke-width="3.5"></circle>
+        <circle cx="${p.x}" cy="${p.y}" r="3" fill="#38bdf8"></circle>
       </g>`).join('')}`;
 }
 
@@ -902,9 +981,15 @@ function svgPoint(e) {
   const svg = $('#scCropSvg', state.root);
   const r = svg.getBoundingClientRect();
   const { dw, dh } = cropDisplayMetrics();
+  // Die Fläche ist rundum um CROP_PAD größer als das Bild – erst den Rand
+  // abziehen, dann auf 0..1 des Bildes normieren.
+  const padX = (CROP_PAD / (dw + CROP_PAD * 2)) * r.width;
+  const padY = (CROP_PAD / (dh + CROP_PAD * 2)) * r.height;
+  const innerW = r.width - padX * 2;
+  const innerH = r.height - padY * 2;
   return {
-    x: clamp((e.clientX - r.left) / r.width, 0, 1),
-    y: clamp((e.clientY - r.top) / r.height, 0, 1),
+    x: clamp((e.clientX - r.left - padX) / innerW, 0, 1),
+    y: clamp((e.clientY - r.top - padY) / innerH, 0, 1),
     dw, dh,
   };
 }
@@ -1397,12 +1482,14 @@ export function openScanner(onDone, opts = {}) {
   $('#scAutoBtn', root).addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.corners = detectCornersOnCanvas(state.editing.src) || defaultCorners();
-    drawCropOverlay();
+    renderCrop();
   });
+  // „Alles“: das komplette Bild auswählen. Das Ausgabeformat bleibt bewusst
+  // unangetastet – wer A4 will, wählt es daneben (und optional „strecken“).
   $('#scFullBtn', root).addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.corners = defaultCorners(0);
-    drawCropOverlay();
+    renderCrop();
   });
   root.querySelectorAll('.sc-seg-btn').forEach((b) => b.addEventListener('click', () => {
     if (!state.editing) return;

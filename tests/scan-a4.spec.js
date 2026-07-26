@@ -51,6 +51,43 @@ test('A4-Ausschnitt trifft die echten Maße des ET-2720 (215,9 x 297 mm)', async
   expect(res.br[0].x).toBeCloseTo(1 - 210 / 215.9, 3);
 });
 
+test('Kantenverfeinerung korrigiert die Rechnung anhand der Glasfläche', async ({ page }) => {
+  await ready(page);
+  const r = await page.evaluate(async () => {
+    const { a4CornersForScan } = await import('/js/scanner.js');
+    const dpi = 100;
+    // Glasfläche 215,9 x 297 mm; Papier liegt aber 4 mm weiter rechts als
+    // angenommen -> reine Rechnung läge daneben.
+    const bedW = Math.round(215.9 / 25.4 * dpi);
+    const bedH = Math.round(297 / 25.4 * dpi);
+    const paperW = Math.round(210 / 25.4 * dpi);
+    const mk = (paperRight) => {
+      const c = document.createElement('canvas');
+      c.width = bedW; c.height = bedH;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.fillStyle = '#6a6a6a'; x.fillRect(0, 0, bedW, bedH);   // unbedecktes Glas
+      x.fillStyle = '#ffffff'; x.fillRect(0, 0, paperRight, bedH); // Papier
+      c.scanDpi = dpi; c.sourcePx = { w: bedW, h: bedH };
+      return c;
+    };
+    const shifted = Math.round(paperW + 4 / 25.4 * dpi);        // 4 mm breiter
+    return {
+      exakt: a4CornersForScan(mk(paperW))[1].x,
+      verschoben: a4CornersForScan(mk(shifted))[1].x,
+      ohneVerfeinerung: a4CornersForScan(mk(shifted), { refine: false })[1].x,
+      erwartetVerschoben: shifted / bedW,
+      rechnerisch: 210 / 215.9,
+    };
+  });
+  // Liegt das Papier wie angenommen, ändert die Verfeinerung praktisch nichts
+  expect(r.exakt).toBeCloseTo(r.rechnerisch, 2);
+  // Liegt es anders, folgt der Ausschnitt der echten Kante statt der Rechnung
+  expect(r.verschoben).toBeCloseTo(r.erwartetVerschoben, 2);
+  expect(Math.abs(r.verschoben - r.rechnerisch)).toBeGreaterThan(0.01);
+  // Ohne Verfeinerung bliebe es beim rechnerischen Wert
+  expect(r.ohneVerfeinerung).toBeCloseTo(r.rechnerisch, 3);
+});
+
 test('Netzwerk-Scan öffnet den Zuschnitt bereits auf A4 vorbereitet', async ({ page }) => {
   await ready(page);
 
@@ -96,6 +133,140 @@ test('Netzwerk-Scan öffnet den Zuschnitt bereits auf A4 vorbereitet', async ({ 
   await page.click('#scA4CornerBtn');
   const moved = await page.evaluate(() => window.__pdfscanner.state.editing.corners[1].x);
   expect(moved).toBeCloseTo(1, 2);
+});
+
+// Der gemeldete Fehler: Die Werkzeugleiste brach in mehrere Zeilen um und schob
+// die Bühne aus dem Bild – die Eckpunkte lagen ausserhalb und liessen sich am
+// Handy nicht anfassen.
+test('Eckpunkte liegen im sichtbaren Bereich und lassen sich ziehen (Handy)', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 393, height: 852 }, hasTouch: true, isMobile: true });
+  const page = await ctx.newPage();
+  await ready(page);
+
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 850; c.height = 1170;
+    const x = c.getContext('2d');
+    x.fillStyle = '#6a6a6a'; x.fillRect(0, 0, c.width, c.height);
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 827, c.height);
+    x.fillStyle = '#222';
+    for (let i = 0; i < 10; i++) x.fillRect(80, 120 + i * 90, 600, 16);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  await page.evaluate(async (bytes) => {
+    const { openScanner } = await import('/js/scanner.js');
+    const f = new File([new Uint8Array(bytes)], 'scan.png', { type: 'image/png' });
+    f.scanDpi = 100;
+    openScanner(() => {}, { initialFiles: [f], netScan: async () => f });
+  }, png);
+  await expect(page.locator('#scCropView')).toBeVisible();
+
+  // Alle vier Eckanfasser müssen vollständig im Sichtbereich liegen
+  const vp = page.viewportSize();
+  const handles = page.locator('#scCropSvg g.sc-handle-corner');
+  expect(await handles.count()).toBe(4);
+  for (let i = 0; i < 4; i++) {
+    const b = await handles.nth(i).boundingBox();
+    expect(b, `Ecke ${i} hat keine Fläche`).not.toBeNull();
+    expect(b.x, `Ecke ${i} links ausserhalb`).toBeGreaterThanOrEqual(-1);
+    expect(b.y, `Ecke ${i} oben ausserhalb`).toBeGreaterThanOrEqual(-1);
+    expect(b.x + b.width, `Ecke ${i} rechts ausserhalb`).toBeLessThanOrEqual(vp.width + 1);
+    expect(b.y + b.height, `Ecke ${i} unten ausserhalb`).toBeLessThanOrEqual(vp.height + 1);
+    // Trefferfläche muss fingerfreundlich gross sein
+    expect(Math.min(b.width, b.height), `Ecke ${i} zu klein`).toBeGreaterThan(38);
+  }
+
+  // Und eine Ecke lässt sich tatsächlich ziehen
+  const before = await page.evaluate(() => ({ ...window.__pdfscanner.state.editing.corners[0] }));
+  const b0 = await handles.first().boundingBox();
+  await page.mouse.move(b0.x + b0.width / 2, b0.y + b0.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b0.x + b0.width / 2 + 45, b0.y + b0.height / 2 + 55, { steps: 5 });
+  await page.mouse.up();
+  const after = await page.evaluate(() => ({ ...window.__pdfscanner.state.editing.corners[0] }));
+  expect(after.x, 'Ecke wurde nicht bewegt').toBeGreaterThan(before.x + 0.01);
+  expect(after.y).toBeGreaterThan(before.y + 0.01);
+  await ctx.close();
+});
+
+test('A4-Schaltflächen bleiben auch beim erneuten Öffnen einer Seite erhalten', async ({ page }) => {
+  await ready(page);
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 850; c.height = 1170;
+    const x = c.getContext('2d');
+    x.fillStyle = '#6a6a6a'; x.fillRect(0, 0, c.width, c.height);
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 827, c.height);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  await page.evaluate(async (bytes) => {
+    const { openScanner } = await import('/js/scanner.js');
+    const f = new File([new Uint8Array(bytes)], 'scan.png', { type: 'image/png' });
+    f.scanDpi = 100;
+    openScanner(() => {}, { initialFiles: [f], netScan: async () => f });
+  }, png);
+  await expect(page.locator('#scA4BedBtn')).toBeVisible();
+
+  // Übernehmen -> Seitenübersicht -> Zuschnitt derselben Seite erneut öffnen
+  await page.click('#scCropOkBtn');
+  await expect(page.locator('#scPagesView')).toBeVisible();
+  await page.click('.sc-pagecell-bar .btn >> nth=0');
+  await expect(page.locator('#scCropView')).toBeVisible();
+  await expect(page.locator('#scA4BedBtn'), 'A4-Schaltfläche darf nicht verschwinden').toBeVisible();
+  await expect(page.locator('#scA4CornerBtn')).toBeVisible();
+});
+
+test('Auswahl und Ausgabeformat sind unabhängig: alles wählen, dann A4 quer + strecken', async ({ page }) => {
+  await ready(page);
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 600; c.height = 800;
+    const x = c.getContext('2d');
+    x.fillStyle = '#888'; x.fillRect(0, 0, 600, 800);
+    x.fillStyle = '#fff'; x.fillRect(40, 60, 500, 680);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  await page.click('#scanBtn');
+  await page.setInputFiles('#scFileInput', { name: 's.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+  await expect(page.locator('#scCropView')).toBeVisible();
+
+  // „Alles“ wählt das komplette Bild
+  await page.click('#scFullBtn');
+  const full = await page.evaluate(() => window.__pdfscanner.state.editing.corners);
+  expect(full[0].x).toBeCloseTo(0, 5);
+  expect(full[0].y).toBeCloseTo(0, 5);
+  expect(full[2].x).toBeCloseTo(1, 5);
+  expect(full[2].y).toBeCloseTo(1, 5);
+
+  // Format A4 quer wählen – die Auswahl bleibt dabei unverändert
+  await page.click('.sc-seg-btn[data-format="a4l"]');
+  const st = await page.evaluate(() => ({
+    format: window.__pdfscanner.state.editing.format,
+    corners: window.__pdfscanner.state.editing.corners,
+  }));
+  expect(st.format).toBe('a4l');
+  expect(st.corners[2].x).toBeCloseTo(1, 5);
+
+  // „strecken“ ist jetzt anwählbar und wirkt
+  await expect(page.locator('#scStretchWrap')).toBeVisible();
+  await page.check('#scStretch');
+  expect(await page.evaluate(() => window.__pdfscanner.state.editing.stretch)).toBe(true);
+
+  // Ergebnis ist A4 quer
+  await page.click('#scCropOkBtn');
+  await page.click('#scDoneBtn');
+  await expect(page.locator('.file-item')).toBeVisible({ timeout: 30000 });
+  const size = await page.evaluate(async () => {
+    const { PDFDocument } = window.PDFLib;
+    const doc = await PDFDocument.load(await window.__pdfpresser.items[0].file.arrayBuffer());
+    const { width, height } = doc.getPage(0).getSize();
+    return { width, height };
+  });
+  expect(size.width).toBeCloseTo(841.89, 0);
+  expect(size.height).toBeCloseTo(595.28, 0);
 });
 
 test('Große Seitenvorschau lässt sich öffnen und führt zum Radierer', async ({ page }) => {
