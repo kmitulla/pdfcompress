@@ -181,6 +181,28 @@ die effizientesten.
 
 ---
 
+## Stapel-Scan: mehrere Seiten ohne Antippen
+
+In der Zeile **Scanner** stehen **Seiten** und **Pause**:
+
+- **Seiten** = wie viele Blätter du scannen willst (1–99).
+- **Pause** = Sekunden zwischen zwei Scans, damit du die Vorlage wechseln
+  kannst (erscheint ab 2 Seiten, Standard 8 s).
+
+Einmal auf **Netzwerk-Scanner** tippen genügt dann: Die App scannt die
+eingestellte Anzahl automatisch nacheinander, zählt zwischendurch sichtbar
+herunter („nächster Scan in 5 s … Vorlage wechseln") und legt jede Seite gleich
+mit passendem Zuschnitt ab. Danach landest du in der Seitenübersicht, wo du
+prüfen, drehen, zuschneiden oder radieren kannst.
+
+**Vorzeitig beenden:** Der Knopf **„Stapel stoppen"** oben beendet die Reihe;
+die bereits eingelesenen Seiten bleiben erhalten. Schlägt ein einzelner Scan
+fehl, endet der Stapel ebenfalls, ohne die vorherigen Seiten zu verlieren.
+
+Alle Einstellungen – Auflösung, Farbe, Seitenzahl und Pause – werden gemerkt
+und stehen beim nächsten Mal wieder so da (in der selbst gehosteten Variante
+sogar geräteübergreifend).
+
 ## Mehrseitige PDFs am Stück scannen
 
 Genau dafür ist der Ablauf gebaut – Beispiel „3 Seiten, dann 4, dann 1“:

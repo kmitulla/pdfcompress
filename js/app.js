@@ -346,25 +346,96 @@ async function fetchScannedPage() {
   return file;
 }
 
+// Läuft ein Stapel-Scan? Erlaubt Abbrechen zwischen zwei Seiten.
+let batchCancel = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Wartet mit sichtbarem Countdown; bricht sofort ab, wenn abgebrochen wurde. */
+async function batchWait(seconds, page, total, setStatus) {
+  for (let left = seconds; left > 0; left--) {
+    if (batchCancel) return;
+    setStatus(`Seite ${page}/${total} – nächster Scan in ${left} s … Vorlage wechseln`);
+    await sleep(1000);
+  }
+}
+
 async function launchNetworkScan() {
   if (netScanBusy) return;
+  const total = Math.max(1, Math.min(99, parseInt($('#scanPages').value, 10) || 1));
+  const delay = Math.max(0, Math.min(120, parseInt($('#scanDelay').value, 10) || 0));
+
   netScanBusy = true;
+  batchCancel = false;
   netScanBtn.classList.add('scanning');
-  const t = toast('Scanne … bitte Vorlage auflegen', 'busy', 0);
+  const t = toast(total > 1 ? `Scanne Seite 1 von ${total} …` : 'Scanne … bitte Vorlage auflegen', 'busy', 0);
+
+  let scanner = null;
   try {
     const file = await fetchScannedPage();
-    t.close();
-    const { openScanner } = await import('./scanner.js');
-    // Der Scanner bekommt die Nachschub-Funktion mit: dort lassen sich weitere
-    // Seiten anfügen, bis die PDF vollständig ist.
-    openScanner(onScanDone, { initialFiles: [file], netScan: fetchScannedPage });
+    const mod = await import('./scanner.js');
+    scanner = mod;
+
+    if (total === 1) {
+      t.close();
+      // Einzelscan wie gehabt: direkt in den Zuschnitt-Editor
+      mod.openScanner(onScanDone, { initialFiles: [file], netScan: fetchScannedPage, onCancelBatch: cancelBatchScan });
+      return;
+    }
+
+    // Stapel: alle Seiten am Stück einlesen, Zuschnitt automatisch setzen.
+    // Nachjustieren geht anschließend in der Seitenübersicht.
+    mod.openScanner(onScanDone, { netScan: fetchScannedPage, onCancelBatch: cancelBatchScan });
+    const status = (s) => { mod.setScanStatus(s); t.update(s, 'busy', 0); };
+    await mod.addPageDirect(file);
+    status(`Seite 1/${total} eingelesen`);
+
+    for (let n = 2; n <= total; n++) {
+      if (batchCancel) break;
+      if (delay > 0) await batchWait(delay, n - 1, total, status);
+      if (batchCancel) break;
+      status(`Seite ${n}/${total} wird gescannt …`);
+      try {
+        await mod.addPageDirect(await fetchScannedPage());
+        status(`Seite ${n}/${total} eingelesen`);
+      } catch (e) {
+        // Eine misslungene Seite beendet den Stapel nicht – der Rest bleibt erhalten
+        t.update(`Seite ${n} fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
+        break;
+      }
+    }
+
+    mod.setScanStatus('');
+    mod.showPages();
+    const done = mod.pageCount();
+    t.update(
+      batchCancel ? `Abgebrochen – ${done} Seite${done === 1 ? '' : 'n'} eingelesen`
+        : `${done} Seite${done === 1 ? '' : 'n'} eingelesen – jetzt prüfen und übernehmen`,
+      'ok', 5000,
+    );
   } catch (e) {
     t.update(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
+    scanner?.setScanStatus('');
   } finally {
     netScanBusy = false;
+    batchCancel = false;
     netScanBtn.classList.remove('scanning');
   }
 }
+
+/** Vom Scanner aufgerufen, wenn der Benutzer den Stapel abbricht. */
+function cancelBatchScan() {
+  batchCancel = true;
+}
+
+// Beschriftung und Pausenfeld an die eingestellte Seitenzahl anpassen
+function syncScanBatchUi() {
+  const n = Math.max(1, parseInt($('#scanPages').value, 10) || 1);
+  $('#scanDelayWrap').classList.toggle('hidden', n < 2);
+  $('#netScanSub').textContent = n > 1
+    ? `${n} Seiten automatisch nacheinander scannen – dazwischen bleibt Zeit zum Wechseln`
+    : 'Seite von der Glasfläche einlesen – mehrere Seiten sammeln, zuschneiden & bearbeiten';
+}
+$('#scanPages').addEventListener('input', syncScanBatchUi);
 
 netScanBtn.addEventListener('click', launchNetworkScan);
 netScanBtn.addEventListener('keydown', (e) => {
@@ -754,6 +825,7 @@ async function detectBackend() {
   if (backend.scanner) {
     netScanBtn.classList.remove('hidden');
     $('#netScanSettings').classList.remove('hidden');
+    syncScanBatchUi();
     document.querySelector('.source-row')?.classList.add('has-net');
   }
   if (backend.consume) {
@@ -902,6 +974,8 @@ function collectSettings() {
     darkAreas: $('#darkAreas').value,
     scanDpi: $('#scanDpi').value,
     scanColor: $('#scanColor').value,
+    scanPages: $('#scanPages').value,
+    scanDelay: $('#scanDelay').value,
     extremeDpi: $('#extremeDpi').value,
     ocr: ocrEnabled.checked,
     ocrLang: $('#ocrLang').value,
@@ -927,6 +1001,8 @@ async function applyStoredSettings() {
     if (s.darkAreas) $('#darkAreas').value = s.darkAreas;
     if (s.scanDpi) $('#scanDpi').value = s.scanDpi;
     if (s.scanColor) $('#scanColor').value = s.scanColor;
+    if (s.scanPages) $('#scanPages').value = s.scanPages;
+    if (s.scanDelay != null) $('#scanDelay').value = s.scanDelay;
     if (s.extremeDpi != null) $('#extremeDpi').value = s.extremeDpi;
     if (s.ocr != null) ocrEnabled.checked = s.ocr;
     if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
@@ -936,7 +1012,7 @@ async function applyStoredSettings() {
   settingsReady = true;
   syncSettingsUi();
 }
-document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #bwContrast, #darkAreas, #scanDpi, #scanColor, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #bwContrast, #darkAreas, #scanDpi, #scanColor, #scanPages, #scanDelay, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
   .forEach((el) => el.addEventListener('change', persistSettings));
 applyStoredSettings();
 requestPersistence();

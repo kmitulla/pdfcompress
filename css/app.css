@@ -408,6 +408,20 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
 }
 .scan-settings label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
 .scan-settings select { min-height: 40px; }
+.scan-settings input[type="number"] {
+  width: 68px;
+  min-height: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  background: var(--glass-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 15px;
+  padding: 0 6px;
+}
+.scan-settings .unit { margin-left: -4px; color: var(--muted); }
 .scan-settings .hint-inline { flex-basis: 100%; }
 
 .scan-hint {

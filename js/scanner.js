@@ -410,6 +410,7 @@ const TEMPLATE = `
   <div class="sc-topbar">
     <strong><i data-icon="scanFrame"></i> Dokument scannen</strong>
     <span class="sc-pagecount" id="scPageCount"></span>
+    <button class="btn btn-small hidden" id="scBatchStopBtn" hidden><i data-icon="close" data-icon-size="15"></i> Stapel stoppen</button>
     <button class="btn btn-small btn-ghost" id="scCloseBtn"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
   </div>
 
@@ -540,7 +541,10 @@ function view(name) {
 function updatePageCount() {
   const el = $('#scPageCount', state.root);
   const n = state.pages.length;
-  el.textContent = n === 0 ? '' : `${n} Seite${n === 1 ? '' : 'n'}`;
+  // Läuft gerade ein Stapel-Scan, hat dessen Fortschrittstext Vorrang.
+  if (!state.batchStatus) {
+    el.textContent = n === 0 ? '' : `${n} Seite${n === 1 ? '' : 'n'}`;
+  }
   const toPages = $('#scToPagesBtn', state.root);
   toPages.hidden = n === 0;
   toPages.textContent = `Zu den Seiten (${n}) →`;
@@ -1674,7 +1678,13 @@ export function openScanner(onDone, opts = {}) {
     netBtns.forEach((b) => { b.hidden = false; b.addEventListener('click', () => addNetworkPage(b)); });
   }
 
+  state.onCancelBatch = opts.onCancelBatch || null;
+  $('#scBatchStopBtn', root).addEventListener('click', () => {
+    state.onCancelBatch?.();
+    setScanStatus('Stapel wird beendet …');
+  });
   $('#scCloseBtn', root).addEventListener('click', () => {
+    state.onCancelBatch?.();
     if (state.pages.length > 0 && !confirm('Scanner schließen? Die aufgenommenen Seiten gehen verloren.')) return;
     closeScanner();
   });
@@ -1811,6 +1821,56 @@ export function openScanner(onDone, opts = {}) {
   } else {
     view('capture');
   }
+}
+
+/**
+ * Fügt ein Bild direkt als fertige Seite an – ohne den Zuschnitt-Dialog.
+ * Für den Stapel-Scan: die Ecken werden automatisch bestimmt (Blattkante bzw.
+ * Randerkennung), nachjustieren kann man später in der Seitenübersicht.
+ */
+export async function addPageDirect(file) {
+  if (!state.root) return null;
+  const canvas = await fileToCanvas(file);
+  const a4 = a4CornersForScan(canvas, {
+    originX: state.scanOriginX || 'left',
+    originY: state.scanOriginY || 'top',
+  });
+  const corners = a4 || detectCornersOnCanvas(canvas) || defaultCorners();
+  const page = {
+    src: canvas,
+    corners: orderCorners(corners.map((p) => ({ ...p }))),
+    format: a4 ? a4FormatFor(canvas, corners) : state.lastFormat,
+    stretch: a4 ? true : state.lastStretch,
+    erase: [],
+  };
+  state.pages.push(page);
+  updatePageCount();
+  return page;
+}
+
+/** Zur Seitenübersicht wechseln (nach einem Stapel-Scan) */
+export function showPages() {
+  if (state.root) view('pages');
+}
+
+/** Anzahl der bisher gesammelten Seiten */
+export function pageCount() {
+  return state.pages.length;
+}
+
+/** Fortschritt/Countdown im Scanner anzeigen (für den Stapel-Scan) */
+export function setScanStatus(text) {
+  if (!state.root) return;
+  state.batchStatus = text || '';
+  const stop = $('#scBatchStopBtn', state.root);
+  if (stop) {
+    stop.hidden = !text;
+    stop.classList.toggle('hidden', !text);
+  }
+  const el = $('#scPageCount', state.root);
+  if (!el) return;
+  if (text) el.textContent = text;
+  else updatePageCount();
 }
 
 // Weitere Seite vom Netzwerk-Scanner holen und an den laufenden Scan anhängen.

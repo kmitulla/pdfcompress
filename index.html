@@ -238,7 +238,14 @@
             <option value="bw">Schwarz-Weiß</option>
           </select>
         </label>
-        <small class="hint-inline">Höhere Auflösung liefert feinere Vorlagen – dauert länger und braucht mehr Rechenzeit auf deinem Gerät.</small>
+        <label for="scanPages">Seiten
+          <input type="number" id="scanPages" min="1" max="99" step="1" value="1" inputmode="numeric">
+        </label>
+        <label for="scanDelay" id="scanDelayWrap">Pause
+          <input type="number" id="scanDelay" min="0" max="120" step="1" value="8" inputmode="numeric">
+          <span class="unit">s</span>
+        </label>
+        <small class="hint-inline" id="scanBatchHint">Ab 2 Seiten läuft der Scan automatisch weiter: Nach jeder Seite bleibt die eingestellte Pause zum Wechseln der Vorlage. Höhere Auflösung dauert länger und braucht mehr Rechenzeit auf deinem Gerät.</small>
       </div>
 
       <p class="hint scan-hint hidden" id="scanHint">Scan als PDF hinzugefügt – wähle jetzt die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> und starte <strong>Komprimieren</strong>.</p>

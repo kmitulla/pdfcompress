@@ -4,6 +4,34 @@ import { test, expect } from '@playwright/test';
 async function ready(page) {
   await page.goto('/');
   await page.waitForFunction(() => window.__pdfpresser && window.PDFLib);
+  // Das Serverprofil wird asynchron nachgeladen und setzt Einstellungen neu –
+  // erst danach dürfen Testwerte gesetzt werden, sonst überschreibt es sie.
+  await page.waitForTimeout(900);
+}
+
+// Erzeugt ein echtes PNG (im Browser gerendert) und liefert es als Antwort des
+// Scanners aus – ein von Hand zusammengesetztes Bild wäre ungültig.
+async function fakeScanner(page, onCall) {
+  const bytes = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 420; c.height = 580;
+    const x = c.getContext('2d');
+    x.fillStyle = '#7a7a7a'; x.fillRect(0, 0, c.width, c.height);
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, 408, 566);
+    x.fillStyle = '#222';
+    for (let i = 0; i < 6; i++) x.fillRect(40, 60 + i * 70, 300, 10);
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  });
+  const body = Buffer.from(bytes);
+  await page.route('**/api/scanner/scan*', async (route) => {
+    onCall?.();
+    await route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'image/png', 'X-Scan-Dpi': '100' },
+      body,
+    });
+  });
 }
 
 // Baut ein PDF mit einer dunklen, ungleichmäßig ausgeleuchteten Aufnahme:
@@ -140,6 +168,87 @@ test('Scanner-Auflösung und Farbmodus werden an den Scanner übergeben', async 
   await expect.poll(() => calls.length).toBeGreaterThan(0);
   expect(calls[0]).toContain('dpi=600');
   expect(calls[0]).toContain('color=gray');
+});
+
+test('Stapel-Scan: gewünschte Seitenzahl wird automatisch nacheinander gescannt', async ({ page }) => {
+  await ready(page);
+
+  // Scanner vortäuschen: jede Anfrage liefert ein kleines Bild
+  let calls = 0;
+  const times = [];
+  await fakeScanner(page, () => { calls++; times.push(Date.now()); });
+
+  await page.evaluate(() => {
+    document.querySelector('#netScanSettings').classList.remove('hidden');
+    document.querySelector('#netScanBtn').classList.remove('hidden');
+    document.querySelector('#scanPages').value = '3';
+    document.querySelector('#scanDelay').value = '1';   // kurze Pause für den Test
+    document.querySelector('#scanPages').dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
+  // Pausenfeld erscheint erst ab 2 Seiten
+  await expect(page.locator('#scanDelayWrap')).toBeVisible();
+  await expect(page.locator('#netScanSub')).toContainText('3 Seiten automatisch');
+
+  await page.click('#netScanBtn');
+
+  // Drei Scans laufen ohne weiteres Zutun
+  await expect.poll(() => calls, { timeout: 30000 }).toBe(3);
+
+  // Zwischen den Scans wurde tatsächlich gewartet
+  expect(times[1] - times[0]).toBeGreaterThan(700);
+
+  // Danach steht die Seitenübersicht mit drei Seiten bereit
+  await expect(page.locator('#scPagesView')).toBeVisible();
+  expect(await page.locator('.sc-pagecell').count()).toBe(3);
+  await expect(page.locator('#scDoneBtn')).toContainText('3 Seiten');
+});
+
+test('Stapel-Scan lässt sich vorzeitig beenden', async ({ page }) => {
+  await ready(page);
+  let calls = 0;
+  await fakeScanner(page, () => { calls++; });
+  await page.evaluate(() => {
+    document.querySelector('#netScanSettings').classList.remove('hidden');
+    document.querySelector('#netScanBtn').classList.remove('hidden');
+    document.querySelector('#scanPages').value = '9';
+    document.querySelector('#scanDelay').value = '4';
+  });
+  await page.click('#netScanBtn');
+
+  // Sobald der Countdown läuft, den Stapel stoppen
+  await expect(page.locator('#scBatchStopBtn')).toBeVisible({ timeout: 20000 });
+  await page.click('#scBatchStopBtn');
+
+  await expect(page.locator('#scPagesView')).toBeVisible({ timeout: 20000 });
+  expect(calls, 'nach dem Stoppen wird nicht weitergescannt').toBeLessThan(9);
+  expect(await page.locator('.sc-pagecell').count()).toBeGreaterThan(0);
+});
+
+test('Scan-Einstellungen werden gemerkt', async ({ page }) => {
+  await ready(page);
+  await page.evaluate(async () => {
+    const el = (s) => document.querySelector(s);
+    el('#netScanSettings').classList.remove('hidden');
+    el('#scanDpi').value = '400';
+    el('#scanColor').value = 'bw';
+    el('#scanPages').value = '5';
+    el('#scanDelay').value = '12';
+    for (const s of ['#scanDpi', '#scanColor', '#scanPages', '#scanDelay']) {
+      el(s).dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+  // Speichern läuft gebündelt (800 ms) und schiebt danach zum Server –
+  // erst abwarten, sonst gewinnt beim Neuladen der alte Serverstand.
+  await page.waitForTimeout(1600);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__pdfpresser && window.PDFLib);
+  await page.waitForTimeout(500);
+  expect(await page.locator('#scanDpi').inputValue()).toBe('400');
+  expect(await page.locator('#scanColor').inputValue()).toBe('bw');
+  expect(await page.locator('#scanPages').inputValue()).toBe('5');
+  expect(await page.locator('#scanDelay').inputValue()).toBe('12');
 });
 
 test('Neue S/W-Einstellungen erscheinen nur im Schwarz-Weiß-Modus', async ({ page }) => {

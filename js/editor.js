@@ -303,6 +303,10 @@ function buildUi() {
     <input type="file" id="edSigPhotoInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" hidden>
   </div>`;
   hydrateIcons(root);
+  // Verborgen einhängen: sichtbar wird der Editor erst, wenn sein Zustand
+  // steht (siehe openEditor). Sonst ließen sich Werkzeuge antippen, bevor es
+  // etwas zu bedienen gibt.
+  root.classList.add('hidden');
   document.body.appendChild(root);
   return root;
 }
@@ -526,6 +530,7 @@ function escapeHtml(s) {
 }
 
 function setTool(tool) {
+  if (!ed) return;   // Editor lädt noch – Tippen darf nicht ins Leere laufen
   ed.tool = tool;
   document.querySelectorAll('.ed-tools [data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
   ed.selected = null;
@@ -1372,7 +1377,8 @@ async function openFormModal() {
 export async function openEditor(item, onApplied) {
   const srcBytes = item.editedBytes ? item.editedBytes.slice() : new Uint8Array(await item.file.arrayBuffer());
   const root = document.getElementById('editorRoot') || buildUi();
-  root.classList.remove('hidden');
+  // Erst anzeigen, wenn der Zustand steht: sonst kann man in der Ladezeit
+  // bereits Werkzeuge antippen, die dann ins Leere laufen.
   const pdf = await pdfjsLib.getDocument({ data: srcBytes.slice() }).promise;
 
   ed = {
@@ -1483,6 +1489,8 @@ export async function openEditor(item, onApplied) {
   }
   setToolSoft('pan');
   updateProps();
+  // Jetzt ist alles bereit – erst hier wird der Editor sichtbar.
+  root.classList.remove('hidden');
   await renderPageView();
 }
 
