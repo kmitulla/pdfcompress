@@ -3,7 +3,7 @@
 
 import { compressPdf, previewPage, simulatePdf, PRESETS } from './compressor.js';
 import { disposeOcr } from './ocr.js';
-import { openEditor } from './editor.js';
+import { openEditor, setScanProvider } from './editor.js';
 import {
   exportAllData, importAllData, loadSettings, saveSettings, requestPersistence,
   enableServerProfile, pullServerProfile, onSyncStatus,
@@ -350,12 +350,92 @@ async function fetchScannedPage() {
 let batchCancel = false;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Wartet mit sichtbarem Countdown; bricht sofort ab, wenn abgebrochen wurde. */
+// ---------------------------------------------------------------- Wachhalten
+//
+// Beim Stapel-Scan darf das Gerät nicht in den Ruhezustand fallen, sonst hält
+// das System die Seite an und die restlichen Seiten werden nie gescannt.
+// Zwei Ebenen, weil keine allein überall greift:
+//   1. Wake Lock – hält den Bildschirm an. Gibt es nur in „sicherem Kontext“,
+//      also über HTTPS (oder localhost). Über http:// im LAN nicht verfügbar.
+//   2. Stille Tonspur in Dauerschleife – hält auf iOS die Seite am Leben, auch
+//      wenn der Bildschirm ausgeht. Funktioniert auch ohne HTTPS.
+// Zusätzlich wird nach dem Aufwachen weitergemacht (siehe batchWait).
+
+let wakeLock = null;
+let silentAudio = null;
+
+function silentWavUrl() {
+  // Eine Sekunde Stille als WAV – klein genug, um sie hier zu erzeugen.
+  const rate = 8000;
+  const samples = rate;
+  const buf = new ArrayBuffer(44 + samples * 2);
+  const v = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+async function keepAwakeStart() {
+  try {
+    if (navigator.wakeLock?.request) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+    }
+  } catch { wakeLock = null; }   // z. B. verweigert oder nicht verfügbar
+
+  try {
+    if (!silentAudio) {
+      silentAudio = new Audio(silentWavUrl());
+      silentAudio.loop = true;
+      silentAudio.volume = 0;
+      silentAudio.setAttribute('playsinline', '');
+    }
+    // Muss aus der Nutzergeste heraus starten – der Tipp auf „Scannen“ zählt.
+    await silentAudio.play();
+  } catch { /* Tonspur nicht erlaubt: dann greift nur der Wake Lock */ }
+}
+
+function keepAwakeStop() {
+  try { wakeLock?.release?.(); } catch { /* egal */ }
+  wakeLock = null;
+  try { silentAudio?.pause(); } catch { /* egal */ }
+}
+
+// Nach dem Zurückkehren aus dem Hintergrund den Wake Lock erneuern – das
+// System gibt ihn beim Sperren frei.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !netScanBusy) return;
+  try {
+    if (navigator.wakeLock?.request && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+    }
+  } catch { /* egal */ }
+});
+
+/** Hinweis, falls das Wachhalten des Bildschirms nicht möglich ist. */
+function wakeLockHint() {
+  return (navigator.wakeLock?.request)
+    ? ''
+    : ' · Bildschirm bitte an lassen (Wachhalten geht nur über HTTPS)';
+}
+
+/**
+ * Wartet mit sichtbarem Countdown; bricht sofort ab, wenn abgebrochen wurde.
+ *
+ * Gerechnet wird gegen die Uhr, nicht über gezählte Sekunden: War das Gerät
+ * zwischendurch im Ruhezustand, ist die Pause nach dem Aufwachen sofort vorbei
+ * und der Stapel läuft weiter, statt die verlorene Zeit nachzuholen.
+ */
 async function batchWait(seconds, page, total, setStatus) {
-  for (let left = seconds; left > 0; left--) {
-    if (batchCancel) return;
+  const until = Date.now() + seconds * 1000;
+  while (!batchCancel) {
+    const left = Math.ceil((until - Date.now()) / 1000);
+    if (left <= 0) return;
     setStatus(`Seite ${page}/${total} – nächster Scan in ${left} s … Vorlage wechseln`);
-    await sleep(1000);
+    await sleep(Math.min(1000, Math.max(120, until - Date.now())));
   }
 }
 
@@ -367,7 +447,10 @@ async function launchNetworkScan() {
   netScanBusy = true;
   batchCancel = false;
   netScanBtn.classList.add('scanning');
-  const t = toast(total > 1 ? `Scanne Seite 1 von ${total} …` : 'Scanne … bitte Vorlage auflegen', 'busy', 0);
+  // Bei mehreren Seiten das Gerät wach halten – sonst hält das System die
+  // Seite im Ruhezustand an und der Rest wird nie gescannt.
+  if (total > 1) await keepAwakeStart();
+  const t = toast(total > 1 ? `Scanne Seite 1 von ${total} …${wakeLockHint()}` : 'Scanne … bitte Vorlage auflegen', 'busy', 0);
 
   let scanner = null;
   try {
@@ -394,14 +477,24 @@ async function launchNetworkScan() {
       if (delay > 0) await batchWait(delay, n - 1, total, status);
       if (batchCancel) break;
       status(`Seite ${n}/${total} wird gescannt …`);
-      try {
-        await mod.addPageDirect(await fetchScannedPage());
-        status(`Seite ${n}/${total} eingelesen`);
-      } catch (e) {
-        // Eine misslungene Seite beendet den Stapel nicht – der Rest bleibt erhalten
-        t.update(`Seite ${n} fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
-        break;
+      // Ein Fehlversuch (Gerät belegt, Aufwachen aus dem Ruhezustand) beendet
+      // den Stapel nicht mehr: kurz warten und noch zwei Mal versuchen.
+      let ok = false;
+      for (let attempt = 1; attempt <= 3 && !ok && !batchCancel; attempt++) {
+        try {
+          await mod.addPageDirect(await fetchScannedPage());
+          ok = true;
+        } catch (e) {
+          if (attempt === 3) {
+            t.update(`Seite ${n} fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
+          } else {
+            status(`Seite ${n}/${total} – neuer Versuch (${attempt + 1}/3) …`);
+            await sleep(2500);
+          }
+        }
       }
+      if (!ok) break;
+      status(`Seite ${n}/${total} eingelesen`);
     }
 
     mod.setScanStatus('');
@@ -416,6 +509,7 @@ async function launchNetworkScan() {
     t.update(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
     scanner?.setScanStatus('');
   } finally {
+    keepAwakeStop();
     netScanBusy = false;
     batchCancel = false;
     netScanBtn.classList.remove('scanning');
@@ -826,6 +920,8 @@ async function detectBackend() {
     netScanBtn.classList.remove('hidden');
     $('#netScanSettings').classList.remove('hidden');
     syncScanBatchUi();
+    // Auch im PDF-Editor lassen sich damit später Seiten nachscannen
+    setScanProvider(fetchScannedPage);
     document.querySelector('.source-row')?.classList.add('has-net');
   }
   if (backend.consume) {

@@ -203,6 +203,43 @@ Alle Einstellungen – Auflösung, Farbe, Seitenzahl und Pause – werden gemerk
 und stehen beim nächsten Mal wieder so da (in der selbst gehosteten Variante
 sogar geräteübergreifend).
 
+### Wenn der Bildschirm ausgeht
+
+Geht das Handy während eines Stapels in den Ruhezustand, hält das System die
+Web-App an – die restlichen Seiten würden nie gescannt. Dagegen wirken drei
+Dinge:
+
+1. **Bildschirm wachhalten** (Wake Lock) – wird beim Stapel automatisch
+   angefordert. ⚠️ Diese Schnittstelle gibt es nur im *sicheren Kontext*, also
+   über **HTTPS** oder `localhost`. Über `http://192.168.…` steht sie nicht zur
+   Verfügung; die App weist im Hinweistext darauf hin. Wer das braucht, stellt
+   der App HTTPS voran (Reverse Proxy oder Tailscale).
+2. **Stille Tonspur in Dauerschleife** – hält die Seite auf iOS auch dann am
+   Leben, wenn der Bildschirm ausgeht. Läuft ohne HTTPS und startet automatisch
+   mit dem Stapel.
+3. **Robuste Wiederaufnahme** – die Pause wird gegen die Uhr gerechnet, nicht
+   über gezählte Sekunden. Nach dem Aufwachen ist sie also sofort vorbei statt
+   nachzulaufen. Schlägt ein Scan fehl (Gerät noch nicht bereit), wird er
+   **bis zu drei Mal** wiederholt, bevor der Stapel endet.
+
+## Seiten nachträglich ändern
+
+Ein fertiges Scan-PDF ist nicht endgültig: **„Bearbeiten"** → Werkzeug
+**Seiten verwalten** öffnet die Seitenverwaltung. Dort geht:
+
+| Aktion | wo |
+| --- | --- |
+| Seite **scannen** und anfügen | „Scannen" (nur mit Netzwerk-Scanner) |
+| Seite **mit der Kamera** aufnehmen | „Kamera" |
+| Seiten aus **Fotomediathek/Dateien** | „Fotos / Dateien" (mehrere auf einmal) |
+| Leere A4-Seite | „Leere A4-Seite" |
+| **Drehen, umsortieren, duplizieren, löschen** | Knöpfe unter jeder Miniatur |
+| **Auf A4 skalieren** – einzeln oder alle | Knopf unter der Seite bzw. „Alle auf A4 skalieren" |
+
+Neu eingefügte Bilder landen unverzerrt auf einem A4-Blatt (hoch oder quer je
+nach Seitenverhältnis). Alles wird beim **Übernehmen** fest ins PDF eingebrannt
+und von der anschließenden Kompression miterfasst.
+
 ## Mehrseitige PDFs am Stück scannen
 
 Genau dafür ist der Ablauf gebaut – Beispiel „3 Seiten, dann 4, dann 1“:

@@ -246,6 +246,21 @@ export async function applyEdits(srcBytes, state) {
       else box = [x0, y0, c.w, c.h];
       page.setCropBox(...box);
     }
+
+    // Seite auf ein Zielformat bringen (z. B. A4): Inhalt unverzerrt einpassen
+    // und mittig setzen, dann die Seitengröße ändern.
+    if (entry.resizeTo) {
+      const [tw, th] = entry.resizeTo;
+      const { width: cw, height: ch } = page.getSize();
+      if (cw > 0 && ch > 0 && (Math.abs(cw - tw) > 0.5 || Math.abs(ch - th) > 0.5)) {
+        const s = Math.min(tw / cw, th / ch);
+        page.scaleContent(s, s);
+        page.scaleAnnotations?.(s, s);
+        page.translateContent((tw - cw * s) / 2, (th - ch * s) / 2);
+        page.setSize(tw, th);
+        page.setCropBox(0, 0, tw, th);
+      }
+    }
   }
   return newDoc.save({ useObjectStreams: true });
 }
@@ -1282,13 +1297,126 @@ async function openStampTplModal() {
 
 // ---------------------------------------------------------------- Seitenverwaltung
 
+// Quelle für „Seite scannen“ in der Seitenverwaltung. Wird von app.js gesetzt,
+// sobald das Backend einen Netzwerk-Scanner meldet.
+let scanProvider = null;
+export function setScanProvider(fn) { scanProvider = fn || null; }
+
+/**
+ * Hängt ein Bild als neue Seite an: A4-Blatt (hoch oder quer je nach
+ * Seitenverhältnis), Bild unverzerrt eingepasst und zentriert.
+ */
+async function addImagePage(file, atIndex = null) {
+  const bitmap = await loadBitmap(file);
+  const canvas = document.createElement('canvas');
+  const s = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height));
+  canvas.width = Math.max(1, Math.round(bitmap.width * s));
+  canvas.height = Math.max(1, Math.round(bitmap.height * s));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const isJpeg = /jpe?g/i.test(file.type || '');
+  const dataUrl = canvas.toDataURL(isJpeg ? 'image/jpeg' : 'image/png', 0.9);
+  const assetId = addAssetFromDataUrl(dataUrl, isJpeg ? 'jpeg' : 'png');
+
+  const landscape = canvas.width > canvas.height;
+  const [pw, ph] = landscape ? [A4[1], A4[0]] : A4.slice();
+  const fit = Math.min(pw / canvas.width, ph / canvas.height);
+  const w = canvas.width * fit;
+  const h = canvas.height * fit;
+  const page = {
+    src: null,
+    blankSize: [pw, ph],
+    objects: [{
+      type: 'image', assetId, color: '#000000',
+      x: (pw - w) / 2, y: (ph - h) / 2, w, h,
+    }],
+  };
+  if (atIndex == null) ed.state.pages.push(page);
+  else ed.state.pages.splice(atIndex, 0, page);
+  return page;
+}
+
 async function openPagesModal() {
   const modal = $('#edModal');
   const box = $('#edModalBox');
-  box.innerHTML = '<h3>Seiten verwalten</h3><div class="ed-pagegrid" id="edPageGrid"></div><div class="ed-row"><button class="btn btn-small" id="edAddBlank">+ Leere A4-Seite</button><button class="btn btn-small" id="edPageNums">Seitenzahlen: aus</button><button class="btn btn-small btn-ghost" id="edPagesClose">Fertig</button></div>';
+  box.innerHTML = `
+    <h3>Seiten verwalten</h3>
+    <div class="ed-row ed-addrow">
+      <span class="ed-label">Seite hinzufügen</span>
+      <button class="btn btn-small ${scanProvider ? '' : 'hidden'}" id="edAddScan">${icon('scanner', { size: 15 })} Scannen</button>
+      <button class="btn btn-small" id="edAddCam">${icon('camera', { size: 15 })} Kamera</button>
+      <button class="btn btn-small" id="edAddPhoto">${icon('image', { size: 15 })} Fotos / Dateien</button>
+      <button class="btn btn-small" id="edAddBlank">${icon('plus', { size: 15 })} Leere A4-Seite</button>
+    </div>
+    <div class="ed-pagegrid" id="edPageGrid"></div>
+    <div class="ed-row">
+      <button class="btn btn-small" id="edAllA4">${icon('scanFrame', { size: 15 })} Alle auf A4 skalieren</button>
+      <button class="btn btn-small" id="edPageNums">Seitenzahlen: aus</button>
+      <button class="btn btn-small btn-primary" id="edPagesClose">${icon('check', { size: 15 })} Fertig</button>
+    </div>
+    <input type="file" id="edPageCamInput" accept="image/*" capture="environment" hidden>
+    <input type="file" id="edPagePhotoInput" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif" multiple hidden>
+    <p class="hint-inline" id="edPagesHint"></p>`;
   modal.classList.remove('hidden');
   $('#edPagesClose').onclick = () => { modal.classList.add('hidden'); renderPageView(); };
   $('#edAddBlank').onclick = () => { snapshot(); ed.state.pages.push({ src: null, blankSize: A4.slice(), objects: [] }); renderGrid(); };
+
+  const hint = $('#edPagesHint');
+  const busy = (on, text = '') => {
+    hint.textContent = text;
+    ['#edAddScan', '#edAddCam', '#edAddPhoto', '#edAddBlank'].forEach((s) => {
+      const b = $(s);
+      if (b) b.disabled = on;
+    });
+  };
+
+  // Seiten aus Kamera bzw. Fotomediathek/Dateien
+  const addFiles = async (files) => {
+    const list = [...files].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif|bmp|gif)$/i.test(f.name));
+    if (!list.length) return;
+    snapshot('Seiten hinzugefügt');
+    busy(true, `${list.length} Bild${list.length === 1 ? '' : 'er'} wird eingefügt …`);
+    try {
+      for (const f of list) await addImagePage(f);
+      await renderGrid();
+      busy(false, `${list.length} Seite${list.length === 1 ? '' : 'n'} hinzugefügt.`);
+    } catch (e) {
+      busy(false, `Hinzufügen fehlgeschlagen: ${e?.message || e}`);
+    }
+  };
+  $('#edAddCam').onclick = () => $('#edPageCamInput').click();
+  $('#edAddPhoto').onclick = () => $('#edPagePhotoInput').click();
+  // Achtung: files ist eine lebende Liste – erst kopieren, dann das Feld leeren,
+  // sonst ist die Auswahl weg, bevor sie verarbeitet wird.
+  const takeFiles = (e) => { const f = [...e.target.files]; e.target.value = ''; return f; };
+  $('#edPageCamInput').onchange = (e) => addFiles(takeFiles(e));
+  $('#edPagePhotoInput').onchange = (e) => addFiles(takeFiles(e));
+
+  // Seite direkt vom Netzwerk-Scanner nachziehen
+  if (scanProvider) {
+    $('#edAddScan').onclick = async () => {
+      busy(true, 'Scanne … bitte Vorlage auflegen');
+      try {
+        const file = await scanProvider();
+        snapshot('Seite gescannt');
+        await addImagePage(file);
+        await renderGrid();
+        busy(false, 'Seite gescannt und angefügt.');
+      } catch (e) {
+        busy(false, `Scan fehlgeschlagen: ${e?.message || e}`);
+      }
+    };
+  }
+
+  // Alle Seiten auf A4 bringen (wirkt beim Übernehmen)
+  $('#edAllA4').onclick = () => {
+    snapshot('Alle Seiten auf A4');
+    for (const p of ed.state.pages) {
+      if (p.src == null) p.blankSize = A4.slice();
+      else p.resizeTo = A4.slice();
+    }
+    renderGrid();
+    hint.textContent = 'Alle Seiten werden beim Übernehmen auf A4 skaliert.';
+  };
   const pnBtn = $('#edPageNums');
   const syncPn = () => { pnBtn.textContent = `Seitenzahlen: ${ed.state.pageNumbers ? 'AN' : 'aus'}`; };
   syncPn();
@@ -1316,6 +1444,26 @@ async function openPagesModal() {
         off.height = Math.max(1, Math.round(vp.height));
         await page.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise;
         tctx.drawImage(off, (100 - off.width) / 2, (141 - off.height) / 2);
+      } else {
+        // Neu hinzugefügte Bildseite: das eingebettete Bild zeigen
+        const imgObj = (entry.objects || []).find((o) => o.type === 'image' && ed.state.assets.url[o.assetId]);
+        if (imgObj) {
+          const [bw2, bh2] = entry.blankSize || A4;
+          const sc = Math.min(100 / bw2, 141 / bh2);
+          await new Promise((res) => {
+            const im = new Image();
+            im.onload = () => {
+              tctx.drawImage(
+                im,
+                (100 - bw2 * sc) / 2 + imgObj.x * sc, (141 - bh2 * sc) / 2 + imgObj.y * sc,
+                imgObj.w * sc, imgObj.h * sc,
+              );
+              res();
+            };
+            im.onerror = res;
+            im.src = ed.state.assets.url[imgObj.assetId];
+          });
+        }
       }
       const bar = document.createElement('div');
       bar.className = 'ed-pagecell-bar';
@@ -1335,10 +1483,17 @@ async function openPagesModal() {
         mk(icon('chevronLeft', { size: 15 }), 'Nach vorne schieben', () => { [ed.state.pages[i - 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i - 1]]; }, i === 0),
         mk(icon('chevronRight', { size: 15 }), 'Nach hinten schieben', () => { [ed.state.pages[i + 1], ed.state.pages[i]] = [ed.state.pages[i], ed.state.pages[i + 1]]; }, i === ed.state.pages.length - 1),
         mk(icon('duplicate', { size: 15 }), 'Seite duplizieren', () => { ed.state.pages.splice(i + 1, 0, JSON.parse(JSON.stringify(entry))); }),
+        mk(icon('scanFrame', { size: 15 }), 'Diese Seite auf A4 skalieren', () => {
+          if (entry.src == null) entry.blankSize = A4.slice();
+          else entry.resizeTo = A4.slice();
+        }),
         mk(icon('trash', { size: 15 }), 'Seite löschen', () => { ed.state.pages.splice(i, 1); if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; }, ed.state.pages.length <= 1),
       );
       const label = document.createElement('div');
-      label.textContent = `Seite ${i + 1}${entry.src == null ? ' (leer)' : ''}${entry.rotate ? ` ↻${entry.rotate}°` : ''}`;
+      const hasImg = (entry.objects || []).some((o) => o.type === 'image');
+      const kind = entry.src != null ? '' : (hasImg ? ' (Bild)' : ' (leer)');
+      const a4 = entry.resizeTo ? ' · A4' : '';
+      label.textContent = `Seite ${i + 1}${kind}${a4}${entry.rotate ? ` ↻${entry.rotate}°` : ''}`;
       cell.append(thumb, label, bar);
       grid.appendChild(cell);
     }

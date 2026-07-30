@@ -152,8 +152,10 @@ test('Editor-Seitenverwaltung zeigt Icons, kein rohes SVG-Markup', async ({ page
   await expect(page.locator('#editorRoot .ed-overlay')).toBeVisible();
   await page.click('#edPagesBtn');
   await expect(page.locator('.ed-pagegrid')).toBeVisible();
+  // Die Seitenkacheln entstehen asynchron (Miniaturen werden gerendert)
+  await expect(page.locator('.ed-pagecell').first()).toBeVisible();
 
-  expect(await page.locator('.ed-pagecell-bar .btn svg').count()).toBeGreaterThan(4);
+  await expect.poll(() => page.locator('.ed-pagecell-bar .btn svg').count()).toBeGreaterThan(4);
   await assertNoRawMarkup(page, '#editorRoot');
 });
 
