@@ -141,6 +141,13 @@ im Browser allein nicht möglich sind:
   Datei sieht.
 - **Profil auf dem eigenen Server:** Einstellungen, Unterschriften und Stempel
   gelten auf **allen** Geräten (iPhone + Laptop).
+- **„Paperless Prepare“ – die Vorstufe vor der Inbox:** Ein Sammelordner
+  (`RAW_DIR`, z. B. `Scanner_RAW`) nimmt Rohscans und Handyfotos auf. Dort
+  werden sie gesichtet, zu **einer PDF zusammengeführt**, bearbeitet
+  (unterschreiben, schwärzen, Seiten tauschen), mit einer hinterlegten
+  **Standardstufe** komprimiert – und erst nach Bestätigung an Paperless
+  übergeben. Anschließend fragt die App, ob die Rohdateien gelöscht werden
+  sollen.
 
 Das mitgelieferte Backend (`server/`) liefert die Web-App aus **und** stellt die
 API bereit (`/api/scanner/scan`, `/api/save`, `/api/profile`) – same-origin, ohne
@@ -163,6 +170,7 @@ NAS-Mount, Paperless, mehrseitiges Scannen, Updates, Fehlersuche):
 | --- | --- |
 | `SCANNER_HOST` | IP/Host des Scanners (z. B. `192.168.1.50`, bei Bedarf `https://…`) – leer = Scanner aus |
 | `CONSUME_DIR` | Zielordner im Container (Standard `/data/consume`, auf den Paperless-Ordner gemountet) |
+| `RAW_DIR` | Sammelordner der Vorstufe „Paperless Prepare“ (z. B. `/data/raw`) – leer = Vorstufe aus |
 | `DATA_DIR` | Profilspeicher für Einstellungen/Unterschriften (Standard `/data/app`) |
 | `PORT` | Server-Port (Standard `8823`) |
 

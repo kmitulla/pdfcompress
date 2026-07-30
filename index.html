@@ -248,6 +248,46 @@
         <small class="hint-inline" id="scanBatchHint">Ab 2 Seiten läuft der Scan automatisch weiter: Nach jeder Seite bleibt die eingestellte Pause zum Wechseln der Vorlage. Höhere Auflösung dauert länger und braucht mehr Rechenzeit auf deinem Gerät.</small>
       </div>
 
+      <!-- ───────── Paperless Prepare: Vorstufe vor der Paperless-Inbox ───────── -->
+      <section class="prep-card hidden" id="prepSection" aria-label="Paperless Prepare">
+        <div class="prep-head">
+          <strong><i data-icon="archive"></i> Paperless Prepare</strong>
+          <span class="prep-sel-info" id="prepSelInfo"></span>
+          <button class="btn btn-small btn-ghost" id="prepRefreshBtn" title="Neu einlesen" aria-label="Neu einlesen"><i data-icon="rotate" data-icon-size="15"></i></button>
+        </div>
+        <p class="hint">Sammelordner auf dem Server. Hier landen Rohscans und Fotos, bis du sie geprüft, bearbeitet und an Paperless übergeben hast.</p>
+
+        <div class="prep-tools">
+          <button class="btn btn-small hidden" id="prepScanBtn"><i data-icon="scanner" data-icon-size="15"></i> In Sammelordner scannen</button>
+          <button class="btn btn-small" id="prepUploadBtn"><i data-icon="upload" data-icon-size="15"></i> Fotos / PDFs ablegen</button>
+          <input type="file" id="prepUploadInput" accept="application/pdf,image/*,.pdf,.png,.jpg,.jpeg,.heic,.heif,.webp" multiple hidden>
+        </div>
+
+        <div class="prep-defaults">
+          <span class="prep-defaults-label">Standard beim Übernehmen</span>
+          <label for="prepPreset">Stufe
+            <select id="prepPreset">
+              <option value="">unverändert lassen</option>
+              <option value="mittel">Mittel</option>
+              <option value="stark">Stark</option>
+              <option value="extrem-grau">Extrem (Graustufen)</option>
+              <option value="extrem-farbe">Extrem Farbe</option>
+              <option value="extrem-sw" selected>Extrem S/W (300 dpi)</option>
+            </select>
+          </label>
+          <label class="prep-check"><input type="checkbox" id="prepOcr" checked> mit OCR</label>
+        </div>
+
+        <label class="prep-selectall"><input type="checkbox" id="prepSelectAll"> Alle auswählen</label>
+        <div class="prep-list" id="prepList"></div>
+        <p class="prep-status" id="prepStatus"></p>
+
+        <div class="prep-actions">
+          <button class="btn btn-primary btn-small" id="prepOpenBtn" disabled><i data-icon="docStack" data-icon-size="15"></i> Übernehmen &amp; bearbeiten</button>
+          <button class="btn btn-small btn-ghost" id="prepDeleteBtn" disabled><i data-icon="trash" data-icon-size="15"></i> Aus Sammelordner löschen</button>
+        </div>
+      </section>
+
       <p class="hint scan-hint hidden" id="scanHint">Scan als PDF hinzugefügt – wähle jetzt die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> und starte <strong>Komprimieren</strong>.</p>
 
       <ul class="file-list" id="fileList"></ul>

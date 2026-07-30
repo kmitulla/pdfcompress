@@ -222,6 +222,60 @@ Dinge:
    nachzulaufen. Schlägt ein Scan fehl (Gerät noch nicht bereit), wird er
    **bis zu drei Mal** wiederholt, bevor der Stapel endet.
 
+## „Paperless Prepare“ – die Vorstufe vor der Inbox
+
+Statt jeden Scan sofort an Paperless zu schicken, kannst du ihn erst in einem
+**Sammelordner** parken, dort sichten, zusammenführen, bearbeiten und erst dann
+übergeben. Das ist der Modus **Paperless Prepare**.
+
+**Einrichten:** In der Compose steht `RAW_DIR: "/data/raw"`; als Volume am
+besten einen Ordner nehmen, in den du auch vom Rechner aus schauen kannst:
+
+```yaml
+    volumes:
+      - /DATA/Scanner_RAW:/data/raw
+```
+
+bzw. per Variable `RAW_HOST_PATH=/DATA/Scanner_RAW`. Leerer `RAW_DIR` schaltet
+die Vorstufe ab; der Bereich verschwindet dann aus der Oberfläche.
+
+**Ablauf:**
+
+1. **Hinein kommt es** über „In Sammelordner scannen“ (nutzt Seitenzahl und
+   Pause wie der normale Stapel-Scan – die Rohbilder landen einzeln im Ordner)
+   oder über „Fotos / PDFs ablegen“ vom Handy. Du kannst auch einfach Dateien
+   direkt in den Ordner kopieren, sie tauchen nach „Neu einlesen“ auf.
+2. **Sichten und auswählen:** Mehrere Einträge angehakt → **„Übernehmen &
+   bearbeiten“** führt sie in der gewählten Reihenfolge (älteste zuerst) zu
+   **einer PDF** zusammen. Bilder werden dabei unverzerrt auf A4 gesetzt.
+3. **Standard beim Übernehmen:** Stufe (z. B. *Extrem S/W 300 dpi*) und *mit
+   OCR* werden automatisch gesetzt – einmal einstellen, wird gemerkt.
+4. **Bearbeiten:** Über „Bearbeiten“ Seiten tauschen, drehen, löschen,
+   unterschreiben, schwärzen, weitere Seiten scannen/fotografieren.
+   ⚠️ **Nach dem Schwärzen unbedingt mit einer Bild-Stufe komprimieren** (nicht
+   „Verlustfrei“) – erst dadurch ist der Inhalt wirklich weg, und das OCR wird
+   auf dem geschwärzten Stand neu erzeugt.
+5. **Passt die Größe nicht?** „Simulation“ rechnet alle Stufen durch und zeigt
+   die Ersparnis; Stufe ändern und **„Erneut komprimieren“**.
+6. **Übergeben:** **„An Paperless“** legt das Ergebnis im Consume-Ordner ab.
+   Danach fragt die App, ob die Rohdateien aus dem Sammelordner **gelöscht**
+   werden sollen. Alternativ herunterladen oder teilen – der Sammelordner
+   bleibt dann unberührt.
+
+### Wo läuft was?
+
+| Aufgabe | läuft auf |
+| --- | --- |
+| Dateien halten, auflisten, löschen, an Paperless übergeben | **Mini-PC** |
+| Scannen (Gerät ansprechen) | **Mini-PC** |
+| Rendern, Zusammenführen, Kompression, OCR, Bearbeiten | **dein Gerät** (Browser) |
+
+Die Verarbeitung bleibt bewusst im Browser: pdf.js, Canvas und Tesseract sind
+Browser-Technik. Serverseitig bräuchte es ein headless Chromium – genau das,
+was RAM und CPU des Mini-PCs belasten würde. So bleibt er ein ruhiger
+Ablageort, und gerechnet wird auf dem Gerät, an dem du ohnehin gerade sitzt.
+Der Server begrenzt Uploads (200 MB) und schreibt atomar.
+
 ## Seiten nachträglich ändern
 
 Ein fertiges Scan-PDF ist nicht endgültig: **„Bearbeiten"** → Werkzeug

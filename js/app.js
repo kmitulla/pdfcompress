@@ -81,7 +81,7 @@ const hasFsAccess = typeof window.showDirectoryPicker === 'function';
 
 // Backend-Funktionen (nur aktiv, wenn die App über den mitgelieferten Server
 // läuft – z. B. im Docker-Container auf dem Mini-PC. Auf GitHub Pages: aus.)
-const backend = { scanner: false, consume: false, profile: false };
+const backend = { scanner: false, consume: false, profile: false, raw: false };
 
 // ---------------------------------------------------------------- Einstellungen
 
@@ -892,6 +892,7 @@ async function saveItemToPaperless(item, { quiet = false } = {}) {
     btn.classList.remove('busy');
     btn.innerHTML = `${icon('check', { size: 15 })} übergeben`;
     t?.update(`„${item.outName}“ an Paperless übergeben`, 'ok');
+    await offerRawCleanup(item);
     return true;
   } catch (e) {
     const msg = `An Paperless senden fehlgeschlagen: ${e?.message || e}`;
@@ -905,6 +906,24 @@ async function saveItemToPaperless(item, { quiet = false } = {}) {
   }
 }
 
+/**
+ * Kam die Datei aus dem Sammelordner, nach der Übergabe an Paperless fragen,
+ * ob die Rohdateien dort gelöscht werden sollen.
+ */
+async function offerRawCleanup(item) {
+  const sources = item.file?.rawSources;
+  if (!backend.raw || !sources?.length || item.rawCleaned) return;
+  item.rawCleaned = true;   // nur einmal fragen
+  const list = sources.length === 1 ? `„${sources[0]}“` : `${sources.length} Dateien`;
+  if (!window.confirm(
+    `„${item.outName}“ liegt jetzt bei Paperless.\n\n${list} aus dem Sammelordner löschen?`,
+  )) return;
+  const { deleteSelection, refresh } = await import('./prepare.js');
+  const n = await deleteSelection(sources, false);
+  await refresh();
+  toast(`${n} Datei${n === 1 ? '' : 'en'} aus dem Sammelordner gelöscht`, 'ok');
+}
+
 // Backend-Fähigkeiten abfragen und passende Bedienelemente einblenden.
 async function detectBackend() {
   try {
@@ -914,6 +933,7 @@ async function detectBackend() {
     backend.scanner = !!cfg.scanner;
     backend.consume = !!cfg.consume;
     backend.profile = !!cfg.profile;
+    backend.raw = !!cfg.raw;
   } catch { /* kein Backend (z. B. GitHub Pages) – Funktionen bleiben aus */ }
 
   if (backend.scanner) {
@@ -935,7 +955,73 @@ async function detectBackend() {
     await pullServerProfile();
     await applyStoredSettings();
   }
+  if (backend.raw) {
+    // Vorstufe „Paperless Prepare“ einschalten
+    const { initPrepare } = await import('./prepare.js');
+    if (backend.scanner) $('#prepScanBtn').classList.remove('hidden');
+    initPrepare({
+      addFiles,
+      applyPrepareDefaults,
+      focusWorkList: () => $('#fileList')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }),
+      scanPageCount: () => Math.max(1, Math.min(99, parseInt($('#scanPages').value, 10) || 1)),
+      scanDelay: () => Math.max(0, Math.min(120, parseInt($('#scanDelay').value, 10) || 0)),
+      scanIntoRaw,
+    });
+  }
   updateActions();
+}
+
+/**
+ * Die im Prepare-Bereich hinterlegte Standardeinstellung anwenden – damit muss
+ * man nach dem Übernehmen nicht jedes Mal dieselbe Stufe neu wählen.
+ */
+function applyPrepareDefaults() {
+  const preset = $('#prepPreset')?.value;
+  if (preset && document.querySelector(`input[name="preset"][value="${preset}"]`)) {
+    document.querySelector(`input[name="preset"][value="${preset}"]`).checked = true;
+  }
+  const ocr = $('#prepOcr');
+  if (ocr && preset !== 'verlustfrei') ocrEnabled.checked = ocr.checked;
+  syncSettingsUi();
+  persistSettings();
+}
+
+/**
+ * Direkt in den Sammelordner scannen: die Rohbilder wandern unverändert dorthin
+ * und werden erst später (beim Übernehmen) zu einer PDF verbunden.
+ */
+async function scanIntoRaw(total, delay, status) {
+  const { uploadToRaw } = await import('./prepare.js');
+  if (total > 1) await keepAwakeStart();
+  try {
+    for (let n = 1; n <= total; n++) {
+      status(`Seite ${n}/${total} wird gescannt …`);
+      let file = null;
+      for (let attempt = 1; attempt <= 3 && !file; attempt++) {
+        try {
+          file = await fetchScannedPage();
+        } catch (e) {
+          if (attempt === 3) throw e;
+          status(`Seite ${n}/${total} – neuer Versuch (${attempt + 1}/3) …`);
+          await sleep(2500);
+        }
+      }
+      // Sprechender Name, damit die Reihenfolge im Ordner erkennbar bleibt
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const ext = (file.type || '').includes('png') ? 'png' : 'jpg';
+      await uploadToRaw([new File([file], `Scan_${stamp}_S${String(n).padStart(2, '0')}.${ext}`, { type: file.type })], 'Seite');
+      if (n < total && delay > 0) {
+        const until = Date.now() + delay * 1000;
+        while (Date.now() < until) {
+          status(`Seite ${n}/${total} abgelegt – nächster Scan in ${Math.ceil((until - Date.now()) / 1000)} s … Vorlage wechseln`);
+          await sleep(Math.min(1000, Math.max(120, until - Date.now())));
+        }
+      }
+    }
+    status(`${total} Seite${total === 1 ? '' : 'n'} im Sammelordner abgelegt.`, 'ok');
+  } finally {
+    keepAwakeStop();
+  }
 }
 
 // Status des Server-Speichers in der Seitenleiste spiegeln
@@ -1072,6 +1158,8 @@ function collectSettings() {
     scanColor: $('#scanColor').value,
     scanPages: $('#scanPages').value,
     scanDelay: $('#scanDelay').value,
+    prepPreset: $('#prepPreset').value,
+    prepOcr: $('#prepOcr').checked,
     extremeDpi: $('#extremeDpi').value,
     ocr: ocrEnabled.checked,
     ocrLang: $('#ocrLang').value,
@@ -1099,6 +1187,8 @@ async function applyStoredSettings() {
     if (s.scanColor) $('#scanColor').value = s.scanColor;
     if (s.scanPages) $('#scanPages').value = s.scanPages;
     if (s.scanDelay != null) $('#scanDelay').value = s.scanDelay;
+    if (s.prepPreset != null) $('#prepPreset').value = s.prepPreset;
+    if (s.prepOcr != null) $('#prepOcr').checked = s.prepOcr;
     if (s.extremeDpi != null) $('#extremeDpi').value = s.extremeDpi;
     if (s.ocr != null) ocrEnabled.checked = s.ocr;
     if (s.ocrLang) $('#ocrLang').value = s.ocrLang;
@@ -1108,7 +1198,7 @@ async function applyStoredSettings() {
   settingsReady = true;
   syncSettingsUi();
 }
-document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #bwContrast, #darkAreas, #scanDpi, #scanColor, #scanPages, #scanDelay, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
+document.querySelectorAll('input[name="preset"], #colorMode, #dpi, #quality, #bwBias, #bwContrast, #darkAreas, #scanDpi, #scanColor, #scanPages, #scanDelay, #prepPreset, #prepOcr, #extremeDpi, #ocrEnabled, #ocrLang, #autoSave, #autoPaperless')
   .forEach((el) => el.addEventListener('change', persistSettings));
 applyStoredSettings();
 requestPersistence();

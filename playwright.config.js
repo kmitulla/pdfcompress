@@ -29,6 +29,7 @@ export default defineConfig({
     env: {
       CONSUME_DIR: './test-results/consume',
       DATA_DIR: './test-results/appdata',
+      RAW_DIR: './test-results/raw',
     },
   },
 });

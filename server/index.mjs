@@ -7,6 +7,7 @@
 //   PORT          Port des Servers            (Standard 8823)
 //   SCANNER_HOST  IP/Hostname des Scanners    (z. B. 192.168.1.50) – leer = Scanner-Funktion aus
 //   CONSUME_DIR   Zielordner für fertige PDFs (z. B. /data/consume, ins NAS gemountet)
+//   RAW_DIR       Sammelordner „Scanner_RAW“ für die Vorstufe (z. B. /data/raw)
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -28,6 +29,11 @@ const MAX_UPLOAD = 200 * 1024 * 1024; // 200 MB Obergrenze fürs Speichern
 const DATA_DIR = (process.env.DATA_DIR || '/data/app').trim();
 const PROFILE_FILE = path.join(DATA_DIR, 'profile.json');
 const MAX_PROFILE = 8 * 1024 * 1024; // Unterschriften sind Bilder – etwas Luft
+
+// Sammelordner der Vorstufe („Paperless Prepare“): Hier landen Rohscans und
+// Fotos, bis sie gesichtet, bearbeitet und an Paperless übergeben werden.
+const RAW_DIR = (process.env.RAW_DIR || '').trim();
+const RAW_EXT = /\.(pdf|jpe?g|png|webp|heic|heif|tiff?|bmp)$/i;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -77,6 +83,41 @@ function safePdfName(name) {
   return base;
 }
 
+// Dateiname im RAW-Ordner: nur der Name selbst, erlaubte Endung, kein Ausbruch
+function safeRawName(name, fallbackExt = '.pdf') {
+  let base = path.basename(String(name || '').trim()).replace(/[^\w.\-() ]+/g, '_');
+  if (!base || base.startsWith('.')) base = `datei_${Date.now()}${fallbackExt}`;
+  if (!RAW_EXT.test(base)) base += fallbackExt;
+  return base;
+}
+
+/** Vollständiger Pfad im RAW-Ordner – oder null, wenn der Name nicht taugt. */
+function rawPath(name) {
+  if (!RAW_DIR) return null;
+  const safe = safeRawName(name);
+  const full = path.join(RAW_DIR, safe);
+  // Doppelt absichern: der Pfad muss wirklich im RAW-Ordner liegen
+  if (path.dirname(path.resolve(full)) !== path.resolve(RAW_DIR)) return null;
+  return full;
+}
+
+/** Freien Namen finden, damit nichts überschrieben wird. */
+async function freeRawName(name) {
+  const safe = safeRawName(name);
+  const ext = path.extname(safe);
+  const stem = safe.slice(0, safe.length - ext.length);
+  let candidate = safe;
+  for (let i = 2; i < 500; i++) {
+    try {
+      await fsp.access(path.join(RAW_DIR, candidate));
+      candidate = `${stem}_${i}${ext}`;
+    } catch {
+      return candidate;   // existiert nicht -> frei
+    }
+  }
+  return `${stem}_${Date.now()}${ext}`;
+}
+
 // -------------------------------------------------------------------- API
 
 async function handleApi(req, res, url) {
@@ -86,7 +127,8 @@ async function handleApi(req, res, url) {
       scanner: !!SCANNER_HOST,
       consume: !!CONSUME_DIR,
       profile: profileEnabled,
-      version: 2,
+      raw: !!RAW_DIR,
+      version: 3,
     });
   }
 
@@ -149,6 +191,81 @@ async function handleApi(req, res, url) {
       return res.end(buffer);
     } catch (e) {
       return sendJson(res, 502, { error: e.message });
+    }
+  }
+
+  // ---- Vorstufe „Paperless Prepare“: Sammelordner Scanner_RAW ----
+
+  // Inhalt auflisten (nur Dateien, keine Unterordner)
+  if (url.pathname === '/api/raw' && req.method === 'GET') {
+    if (!RAW_DIR) return sendJson(res, 501, { error: 'Kein RAW-Ordner konfiguriert (RAW_DIR fehlt).' });
+    try {
+      await fsp.mkdir(RAW_DIR, { recursive: true });
+      const entries = await fsp.readdir(RAW_DIR, { withFileTypes: true });
+      const files = [];
+      for (const e of entries) {
+        if (!e.isFile() || e.name.startsWith('.') || !RAW_EXT.test(e.name)) continue;
+        const st = await fsp.stat(path.join(RAW_DIR, e.name));
+        files.push({
+          name: e.name,
+          size: st.size,
+          modified: st.mtimeMs,
+          kind: /\.pdf$/i.test(e.name) ? 'pdf' : 'image',
+        });
+      }
+      files.sort((a, b) => a.modified - b.modified);   // älteste zuerst
+      return sendJson(res, 200, { files });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Einzelne Datei ausliefern
+  if (url.pathname === '/api/raw/file' && req.method === 'GET') {
+    const full = rawPath(url.searchParams.get('name'));
+    if (!full) return sendJson(res, 400, { error: 'Ungültiger Name.' });
+    try {
+      const data = await fsp.readFile(full);
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
+        'Content-Length': data.length,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(data);
+    } catch {
+      return sendJson(res, 404, { error: 'Datei nicht gefunden.' });
+    }
+  }
+
+  // Datei ablegen (Scan oder Foto vom Handy)
+  if (url.pathname === '/api/raw' && req.method === 'POST') {
+    if (!RAW_DIR) return sendJson(res, 501, { error: 'Kein RAW-Ordner konfiguriert (RAW_DIR fehlt).' });
+    try {
+      const data = await readBody(req);
+      if (!data.length) return sendJson(res, 400, { error: 'Leere Datei.' });
+      await fsp.mkdir(RAW_DIR, { recursive: true });
+      const name = await freeRawName(url.searchParams.get('name') || req.headers['x-filename']);
+      // Erst .part schreiben, dann umbenennen – so sieht niemand halbe Dateien
+      const finalPath = path.join(RAW_DIR, name);
+      const tmpPath = path.join(RAW_DIR, `.${name}.part`);
+      await fsp.writeFile(tmpPath, data);
+      await fsp.rename(tmpPath, finalPath);
+      return sendJson(res, 200, { ok: true, name, bytes: data.length });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Datei aus dem RAW-Ordner entfernen (nach der Übergabe an Paperless)
+  if (url.pathname === '/api/raw' && req.method === 'DELETE') {
+    const full = rawPath(url.searchParams.get('name'));
+    if (!full) return sendJson(res, 400, { error: 'Ungültiger Name.' });
+    try {
+      await fsp.unlink(full);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      if (e.code === 'ENOENT') return sendJson(res, 200, { ok: true });   // schon weg
+      return sendJson(res, 500, { error: e.message });
     }
   }
 
@@ -225,6 +342,7 @@ server.listen(port, () => {
   console.log(`  Scanner:      ${SCANNER_HOST ? SCANNER_HOST : '— (nicht konfiguriert)'}`);
   console.log(`  Zielordner:   ${CONSUME_DIR ? CONSUME_DIR : '— (nicht konfiguriert)'}`);
   console.log(`  Profilspeicher: ${profileEnabled ? DATA_DIR : '— (nicht beschreibbar)'}`);
+  console.log(`  RAW-Ordner:   ${RAW_DIR ? RAW_DIR : '— (nicht konfiguriert)'}`);
   if (CONSUME_DIR && !fs.existsSync(CONSUME_DIR)) {
     console.log('  ⚠️  Zielordner existiert noch nicht – wird beim ersten Speichern angelegt.');
   }

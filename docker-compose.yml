@@ -31,7 +31,12 @@ services:
       # Pfad IM CONTAINER – wird unten auf den Paperless-Ordner gemountet.
       CONSUME_DIR: "/data/consume"
 
-      # ── 3. Profilspeicher ─────────────────────────────────────────────────
+      # ── 3. Sammelordner der Vorstufe („Paperless Prepare“) ────────────────
+      # Hier landen Rohscans und Fotos, bis sie gesichtet, bearbeitet und an
+      # Paperless uebergeben werden. Leer lassen, um die Vorstufe abzuschalten.
+      RAW_DIR: "/data/raw"
+
+      # ── 4. Profilspeicher ─────────────────────────────────────────────────
       # Einstellungen & Unterschriften liegen auf dem eigenen Server, damit sie
       # auf iPhone UND Laptop gelten. Nur in dieser selbst gehosteten Variante –
       # die öffentliche GitHub-Pages-Version bleibt rein lokal im Browser.
@@ -44,12 +49,18 @@ services:
       #   gemeinsames Docker-Volume:     paperless_consume:/data/consume
       - "${CONSUME_HOST_PATH:-./consume}:/data/consume"
 
+      # Sammelordner „Scanner_RAW“ – am besten ein Ordner, in den du auch vom
+      # Rechner aus schauen kannst:
+      #   - /DATA/Scanner_RAW:/data/raw
+      - "${RAW_HOST_PATH:-pdfpresser_raw}:/data/raw"
+
       # Profilspeicher – eigenes Volume, sonst sind Unterschriften nach einem
       # Container-Update weg.
       - pdfpresser_data:/data/app
 
 volumes:
   pdfpresser_data:
+  pdfpresser_raw:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Variante: NAS-Freigabe direkt einbinden (statt sie auf dem Host zu mounten).

@@ -383,6 +383,91 @@ output { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-n
   50%      { opacity: 1;    transform: scale(1.06); }
 }
 
+/* ─────────────── Paperless Prepare (Vorstufe) ─────────────── */
+
+.prep-card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background-image: linear-gradient(to bottom, var(--glass-hi), transparent 40%);
+  background-color: var(--glass-2);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  animation: rise var(--fast) var(--ease) both;
+}
+.prep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.prep-head strong { display: inline-flex; align-items: center; gap: 8px; letter-spacing: -0.015em; }
+.prep-sel-info { color: var(--muted); font-size: 12.5px; flex: 1; min-width: 120px; }
+
+.prep-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+
+.prep-defaults {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--glass-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+.prep-defaults-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.prep-defaults label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.prep-defaults select { min-height: 40px; }
+.prep-check input { accent-color: var(--accent-strong); width: 17px; height: 17px; }
+
+.prep-selectall {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.prep-selectall input { accent-color: var(--accent-strong); width: 17px; height: 17px; }
+
+.prep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 2px;
+}
+.prep-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--glass-2);
+  cursor: pointer;
+  transition: border-color var(--fast), background var(--fast);
+}
+.prep-item:hover { border-color: hsl(var(--tint) / 0.45); }
+.prep-item:has(input:checked) { border-color: hsl(var(--tint) / 0.7); background: var(--accent-soft); }
+.prep-item input { accent-color: var(--accent-strong); width: 19px; height: 19px; flex: none; }
+.prep-ic { color: var(--accent); display: inline-flex; flex: none; }
+.prep-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.prep-name { font-weight: 600; overflow-wrap: anywhere; font-size: 13.5px; }
+.prep-meta { color: var(--muted); font-size: 12px; }
+
+.prep-status { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; min-height: 1em; }
+.prep-status.ok { color: var(--ok); }
+.prep-status.err { color: var(--err); }
+.prep-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
 /* Scanner-Einstellungen unter den Quellen-Kacheln */
 .scan-settings {
   display: flex;
