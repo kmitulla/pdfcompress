@@ -2,13 +2,38 @@
 // Zuschnitt, Rotation, Signatur-Verarbeitung, Formulare, Daten-Export und
 // vor allem: Bearbeitung + anschließende Kompression erfasst alles.
 import { test, expect } from '@playwright/test';
+import { ready as appReady, assertNoRawMarkup } from './helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
 async function ready(page) {
-  await page.goto('/');
-  await page.waitForFunction(() => window.__pdfpresser && window.__pdfeditor && window.PDFLib);
+  await appReady(page);
+  await page.waitForFunction(() => window.__pdfeditor);
 }
+
+/** PDF als Dokument anlegen und über den Inspektor den Editor öffnen. */
+async function openEditorWith(page, make) {
+  await page.evaluate(async (makeSrc) => {
+    // eslint-disable-next-line no-eval
+    const bytes = await (eval(makeSrc))();
+    await window.__pdfpresser.addPdfDoc(new Uint8Array(bytes), 'edit.pdf', { kind: 'pdf' });
+  }, make);
+  await page.click('#inspector [data-act="edit"]');
+  await expect(page.locator('#editorRoot .ed-overlay')).toBeVisible();
+  await page.waitForFunction(() => /^1\//.test(document.querySelector('#edPageInfo')?.textContent || ''));
+}
+
+const twoPages = (n) => `(async () => {
+  const { PDFDocument, rgb } = window.PDFLib;
+  const doc = await PDFDocument.create();
+  for (let i = 0; i < ${n}; i++) {
+    const p = doc.addPage([595.28, 841.89]);
+    p.drawRectangle({ x: 60, y: 700 - i * 40, width: 300, height: 20, color: rgb(0.1, 0.1, 0.1) });
+  }
+  return doc.save();
+})`;
+
+const edited = (page) => page.evaluate(() => Array.from(window.__pdfpresser.state.docs[0].bytes));
 
 // Rendert Seite n und liefert Text + Pixelstatistik einer Region
 const INSPECT = `
@@ -238,103 +263,176 @@ test('Formular: Felder füllen und einbrennen', async ({ page }) => {
   expect(res.fieldsLeft).toBe(0);
 });
 
-test('UI: Bearbeiten -> Unterschrift zeichnen -> Kompression erfasst alles', async ({ page }) => {
-  test.setTimeout(240000);
-  page.on('dialog', (d) => d.accept());
-  await ready(page);
 
-  // Quelldatei laden
-  await page.evaluate(async () => {
+
+test('UI: Bearbeiten -> Text & Unterschrift -> Kompression erfasst alles', async ({ page }) => {
+  test.setTimeout(240000);
+  await ready(page);
+  await openEditorWith(page, `(async () => {
     const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.Helvetica);
-    const p = doc.addPage([595.28, 841.89]);
-    p.drawText('Vertrag – bitte unterschreiben', { x: 60, y: 760, size: 22, font, color: rgb(0, 0, 0) });
-    const bytes = await doc.save();
-    const file = new File([bytes], 'vertrag.pdf', { type: 'application/pdf' });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    const input = document.querySelector('#fileInput');
-    input.files = dt.files;
-    input.dispatchEvent(new Event('change'));
-  });
-  await expect(page.locator('.file-item')).toHaveCount(1);
+    doc.addPage([595.28, 841.89]).drawText('Vertrag – bitte unterschreiben', { x: 60, y: 760, size: 22, font, color: rgb(0, 0, 0) });
+    return doc.save();
+  })`);
 
-  // Editor öffnen
-  await page.locator('.btn-edit').click();
-  await expect(page.locator('#edCanvas')).toBeVisible();
-  await page.waitForFunction(() => document.querySelector('#edPageInfo')?.textContent === '1/1');
-
-  // Text-Werkzeug: Text platzieren und ändern
   await page.locator('[data-tool="text"]').click();
-  const stage = page.locator('#edStage');
-  const sb = await stage.boundingBox();
+  const sb = await page.locator('#edStage').boundingBox();
   await page.mouse.click(sb.x + sb.width * 0.35, sb.y + sb.height * 0.3);
   await expect(page.locator('#edTextInput')).toBeVisible();
   await page.locator('#edTextInput').fill('Gelesen und akzeptiert');
 
-  // Unterschrift zeichnen und einfügen
   await page.locator('[data-tool="sign"]').click();
   await expect(page.locator('#sigPad')).toBeVisible();
   const pad = await page.locator('#sigPad').boundingBox();
   await page.mouse.move(pad.x + pad.width * 0.2, pad.y + pad.height * 0.6);
   await page.mouse.down();
-  for (let i = 1; i <= 10; i++) {
-    await page.mouse.move(pad.x + pad.width * (0.2 + i * 0.06), pad.y + pad.height * (0.6 + Math.sin(i) * 0.15));
-  }
+  for (let i = 1; i <= 10; i++) await page.mouse.move(pad.x + pad.width * (0.2 + i * 0.06), pad.y + pad.height * (0.6 + Math.sin(i) * 0.15));
   await page.mouse.up();
-  await page.locator('#sigUseDrawn').click(); // speichert auch in der Bibliothek
-  // Warten, bis das Modal zu ist und der Platzierungsmodus aktiv ist
+  await page.locator('#sigUseDrawn').click();
   await page.waitForFunction(() => document.querySelector('#edModal').classList.contains('hidden'));
-  await page.waitForTimeout(150);
-  // Platzieren: unten mittig
+  await expect(page.locator('.toast')).toContainText('Unterschrift');   // Hinweis statt alert()
   await page.mouse.click(sb.x + sb.width * 0.5, sb.y + sb.height * 0.7);
   await page.waitForTimeout(150);
 
-  // Übernehmen
   await page.locator('#edApply').click();
-  await expect(page.locator('.file-status')).toContainText('Bearbeitet', { timeout: 30000 });
+  await expect(page.locator('.doc .doc-status')).toContainText('Bearbeitet', { timeout: 30000 });
+  await expect(page.locator('.doc .doc-tags')).toContainText('bearbeitet');
 
-  // Verlustfrei komprimieren -> Text muss durchsuchbar enthalten sein
-  await page.locator('input[name="preset"][value="verlustfrei"]').check();
-  await page.locator('#startBtn').click();
-  await expect(page.locator('.file-status')).toContainText('Fertig', { timeout: 60000 });
+  // Verlustfrei: Text bleibt durchsuchbar
+  await page.click('.profile:has(input[value="verlustfrei"])');
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 60000 });
   const lossless = await page.evaluate(async () => {
-    const bytes = window.__pdfpresser.items[0].result;
     const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
-    const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+    const doc = await pdfjs.getDocument({ data: window.__pdfpresser.state.docs[0].result.slice() }).promise;
     const tc = await (await doc.getPage(1)).getTextContent();
-    const text = tc.items.map((i) => i.str).join(' ');
     await doc.destroy();
-    return text;
+    return tc.items.map((i) => i.str).join(' ');
   });
   expect(lossless).toContain('Gelesen und akzeptiert');
 
-  // Extrem S/W komprimieren -> Unterschrift muss im Raster sichtbar sein
-  await page.locator('input[name="preset"][value="extrem-sw"]').check();
-  await page.locator('#startBtn').click();
-  await expect(page.locator('.file-status')).toContainText('Fertig', { timeout: 120000 });
-  const swMarks = await page.evaluate(async ({ inspect }) => {
+  // Scan S/W: Unterschrift steckt im Raster
+  await page.click('.profile:has(input[value="extrem-sw"])');
+  await page.locator('#inspOcr').evaluate((el) => { if (el.checked) el.click(); });
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 120000 });
+  const sw = await page.evaluate(async ({ inspect }) => {
     eval(inspect);
-    const bytes = window.__pdfpresser.items[0].result;
-    const mid = await inspectRegion(bytes, 1, 0.15, 0.55, 0.7, 0.35);
-    return { frac: mid.frac, pages: mid.numPages };
+    return inspectRegion(window.__pdfpresser.state.docs[0].result, 1, 0.15, 0.55, 0.7, 0.35);
   }, { inspect: INSPECT });
-  expect(swMarks.pages).toBe(1);
-  expect(swMarks.frac).toBeGreaterThan(0.002); // Unterschrift im komprimierten PDF
+  expect(sw.numPages).toBe(1);
+  expect(sw.frac).toBeGreaterThan(0.002);
 
-  // Export/Import-Roundtrip: gespeicherte Unterschrift übersteht den Umzug
+  // Export/Import-Roundtrip der Unterschriften
   const roundtrip = await page.evaluate(async () => {
-    const blob = await window.__pdfpresser.exportAllData();
-    const json = await blob.text();
-    const parsed = JSON.parse(json);
-    const count = parsed.signatures.length;
+    const json = await (await window.__pdfpresser.exportAllData()).text();
+    const count = JSON.parse(json).signatures.length;
     await window.__pdfpresser.importAllData(json);
-    const blob2 = await window.__pdfpresser.exportAllData();
-    const parsed2 = JSON.parse(await blob2.text());
-    return { count, countAfter: parsed2.signatures.length, sameName: parsed.signatures[0]?.name === parsed2.signatures[0]?.name };
+    const again = JSON.parse(await (await window.__pdfpresser.exportAllData()).text()).signatures.length;
+    return { count, again };
   });
   expect(roundtrip.count).toBeGreaterThanOrEqual(1);
-  expect(roundtrip.countAfter).toBe(roundtrip.count);
-  expect(roundtrip.sameName).toBe(true);
+  expect(roundtrip.again).toBe(roundtrip.count);
+});
+
+/** Ein echtes Bild als Datei für die Eingabefelder */
+async function imageBuffer(page, color = '#3366aa') {
+  const bytes = await page.evaluate(async (c) => {
+    const cv = document.createElement('canvas');
+    cv.width = 600; cv.height = 800;
+    const x = cv.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 600, 800);
+    x.fillStyle = c; x.fillRect(80, 120, 440, 560);
+    const b = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  }, color);
+  return Buffer.from(bytes);
+}
+
+test('Seitenverwaltung: Fotos/Kamera anfügen, umsortieren, löschen, alles auf A4', async ({ page }) => {
+  await ready(page);
+  await openEditorWith(page, twoPages(3));
+  await page.click('#edPagesBtn');
+  await expect.poll(() => page.locator('.ed-pagecell').count()).toBe(3);
+  await assertNoRawMarkup(expect, page, '#edModal');
+  expect(await page.locator('#edPageCamInput').getAttribute('capture')).toBe('environment');
+
+  await page.setInputFiles('#edPagePhotoInput', [
+    { name: 'a.png', mimeType: 'image/png', buffer: await imageBuffer(page, '#3366aa') },
+  ]);
+  await expect.poll(() => page.locator('.ed-pagecell').count(), { timeout: 20000 }).toBe(4);
+  await expect(page.locator('.ed-pagecell').nth(3)).toContainText('(Bild)');
+
+  // Erste Seite nach hinten, danach die (neue) erste löschen
+  await page.locator('.ed-pagecell').nth(0).locator('.btn[aria-label="Nach hinten schieben"]').click();
+  await page.locator('.ed-pagecell').nth(0).locator('.btn[aria-label="Seite löschen"]').click();
+  await expect.poll(() => page.locator('.ed-pagecell').count()).toBe(3);
+  await page.click('#edAllA4');
+  await page.click('#edPagesClose');
+  await page.click('#edApply');
+  await expect(page.locator('.doc .doc-status')).toContainText('Bearbeitet', { timeout: 40000 });
+  const sizes = await page.evaluate(async () => {
+    const doc = await window.PDFLib.PDFDocument.load(window.__pdfpresser.state.docs[0].bytes.slice());
+    return doc.getPages().map((p) => [Math.round(p.getWidth()), Math.round(p.getHeight())]);
+  });
+  expect(sizes).toEqual([[595, 842], [595, 842], [595, 842]]);
+  expect(await page.evaluate(() => window.__pdfpresser.state.docs[0].pages)).toBe(3);
+});
+
+test('Editor: Textgröße kennt keine Obergrenze', async ({ page }) => {
+  await ready(page);
+  await openEditorWith(page, twoPages(1));
+  await page.click('[data-tool="text"]');
+  const box = await page.locator('#edStage').boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.locator('#edTextSizeNum')).toBeVisible();
+  await page.fill('#edTextSizeNum', '240');
+  await page.dispatchEvent('#edTextSizeNum', 'input');
+  const size = () => page.evaluate(() => window.__pdfeditorState().state.pages[0].objects.find((o) => o.type === 'text').size);
+  expect(await size()).toBe(240);
+  await page.click('#edTextSizeUp');
+  expect(await size()).toBeGreaterThan(240);
+  await page.click('#edCancel');
+});
+
+test('Editor: weißer Radierer übermalt und bleibt im PDF erhalten', async ({ page }) => {
+  await ready(page);
+  await openEditorWith(page, `(async () => {
+    const { PDFDocument, rgb } = window.PDFLib;
+    const doc = await PDFDocument.create();
+    const p = doc.addPage([300, 300]);
+    p.drawRectangle({ x: 0, y: 0, width: 300, height: 300, color: rgb(1, 1, 1) });
+    p.drawRectangle({ x: 40, y: 130, width: 220, height: 40, color: rgb(0, 0, 0) });
+    return doc.save();
+  })`);
+  await page.click('[data-tool="whiteout"]');
+  await expect(page.locator('#edWhiteWidthNum')).toBeVisible();
+  await page.fill('#edWhiteWidthNum', '40');
+  await page.dispatchEvent('#edWhiteWidthNum', 'input');
+  const box = await page.locator('#edStage').boundingBox();
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width * 0.3, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.7, y, { steps: 8 });
+  await page.mouse.up();
+  const ink = await page.evaluate(() => window.__pdfeditorState().state.pages[0].objects.filter((x) => x.type === 'ink').map((x) => x.color));
+  expect(ink).toEqual(['#ffffff']);
+  await page.click('#edApply');
+  await expect(page.locator('.doc .doc-status')).toContainText('Bearbeitet', { timeout: 30000 });
+  const mid = await page.evaluate(async () => {
+    const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
+    const doc = await pdfjs.getDocument({ data: window.__pdfpresser.state.docs[0].bytes.slice() }).promise;
+    const p = await doc.getPage(1);
+    const vp = p.getViewport({ scale: 1 });
+    const c = document.createElement('canvas');
+    c.width = vp.width; c.height = vp.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    await p.render({ canvasContext: ctx, viewport: vp }).promise;
+    const d = ctx.getImageData(Math.round(c.width / 2), Math.round(c.height / 2), 1, 1).data;
+    await doc.destroy();
+    return d[0];
+  });
+  expect(mid, 'Balkenmitte ist weiß übermalt').toBeGreaterThan(200);
 });

@@ -2,13 +2,14 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <!-- maximum-scale/user-scalable: App-Gefühl – kein Zoomen der ganzen Seite per Doppeltipp/Pinch (Inhalte zoomen weiterhin in Editor & Scanner) -->
+  <!-- App-Gefühl: kein Zoomen der ganzen Seite per Doppeltipp (Inhalte zoomen in Vorschau, Editor & Studio) -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>PDF Presser – Lokaler PDF-Kompressor</title>
-  <meta name="description" content="PDF-Dateien direkt im Browser verkleinern – 100 % lokal, ohne Upload, offline nutzbar. Mit einstellbarer Kompression, S/W-Scan-Modus und optionalem OCR-Textlayer.">
-  <meta name="theme-color" content="#070a12" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#eef1f7" media="(prefers-color-scheme: light)">
+  <title>PDF Presser</title>
+  <meta name="description" content="PDFs, Fotos und Scans verkleinern, auf DIN A4 bringen, durchsuchbar machen und an Paperless senden – alles lokal im Browser.">
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f4f8" media="(prefers-color-scheme: light)">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PDF Presser">
   <link rel="manifest" href="manifest.webmanifest">
@@ -17,328 +18,354 @@
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <img src="icons/favicon-32.png" alt="" width="28" height="28" class="logo">
-      <h1>PDF&nbsp;Presser</h1>
-      <span class="badge badge-local" id="localBadge" title="Verarbeitung läuft auf diesem Gerät. Es findet kein Upload statt."><i data-icon="lock" data-icon-size="14"></i> Verarbeitung auf diesem Gerät</span>
-      <span class="badge badge-offline hidden" id="offlineReadyBadge" title="Die App ist im Browser zwischengespeichert und funktioniert auch ohne Internet."><i data-icon="offline" data-icon-size="14"></i> Offline bereit</span>
-    </div>
-  </header>
-
-  <main class="layout">
-    <!-- ───────────────── Einstellungen ───────────────── -->
-    <aside class="panel settings" aria-label="Einstellungen">
-      <h2><i data-icon="sliders"></i> Kompression</h2>
-
-      <div class="preset-list" id="presetList" role="radiogroup" aria-label="Kompressionsstufe">
-        <label class="preset">
-          <input type="radio" name="preset" value="verlustfrei">
-          <span class="preset-body">
-            <span class="preset-name">Verlustfrei</span>
-            <span class="preset-desc">Nur Struktur-Optimierung, Qualität &amp; Text bleiben unangetastet</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="leicht">
-          <span class="preset-body">
-            <span class="preset-name">Leicht</span>
-            <span class="preset-desc">Farbe · 200 dpi · hohe Bildqualität</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="mittel" checked>
-          <span class="preset-body">
-            <span class="preset-name">Mittel <em>(empfohlen)</em></span>
-            <span class="preset-desc">Farbe · 150 dpi · gute Balance aus Größe und Qualität</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="stark">
-          <span class="preset-body">
-            <span class="preset-name">Stark</span>
-            <span class="preset-desc">Farbe · 110 dpi · deutlich kleinere Dateien</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="extrem-grau">
-          <span class="preset-body">
-            <span class="preset-name">Extrem (Graustufen)</span>
-            <span class="preset-desc">Graustufen · 100 dpi · sehr kleine Dateien</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="extrem-farbe">
-          <span class="preset-body">
-            <span class="preset-name">Extrem Farbe – „Scanner-Stil“</span>
-            <span class="preset-desc">Reduzierte Farbpalette (16 Farben) · 150 dpi · so komprimieren Büroscanner Farbscans: flache Farben, sauberer weißer Hintergrund, sehr klein</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="extrem-sw">
-          <span class="preset-body">
-            <span class="preset-name">Extrem S/W – „Scanner-Stil“</span>
-            <span class="preset-desc">1-Bit Schwarz-Weiß · 300 dpi · CCITT-G4-Fax-Kompression wie bei Büroscannern – Text bleibt gestochen scharf, wenige KB pro Seite</span>
-          </span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="custom">
-          <span class="preset-body">
-            <span class="preset-name">Benutzerdefiniert</span>
-            <span class="preset-desc">Farbmodus, Auflösung und Qualität selbst festlegen</span>
-          </span>
-        </label>
-      </div>
-
-      <div class="field hidden" id="extremeDpiField">
-        <label for="extremeDpi">Auflösung der Extrem-Stufe</label>
-        <select id="extremeDpi">
-          <option value="">Standard (S/W 300 · Farbe 150 · Grau 100 dpi)</option>
-          <option value="100">100 dpi</option>
-          <option value="150">150 dpi</option>
-          <option value="200">200 dpi</option>
-          <option value="300">300 dpi</option>
-          <option value="400">400 dpi</option>
-          <option value="600">600 dpi</option>
-        </select>
-      </div>
-
-      <fieldset class="custom-panel hidden" id="customPanel">
-        <legend>Eigene Einstellungen</legend>
-        <div class="field">
-          <label for="colorMode">Farbmodus</label>
-          <select id="colorMode">
-            <option value="color">Farbe (JPEG)</option>
-            <option value="gray">Graustufen (JPEG)</option>
-            <option value="indexed">Farbe reduziert – 16 Farben (Scanner-Stil)</option>
-            <option value="bw">Schwarz-Weiß 1-Bit (CCITT G4)</option>
-          </select>
+  <div class="app" id="app">
+    <!-- ─────────────── Seitenleiste (Desktop) ─────────────── -->
+    <aside class="sidebar" aria-label="Navigation">
+      <div class="brand">
+        <img src="icons/favicon-32.png" alt="" width="30" height="30">
+        <div>
+          <strong>PDF Presser</strong>
+          <span id="brandSub">Lokal &amp; privat</span>
         </div>
-        <div class="field">
-          <label for="dpi">Auflösung: <output id="dpiOut">150</output> dpi</label>
-          <input type="range" id="dpi" min="72" max="400" step="1" value="150">
+      </div>
+
+      <nav class="nav" aria-label="Bereiche">
+        <button class="nav-item active" data-view="docs" aria-current="page">
+          <i data-icon="docStack"></i><span>Dokumente</span><em class="count" id="navDocCount"></em>
+        </button>
+        <button class="nav-item hidden" data-view="inbox" id="navInbox">
+          <i data-icon="inbox"></i><span>Sammelordner</span><em class="count" id="navRawCount"></em>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <i data-icon="gear"></i><span>Einstellungen</span>
+        </button>
+      </nav>
+
+      <div class="side-foot">
+        <div class="status-line" title="Rendern, Komprimieren und Texterkennung laufen auf diesem Gerät. Es findet kein Upload statt.">
+          <i data-icon="lock" data-icon-size="15"></i><span>Verarbeitung auf diesem Gerät</span>
         </div>
-        <div class="field" id="qualityField">
-          <label for="quality">JPEG-Qualität: <output id="qualityOut">60</output> %</label>
-          <input type="range" id="quality" min="10" max="95" step="1" value="60">
-        </div>
-      </fieldset>
-
-      <div class="field hidden" id="biasField">
-        <label for="bwBias">Helligkeit (S/W &amp; Scanner-Stil): <output id="bwBiasOut">0</output></label>
-        <input type="range" id="bwBias" min="-40" max="40" step="1" value="0">
-        <small>+ heller (mehr Weiß) · − dunkler (mehr Details/Schwarz). Wirkung unten in der Vorschau prüfen.</small>
-      </div>
-
-      <div class="field hidden" id="contrastField">
-        <label for="bwContrast">Kontrast: <output id="bwContrastOut">0</output></label>
-        <input type="range" id="bwContrast" min="-50" max="50" step="1" value="0">
-        <small>+ nimmt auch schwachen Text mit (blasse Vorlagen) · − lässt nur kräftige Tinte stehen (weniger Rauschen).</small>
-      </div>
-
-      <div class="field hidden" id="darkAreasField">
-        <label for="darkAreas">Dunkle Flächen</label>
-        <select id="darkAreas">
-          <option value="auto" selected>Automatisch</option>
-          <option value="invert">Als Farbbalken (weiße Schrift lesbar halten)</option>
-          <option value="ignore">Ignorieren (nicht schwärzen)</option>
-        </select>
-        <small>Bei Fotos oder Bildschirmaufnahmen mit dunklen Rändern hilft „Ignorieren“, damit der Rand nicht schwarz zuläuft.</small>
-      </div>
-
-      <h2><i data-icon="text_search"></i> Texterkennung (OCR)</h2>
-      <div class="field field-row">
-        <input type="checkbox" id="ocrEnabled">
-        <label for="ocrEnabled">Unsichtbaren OCR-Textlayer einfügen<br><small>macht gescannte PDFs durchsuchbar &amp; kopierbar</small></label>
-      </div>
-      <div class="field hidden" id="ocrLangField">
-        <label for="ocrLang">Sprache</label>
-        <select id="ocrLang">
-          <option value="deu" selected>Deutsch</option>
-          <option value="eng">Englisch</option>
-          <option value="deu+eng">Deutsch + Englisch</option>
-        </select>
-      </div>
-      <p class="hint hidden" id="ocrLosslessHint">OCR ist nur bei den Bild-Modi verfügbar, nicht bei „Verlustfrei“.</p>
-
-      <p class="hint">Bei allen Stufen außer „Verlustfrei“ werden die Seiten neu als Bild aufgebaut. Vorhandener Text ist danach nicht mehr auswählbar – aktiviere OCR, um ihn wieder durchsuchbar zu machen.</p>
-
-      <h2><i data-icon="folder"></i> Speichern</h2>
-      <div id="saveSection">
-        <div class="field field-row hidden" id="autoPaperlessField">
-          <input type="checkbox" id="autoPaperless">
-          <label for="autoPaperless">Nach dem Komprimieren automatisch an Paperless senden<br><small>fertige PDFs landen direkt im überwachten Ordner</small></label>
-        </div>
-        <button class="btn btn-small" id="pickOutDirBtn"><i data-icon="folder"></i> Zielordner wählen …</button>
-        <p class="hint hidden" id="outDirInfo"></p>
-        <div class="field field-row hidden" id="autoSaveField">
-          <input type="checkbox" id="autoSave" checked>
-          <label for="autoSave">Ergebnisse automatisch in den Zielordner speichern</label>
-        </div>
-        <p class="hint hidden" id="fsUnsupportedHint">Direktes Speichern in einen Ordner unterstützt dein Browser nicht (nur Chrome/Edge). Der normale Download funktioniert immer.</p>
-      </div>
-
-      <h2><i data-icon="upload"></i> Import-Ordner</h2>
-      <div id="importSection">
-        <button class="btn btn-small" id="pickImportDirBtn"><i data-icon="folder"></i> Import-Ordner wählen …</button>
-        <button class="btn btn-small btn-ghost hidden" id="rescanImportBtn"><i data-icon="rotate"></i> Neu scannen</button>
-        <div class="import-list hidden" id="importList"></div>
-      </div>
-
-      <h2><i data-icon="device"></i> Meine Daten</h2>
-      <div id="dataSection">
-        <p class="hint">Unterschriften &amp; Einstellungen bleiben lokal in diesem Browser gespeichert. Zum Umzug: exportieren und im anderen Browser importieren.</p>
-        <div class="sync-row hidden" id="syncRow">
-          <i data-icon="cloud"></i>
-          <span id="syncInfo">Server-Speicher aktiv – Unterschriften &amp; Einstellungen gelten auf allen deinen Geräten.</span>
-        </div>
-        <button class="btn btn-small" id="exportDataBtn"><i data-icon="download"></i> Daten exportieren</button>
-        <button class="btn btn-small" id="importDataBtn"><i data-icon="upload"></i> Daten importieren</button>
-        <input type="file" id="importDataInput" accept="application/json,.json" hidden>
-        <p class="hint hidden" id="dataInfo"></p>
+        <div class="status-line hidden" id="statusScanner"><span class="dot"></span><span>Scanner</span></div>
+        <div class="status-line hidden" id="statusPaperless"><i data-icon="send" data-icon-size="15"></i><span>Paperless verbunden</span></div>
+        <div class="status-line hidden" id="statusOffline"><i data-icon="offline" data-icon-size="15"></i><span>Offline bereit</span></div>
       </div>
     </aside>
 
-    <!-- ───────────────── Dateien ───────────────── -->
-    <section class="panel work" aria-label="Dateien">
-      <div class="source-row">
-        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF-Dateien auswählen oder hierher ziehen">
-          <div class="dropzone-icon"><i data-icon="docPlus" data-icon-size="34"></i></div>
-          <p class="dropzone-title">PDF hierher ziehen<br>oder tippen zum Auswählen</p>
-          <p class="dropzone-sub">Mehrere Dateien möglich · verlässt nie dein Gerät</p>
-          <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
-        </div>
-        <div class="dropzone scanzone" id="scanBtn" tabindex="0" role="button" aria-label="Dokument mit Kamera oder aus Bildern scannen">
-          <div class="dropzone-icon"><i data-icon="camera" data-icon-size="30"></i></div>
-          <p class="dropzone-title">Kamera-Scan</p>
-          <p class="dropzone-sub">Kamera oder Bilddateien · automatische Randerkennung · A4 &amp; Perspektivkorrektur</p>
-        </div>
-        <div class="dropzone scanzone hidden" id="netScanBtn" tabindex="0" role="button" aria-label="Seite vom Netzwerk-Scanner einlesen">
-          <div class="dropzone-icon"><i data-icon="scanner" data-icon-size="30"></i></div>
-          <p class="dropzone-title">Netzwerk-Scanner</p>
-          <p class="dropzone-sub" id="netScanSub">Seite von der Glasfläche einlesen – mehrere Seiten sammeln, zuschneiden &amp; bearbeiten</p>
-        </div>
-      </div>
+    <!-- ─────────────── Inhalt ─────────────── -->
+    <main class="main" id="main">
+      <!-- Dokumente -->
+      <section class="view" id="viewDocs" aria-labelledby="docsTitle">
+        <header class="view-head">
+          <div class="view-title">
+            <h1 id="docsTitle">Dokumente</h1>
+            <p class="view-sub" id="docsSub">Komprimieren · DIN A4 · Texterkennung · Paperless</p>
+          </div>
+          <div class="toolbar" id="docsToolbar">
+            <div class="btn-group add-group">
+              <button class="btn touch-only" data-add="camera" title="Foto aufnehmen"><i data-icon="camera"></i><span>Foto</span></button>
+              <button class="btn" data-add="files" title="PDFs oder Bilder wählen"><i data-icon="plus"></i><span>Hinzufügen</span></button>
+              <button class="btn hidden" data-add="scanner" title="Vom Netzwerk-Scanner"><i data-icon="scanner"></i><span>Scanner</span></button>
+            </div>
+            <button class="btn btn-primary hidden" id="compressAllBtn"><i data-icon="archive"></i><span>Alle komprimieren</span></button>
+            <button class="btn btn-icon hidden" id="moreBtn" title="Weitere Aktionen" aria-label="Weitere Aktionen" aria-haspopup="menu"><i data-icon="more"></i></button>
+          </div>
+        </header>
 
-      <div class="scan-settings hidden" id="netScanSettings">
-        <span class="scan-settings-label"><i data-icon="scanner" data-icon-size="15"></i> Scanner</span>
-        <label for="scanDpi">Auflösung
-          <select id="scanDpi">
-            <option value="150">150 dpi · schnell</option>
-            <option value="200">200 dpi</option>
-            <option value="300" selected>300 dpi · empfohlen</option>
-            <option value="400">400 dpi</option>
-            <option value="600">600 dpi · sehr fein, langsam</option>
-          </select>
-        </label>
-        <label for="scanColor">Farbe
-          <select id="scanColor">
-            <option value="color" selected>Farbe</option>
-            <option value="gray">Graustufen</option>
-            <option value="bw">Schwarz-Weiß</option>
-          </select>
-        </label>
-        <label for="scanPages">Seiten
-          <input type="number" id="scanPages" min="1" max="99" step="1" value="1" inputmode="numeric">
-        </label>
-        <label for="scanDelay" id="scanDelayWrap">Pause
-          <input type="number" id="scanDelay" min="0" max="120" step="1" value="8" inputmode="numeric">
-          <span class="unit">s</span>
-        </label>
-        <small class="hint-inline" id="scanBatchHint">Ab 2 Seiten läuft der Scan automatisch weiter: Nach jeder Seite bleibt die eingestellte Pause zum Wechseln der Vorlage. Höhere Auflösung dauert länger und braucht mehr Rechenzeit auf deinem Gerät.</small>
-      </div>
-
-      <!-- ───────── Paperless Prepare: Vorstufe vor der Paperless-Inbox ───────── -->
-      <section class="prep-card hidden" id="prepSection" aria-label="Paperless Prepare">
-        <div class="prep-head">
-          <strong><i data-icon="archive"></i> Paperless Prepare</strong>
-          <span class="prep-sel-info" id="prepSelInfo"></span>
-          <button class="btn btn-small btn-ghost" id="prepRefreshBtn" title="Neu einlesen" aria-label="Neu einlesen"><i data-icon="rotate" data-icon-size="15"></i></button>
-        </div>
-        <p class="hint">Sammelordner auf dem Server. Hier landen Rohscans und Fotos, bis du sie geprüft, bearbeitet und an Paperless übergeben hast.</p>
-
-        <div class="prep-tools">
-          <button class="btn btn-small hidden" id="prepScanBtn"><i data-icon="scanner" data-icon-size="15"></i> In Sammelordner scannen</button>
-          <button class="btn btn-small" id="prepUploadBtn"><i data-icon="upload" data-icon-size="15"></i> Fotos / PDFs ablegen</button>
-          <input type="file" id="prepUploadInput" accept="application/pdf,image/*,.pdf,.png,.jpg,.jpeg,.heic,.heif,.webp" multiple hidden>
+        <div class="empty" id="emptyState">
+          <div class="empty-hero">
+            <div class="empty-orb"><i data-icon="docPlus" data-icon-size="44"></i></div>
+            <h2>Was möchtest du verkleinern?</h2>
+            <p>PDFs, Fotos oder Scans – alles bleibt auf deinem Gerät.<span class="wide-only"><br>Ziehe Dateien einfach hierher.</span></p>
+          </div>
+          <div class="empty-actions">
+            <button class="tile touch-only" data-add="camera">
+              <span class="tile-icon"><i data-icon="camera" data-icon-size="26"></i></span>
+              <span class="tile-text"><strong>Foto aufnehmen</strong><small>Kamera öffnen – Ränder &amp; A4 automatisch</small></span>
+            </button>
+            <button class="tile" data-add="files">
+              <span class="tile-icon"><i data-icon="docPlus" data-icon-size="26"></i></span>
+              <span class="tile-text"><strong>Dateien &amp; Bilder</strong><small>PDF, JPG, PNG, HEIC – mehrere auf einmal</small></span>
+            </button>
+            <button class="tile hidden" data-add="scanner">
+              <span class="tile-icon"><i data-icon="scanner" data-icon-size="26"></i></span>
+              <span class="tile-text"><strong>Netzwerk-Scanner</strong><small>Exakt A4 von der Glasfläche, auch mehrseitig</small></span>
+            </button>
+          </div>
         </div>
 
-        <div class="prep-defaults">
-          <span class="prep-defaults-label">Standard beim Übernehmen</span>
-          <label for="prepPreset">Stufe
-            <select id="prepPreset">
-              <option value="">unverändert lassen</option>
-              <option value="mittel">Mittel</option>
-              <option value="stark">Stark</option>
-              <option value="extrem-grau">Extrem (Graustufen)</option>
-              <option value="extrem-farbe">Extrem Farbe</option>
-              <option value="extrem-sw" selected>Extrem S/W (300 dpi)</option>
-            </select>
-          </label>
-          <label class="prep-check"><input type="checkbox" id="prepOcr" checked> mit OCR</label>
-        </div>
-
-        <label class="prep-selectall"><input type="checkbox" id="prepSelectAll"> Alle auswählen</label>
-        <div class="prep-list" id="prepList"></div>
-        <p class="prep-status" id="prepStatus"></p>
-
-        <div class="prep-actions">
-          <button class="btn btn-primary btn-small" id="prepOpenBtn" disabled><i data-icon="docStack" data-icon-size="15"></i> Übernehmen &amp; bearbeiten</button>
-          <button class="btn btn-small btn-ghost" id="prepDeleteBtn" disabled><i data-icon="trash" data-icon-size="15"></i> Aus Sammelordner löschen</button>
-        </div>
+        <div class="doc-list" id="docList" role="list"></div>
       </section>
 
-      <p class="hint scan-hint hidden" id="scanHint">Scan als PDF hinzugefügt – wähle jetzt die <strong>Kompressionsstufe bzw. den „Scan-Stil“</strong> und starte <strong>Komprimieren</strong>.</p>
-
-      <ul class="file-list" id="fileList"></ul>
-
-      <div class="actions hidden" id="actions">
-        <button class="btn btn-primary" id="startBtn"><i data-icon="archive"></i> Komprimieren</button>
-        <button class="btn" id="previewBtn"><i data-icon="eye"></i> Vorschau</button>
-        <button class="btn" id="downloadAllBtn" disabled><i data-icon="download"></i> Alle herunterladen</button>
-        <button class="btn hidden" id="sendAllBtn"><i data-icon="upload"></i> Alle an Paperless</button>
-        <button class="btn hidden" id="mergeBtn"><i data-icon="docStack"></i> Zu einer PDF zusammenführen</button>
-        <button class="btn btn-ghost" id="clearBtn"><i data-icon="trash"></i> Liste leeren</button>
-      </div>
-
-      <div class="panel preview-card hidden" id="previewCard">
-        <div class="preview-head">
-          <strong><i data-icon="eye"></i> Vorschau</strong>
-          <span class="preview-nav">
-            <button class="btn btn-small" id="prevPageBtn" title="Vorherige Seite" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="15"></i></button>
-            <span id="previewPageInfo" class="preview-pageinfo">1/1</span>
-            <button class="btn btn-small" id="nextPageBtn" title="Nächste Seite" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="15"></i></button>
-          </span>
-          <span id="previewInfo" class="preview-info"></span>
-          <button class="btn btn-small btn-ghost" id="closePreviewBtn"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
+      <!-- Sammelordner („Paperless Prepare“) -->
+      <section class="view hidden" id="viewInbox" aria-labelledby="inboxTitle">
+        <header class="view-head">
+          <div class="view-title">
+            <h1 id="inboxTitle">Sammelordner</h1>
+            <p class="view-sub" id="inboxSub">Rohscans und Fotos sammeln, sichten – erst dann an Paperless.</p>
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="rawUploadBtn"><i data-icon="upload"></i><span>Ablegen</span></button>
+            <button class="btn hidden" id="rawScanBtn"><i data-icon="scanner"></i><span>Scannen</span></button>
+            <button class="btn btn-icon" id="rawRefreshBtn" title="Neu einlesen" aria-label="Neu einlesen"><i data-icon="rotate"></i></button>
+          </div>
+        </header>
+        <div class="selbar" id="rawSelbar">
+          <label class="check"><input type="checkbox" id="rawSelectAll"><span>Alle</span></label>
+          <span class="selbar-info" id="rawSelInfo"></span>
+          <span class="spacer"></span>
+          <button class="btn btn-small btn-danger-ghost" id="rawDeleteBtn" disabled><i data-icon="trash" data-icon-size="16"></i><span>Löschen</span></button>
+          <button class="btn btn-small btn-primary" id="rawOpenBtn" disabled><i data-icon="docStack" data-icon-size="16"></i><span>Als Dokument öffnen</span></button>
         </div>
-        <div class="preview-override">
-          <label for="pageOverrideSel">Nur diese Seite:</label>
-          <select id="pageOverrideSel">
-            <option value="">Globale Einstellung</option>
-            <option value="leicht">Leicht</option>
-            <option value="mittel">Mittel</option>
-            <option value="stark">Stark</option>
-            <option value="extrem-grau">Extrem (Graustufen)</option>
-            <option value="extrem-farbe">Extrem Farbe – „Scanner-Stil“</option>
-            <option value="extrem-sw">Extrem S/W – „Scanner-Stil“</option>
-          </select>
-          <label class="hidden" id="pageBiasWrap" for="pageBias">Helligkeit
-            <input type="range" id="pageBias" min="-40" max="40" step="1" value="0">
-            <output id="pageBiasOut">0</output>
-          </label>
-          <span class="hint-inline" id="overrideSummary"></span>
-        </div>
-        <div class="preview-body"><img id="previewImg" alt="Vorschau der Seite mit aktuellen Einstellungen"></div>
-      </div>
-    </section>
-  </main>
+        <p class="inline-status" id="rawStatus"></p>
+        <div class="raw-grid" id="rawGrid"></div>
+        <input type="file" id="rawUploadInput" accept="application/pdf,image/*,.pdf,.png,.jpg,.jpeg,.heic,.heif,.webp" multiple hidden>
+      </section>
 
-  <footer class="footer">
-    <p>PDF Presser verarbeitet alles direkt auf deinem Gerät (pdf.js, pdf-lib, Tesseract-OCR als WebAssembly). Als installierte Web-App funktioniert das Tool auch komplett offline.</p>
-  </footer>
+      <!-- Einstellungen -->
+      <section class="view hidden" id="viewSettings" aria-labelledby="settingsTitle">
+        <header class="view-head">
+          <div class="view-title">
+            <h1 id="settingsTitle">Einstellungen</h1>
+            <p class="view-sub">Werden gemerkt – mit Server sogar auf allen deinen Geräten.</p>
+          </div>
+        </header>
+
+        <div class="settings-grid">
+          <section class="card">
+            <h2><i data-icon="sliders"></i> Standard für neue Dokumente</h2>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Scans &amp; Fotos</strong><small>Kamera, Bilder, Netzwerk-Scanner, Sammelordner</small></span></div>
+              <select id="setScanProfile" class="profile-select"></select>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>PDF-Dateien</strong><small>Vorhandene PDFs</small></span></div>
+              <select id="setPdfProfile" class="profile-select"></select>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Texterkennung für Scans</strong><small>Unsichtbarer Textlayer – durchsuchbar &amp; kopierbar</small></span></div>
+              <label class="switch"><input type="checkbox" id="setScanOcr"><span></span></label>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Texterkennung für PDFs</strong><small>Sinnvoll für gescannte PDFs ohne Text</small></span></div>
+              <label class="switch"><input type="checkbox" id="setPdfOcr"><span></span></label>
+            </div>
+            <div class="row">
+              <div class="row-text"><strong>Sprache der Texterkennung</strong></div>
+              <select id="setOcrLang">
+                <option value="deu">Deutsch</option>
+                <option value="eng">Englisch</option>
+                <option value="deu+eng">Deutsch + Englisch (langsamer)</option>
+              </select>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Auf DIN A4 bringen</strong><small>Jede Seite landet auf A4 – hoch oder quer, nie verzerrt</small></span></div>
+              <label class="switch"><input type="checkbox" id="setA4" checked><span></span></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2><i data-icon="sparkle"></i> Automatik</h2>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Sofort komprimieren</strong><small>Neue Dokumente direkt mit ihrem Profil verarbeiten</small></span></div>
+              <label class="switch"><input type="checkbox" id="setAutoCompress"><span></span></label>
+            </div>
+            <div class="row needs-paperless hidden">
+              <div class="row-text"><span class="tile-text"><strong>Danach an Paperless senden</strong><small>Fertige PDFs landen ohne Extra-Tipp in Paperless</small></span></div>
+              <label class="switch"><input type="checkbox" id="setAutoPaperless"><span></span></label>
+            </div>
+            <div class="row fs-only hidden">
+              <div class="row-text"><strong>In Zielordner speichern</strong><small id="outDirInfo">Kein Ordner gewählt (nur Chrome/Edge)</small></div>
+              <button class="btn btn-small" id="pickOutDirBtn"><i data-icon="folder" data-icon-size="16"></i><span>Wählen …</span></button>
+            </div>
+          </section>
+
+          <section class="card needs-scanner hidden">
+            <h2><i data-icon="scanner"></i> Netzwerk-Scanner</h2>
+            <div class="row">
+              <div class="row-text"><strong id="scannerModel">Scanner</strong><small id="scannerState">wird geprüft …</small></div>
+              <button class="btn btn-small" id="scannerTestBtn"><i data-icon="wifi" data-icon-size="16"></i><span>Prüfen</span></button>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Anlegeecke</strong><small>Wo die Vorlage auf der Glasfläche anliegt – der A4-Ausschnitt startet dort</small></span></div>
+              <select id="setScanCorner">
+                <option value="tl">Oben links</option>
+                <option value="tr">Oben rechts</option>
+                <option value="bl">Unten links</option>
+                <option value="br">Unten rechts</option>
+              </select>
+            </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Feinjustage</strong><small>Versatz des A4-Ausschnitts in mm (+ = nach rechts/unten)</small></span></div>
+              <div class="mm-pair">
+                <label>X <input type="number" id="setScanOffX" step="0.5" min="-20" max="20" value="0" inputmode="decimal"></label>
+                <label>Y <input type="number" id="setScanOffY" step="0.5" min="-20" max="20" value="0" inputmode="decimal"></label>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2><i data-icon="device"></i> Meine Daten</h2>
+            <div class="row hidden" id="syncRow">
+              <div class="row-text"><strong>Server-Speicher</strong><small id="syncInfo">Unterschriften &amp; Einstellungen gelten auf allen deinen Geräten.</small></div>
+              <i data-icon="cloud"></i>
+            </div>
+            <div class="row">
+              <div class="row-text"><strong>Unterschriften, Stempel &amp; Einstellungen</strong><small id="dataInfo">Als Datei sichern oder in einem anderen Browser übernehmen</small></div>
+              <div class="row-buttons">
+                <button class="btn btn-small" id="exportDataBtn"><i data-icon="download" data-icon-size="16"></i><span>Export</span></button>
+                <button class="btn btn-small" id="importDataBtn"><i data-icon="upload" data-icon-size="16"></i><span>Import</span></button>
+              </div>
+            </div>
+            <input type="file" id="importDataInput" accept="application/json,.json" hidden>
+          </section>
+
+          <section class="card">
+            <h2><i data-icon="info"></i> Über</h2>
+            <div class="row">
+              <div class="row-text"><strong>Version</strong><small id="versionInfo">–</small></div>
+            </div>
+            <p class="card-note">Alle Berechnungen – Rendern, Kompression, Texterkennung – laufen auf dem Gerät, an dem du sitzt.
+              Der Server (falls vorhanden) spricht nur den Scanner an und legt Dateien ab.</p>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <!-- ─────────────── Inspektor: Details zum gewählten Dokument ─────────────── -->
+    <aside class="inspector" id="inspector" aria-label="Dokument-Details">
+      <div class="insp-empty" id="inspEmpty">
+        <i data-icon="doc" data-icon-size="34"></i>
+        <p>Wähle ein Dokument, um Profil, Vorschau und Aktionen zu sehen.</p>
+      </div>
+      <div class="insp-body hidden" id="inspBody"></div>
+    </aside>
+  </div>
+
+  <!-- ─────────────── Tab-Leiste (Handy) ─────────────── -->
+  <nav class="tabbar" aria-label="Bereiche">
+    <button class="tab active" data-view="docs"><i data-icon="docStack"></i><span>Dokumente</span></button>
+    <button class="tab hidden" data-view="inbox" id="tabInbox"><i data-icon="inbox"></i><span>Sammel&shy;ordner</span></button>
+    <button class="tab-add" id="tabAdd" aria-label="Hinzufügen"><i data-icon="plus" data-icon-size="28"></i></button>
+    <button class="tab" data-view="settings"><i data-icon="gear"></i><span>Einstellungen</span></button>
+  </nav>
+
+  <!-- ─────────────── Blätter & Dialoge ─────────────── -->
+  <div class="scrim" id="scrim"></div>
+
+  <div class="sheet" id="addSheet" role="dialog" aria-modal="true" aria-labelledby="addSheetTitle">
+    <div class="sheet-grip"></div>
+    <h2 id="addSheetTitle">Hinzufügen</h2>
+    <div class="sheet-actions">
+      <button class="tile" data-add="camera">
+        <span class="tile-icon"><i data-icon="camera" data-icon-size="26"></i></span>
+        <span class="tile-text"><strong>Foto aufnehmen</strong><small>Kamera – Seite für Seite</small></span>
+      </button>
+      <button class="tile" data-add="files">
+        <span class="tile-icon"><i data-icon="image" data-icon-size="26"></i></span>
+        <span class="tile-text"><strong>Fotos &amp; Dateien</strong><small>Mediathek, PDFs, Dateien-App</small></span>
+      </button>
+      <button class="tile hidden" data-add="scanner">
+        <span class="tile-icon"><i data-icon="scanner" data-icon-size="26"></i></span>
+        <span class="tile-text"><strong>Netzwerk-Scanner</strong><small>Exakt A4, auch mehrseitig</small></span>
+      </button>
+    </div>
+  </div>
+
+  <div class="sheet" id="scanSheet" role="dialog" aria-modal="true" aria-labelledby="scanSheetTitle">
+    <div class="sheet-grip"></div>
+    <div class="sheet-head">
+      <h2 id="scanSheetTitle">Netzwerk-Scanner</h2>
+      <span class="pill" id="scanSheetState"><span class="dot"></span><span>wird geprüft …</span></span>
+    </div>
+    <div class="form-rows">
+      <div class="row">
+        <div class="row-text"><strong>Seiten</strong><small id="scanPagesHint">Ab 2 Seiten scannt der Stapel von selbst weiter</small></div>
+        <div class="stepper">
+          <button type="button" data-step="-1" aria-label="Weniger Seiten"><i data-icon="minus" data-icon-size="16"></i></button>
+          <input type="number" id="scanPages" min="1" max="99" value="1" inputmode="numeric">
+          <button type="button" data-step="1" aria-label="Mehr Seiten"><i data-icon="plus" data-icon-size="16"></i></button>
+        </div>
+      </div>
+      <div class="row" id="scanDelayRow">
+        <div class="row-text"><span class="tile-text"><strong>Pause zwischen Seiten</strong><small>Zeit zum Wechseln der Vorlage</small></span></div>
+        <div class="stepper">
+          <button type="button" data-step="-2" aria-label="Kürzer"><i data-icon="minus" data-icon-size="16"></i></button>
+          <input type="number" id="scanDelay" min="0" max="120" value="8" inputmode="numeric">
+          <button type="button" data-step="2" aria-label="Länger"><i data-icon="plus" data-icon-size="16"></i></button>
+          <span class="unit">s</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="row-text"><strong>Auflösung</strong></div>
+        <div class="seg" id="scanDpiSeg" role="radiogroup" aria-label="Auflösung">
+          <button data-v="150">150</button><button data-v="200">200</button><button data-v="300">300</button><button data-v="600">600</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="row-text"><strong>Farbe</strong></div>
+        <div class="seg" id="scanColorSeg" role="radiogroup" aria-label="Farbmodus">
+          <button data-v="color">Farbe</button><button data-v="gray">Grau</button><button data-v="bw">S/W</button>
+        </div>
+      </div>
+      <div class="row hidden" id="scanTargetRow">
+        <div class="row-text"><strong>Ziel</strong></div>
+        <div class="seg" id="scanTargetSeg" role="radiogroup" aria-label="Ziel">
+          <button data-v="doc">Neues Dokument</button><button data-v="raw">Sammelordner</button>
+        </div>
+      </div>
+    </div>
+    <p class="sheet-hint" id="scanCornerHint">Vorlage bündig an die Ecke oben links legen – der Ausschnitt ist exakt DIN A4.</p>
+    <button class="btn btn-primary btn-large" id="scanStartBtn"><i data-icon="play"></i><span>Scannen</span></button>
+  </div>
+
+  <div class="menu" id="moreMenu" role="menu" hidden>
+    <button role="menuitem" data-more="sendAll" class="needs-paperless hidden"><i data-icon="send"></i>Alle an Paperless</button>
+    <button role="menuitem" data-more="downloadAll"><i data-icon="download"></i>Alle herunterladen</button>
+    <button role="menuitem" data-more="merge"><i data-icon="layers"></i>Zu einem Dokument zusammenführen</button>
+    <hr>
+    <button role="menuitem" data-more="clear" class="danger"><i data-icon="trash"></i>Liste leeren</button>
+  </div>
+
+  <!-- Vorschau / Betrachter -->
+  <div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-labelledby="viewerTitle" hidden>
+    <header class="viewer-bar">
+      <button class="btn btn-icon btn-ghost" id="viewerClose" aria-label="Schließen"><i data-icon="close"></i></button>
+      <div class="viewer-title"><strong id="viewerTitle">Vorschau</strong><small id="viewerSub"></small></div>
+      <div class="seg" id="viewerMode" role="radiogroup" aria-label="Ansicht">
+        <button data-v="original">Original</button>
+        <button data-v="preview">Vorschau</button>
+        <button data-v="result">Ergebnis</button>
+      </div>
+    </header>
+    <div class="viewer-stage" id="viewerStage">
+      <img id="viewerImg" alt="Seitenvorschau">
+      <div class="viewer-busy hidden" id="viewerBusy"><i data-icon="spinner" data-icon-size="28"></i></div>
+    </div>
+    <footer class="viewer-foot">
+      <div class="pager">
+        <button class="btn btn-icon" id="viewerPrev" aria-label="Vorherige Seite"><i data-icon="chevronLeft"></i></button>
+        <span id="viewerPage">1 / 1</span>
+        <button class="btn btn-icon" id="viewerNext" aria-label="Nächste Seite"><i data-icon="chevronRight"></i></button>
+      </div>
+      <span class="viewer-info" id="viewerInfo"></span>
+      <label class="viewer-override" id="viewerOverrideWrap">Diese Seite
+        <select id="viewerOverride"></select>
+      </label>
+      <div class="zoom">
+        <button class="btn btn-icon" id="viewerZoomOut" aria-label="Verkleinern"><i data-icon="minus"></i></button>
+        <button class="btn btn-icon" id="viewerZoomIn" aria-label="Vergrößern"><i data-icon="plus"></i></button>
+      </div>
+    </footer>
+  </div>
+
+  <div class="drop-overlay" id="dropOverlay" hidden>
+    <div><i data-icon="docPlus" data-icon-size="48"></i><p>Loslassen zum Hinzufügen</p></div>
+  </div>
 
   <div class="toast-host" id="toastHost" aria-live="polite"></div>
+
+  <input type="file" id="fileInput" accept="application/pdf,.pdf,image/*,.jpg,.jpeg,.png,.heic,.heif,.webp" multiple hidden>
+  <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
 
   <script src="vendor/pdflib/pdf-lib.min.js"></script>
   <script src="vendor/tesseract/tesseract.min.js"></script>

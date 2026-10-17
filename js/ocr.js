@@ -1,10 +1,21 @@
 // OCR mit tesseract.js – läuft komplett lokal (WASM + gebündelte Sprachdaten).
+//
+// Tempo-Maßnahmen gegenüber der ersten Fassung:
+//   * Die Worker bleiben zwischen zwei Dokumenten warm (erst nach einer Weile
+//     Leerlauf wird aufgeräumt) – das Laden von WASM und Sprachmodell entfällt.
+//   * Auf leistungsfähigen Rechnern arbeiten zwei Worker parallel an
+//     verschiedenen Seiten; am Handy bleibt es aus Speichergründen bei einem.
+//   * Die Seite wird als JPEG übergeben statt als Canvas – tesseract.js würde
+//     sonst jede Seite als PNG kodieren und wieder dekodieren.
+//   * Tesseract versucht nicht mehr jede unsichere Zeile zusätzlich invertiert
+//     zu lesen (tessedit_do_invert) – bei Dokumenten fast immer überflüssig.
 
 const base = (p) => new URL(p, import.meta.url).href;
 
-let worker = null;
-let workerLangs = null;
-let progressCb = null;
+const IDLE_MS = 120000;   // so lange bleiben die Worker nach dem letzten Auftrag geladen
+
+let pool = null;          // { langs, scheduler, size, ready: Promise }
+let idleTimer = null;
 
 // WASM-SIMD-Erkennung (Testmodul aus wasm-feature-detect) – ältere
 // iPhones/Browser ohne SIMD bekommen den kompatiblen Core.
@@ -19,33 +30,77 @@ function hasWasmSimd() {
   }
 }
 
-async function getWorker(langs) {
-  if (worker && workerLangs === langs) return worker;
-  if (worker) {
-    await worker.terminate();
-    worker = null;
-  }
-  const { createWorker } = window.Tesseract;
-  const core = hasWasmSimd() ? 'tesseract-core-simd-lstm.wasm.js' : 'tesseract-core-lstm.wasm.js';
-  worker = await createWorker(langs.split('+'), 1, {
-    workerPath: base('../vendor/tesseract/worker.min.js'),
-    corePath: base(`../vendor/tesseract/${core}`),
-    langPath: base('../vendor/tessdata'),
-    gzip: true,
-    logger: (m) => {
-      if (m.status === 'recognizing text' && progressCb) progressCb(m.progress);
-    },
-  });
-  workerLangs = langs;
-  return worker;
+/**
+ * Wie viele Worker lohnen sich auf diesem Gerät? Gemessen auf 4 Kernen:
+ * zwei Worker halbieren die OCR-Zeit fast. Am Handy entscheidet der Speicher –
+ * dort nur mit nachweislich viel RAM (Safari verrät ihn nicht -> ein Worker).
+ */
+export function ocrWorkerCount() {
+  const cores = navigator.hardwareConcurrency || 2;
+  const mem = navigator.deviceMemory || 4;
+  const mobile = /iPhone|iPad|Android/i.test(navigator.userAgent) || matchMedia('(pointer: coarse)').matches;
+  if (mobile) return cores >= 6 && mem >= 6 ? 2 : 1;
+  if (cores >= 12 && mem >= 8) return 3;
+  return cores >= 4 ? 2 : 1;
 }
 
-// Liefert eine flache Wortliste [{text, confidence, bbox:{x0,y0,x1,y1}}]
-export async function recognizePage(canvas, langs, onProgress) {
-  progressCb = onProgress || null;
-  const w = await getWorker(langs || 'deu');
-  const { data } = await w.recognize(canvas, {}, { blocks: true, text: false });
-  progressCb = null;
+async function createPool(langs) {
+  const { createWorker, createScheduler } = window.Tesseract;
+  const core = hasWasmSimd() ? 'tesseract-core-simd-lstm.wasm.js' : 'tesseract-core-lstm.wasm.js';
+  const size = ocrWorkerCount();
+  const scheduler = createScheduler();
+  const make = async () => {
+    const w = await createWorker(langs.split('+'), 1, {
+      workerPath: base('../vendor/tesseract/worker.min.js'),
+      corePath: base(`../vendor/tesseract/${core}`),
+      langPath: base('../vendor/tessdata'),
+      gzip: true,
+    });
+    try {
+      await w.setParameters({ tessedit_do_invert: '0' });
+    } catch { /* ältere Kerne kennen den Parameter nicht – kein Problem */ }
+    scheduler.addWorker(w);
+  };
+  // Der erste Worker reicht zum Loslegen; weitere kommen im Hintergrund dazu.
+  await make();
+  for (let i = 1; i < size; i++) make().catch(() => { /* einer genügt */ });
+  return { langs, scheduler, size };
+}
+
+function getPool(langs) {
+  clearTimeout(idleTimer);
+  if (pool && pool.langs === langs) return pool.ready;
+  const old = pool;
+  pool = { langs, ready: null };
+  const mine = pool;
+  mine.ready = (async () => {
+    if (old) await old.ready.then((p) => p.scheduler.terminate()).catch(() => {});
+    const p = await createPool(langs);
+    Object.assign(mine, p);
+    return p;
+  })();
+  mine.ready.catch(() => { if (pool === mine) pool = null; });
+  return mine.ready;
+}
+
+/** Worker schon einmal hochfahren, während z. B. die erste Seite gerendert wird. */
+export function warmOcr(langs = 'deu') {
+  getPool(langs).catch(() => { /* Fehler zeigt sich beim echten Auftrag */ });
+}
+
+/** Nach getaner Arbeit: Worker nach einer Leerlaufzeit freigeben. */
+export function releaseOcrSoon() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { disposeOcr(); }, IDLE_MS);
+}
+
+/**
+ * Erkennt eine Seite. `image` ist ein Blob (JPEG/PNG) oder Canvas.
+ * Liefert eine flache Wortliste [{text, confidence, bbox:{x0,y0,x1,y1}}].
+ */
+export async function recognizePage(image, langs = 'deu') {
+  const p = await getPool(langs || 'deu');
+  const { data } = await p.scheduler.addJob('recognize', image, {}, { blocks: true, text: false });
   const words = [];
   for (const block of data.blocks || []) {
     for (const par of block.paragraphs || []) {
@@ -60,9 +115,10 @@ export async function recognizePage(canvas, langs, onProgress) {
 }
 
 export async function disposeOcr() {
-  if (worker) {
-    await worker.terminate();
-    worker = null;
-    workerLangs = null;
+  clearTimeout(idleTimer);
+  const p = pool;
+  pool = null;
+  if (p) {
+    try { await (await p.ready).scheduler.terminate(); } catch { /* schon weg */ }
   }
 }

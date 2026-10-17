@@ -1,16 +1,24 @@
-// Dokumenten-Scanner: Kamera (mit optionalem Blitz) oder Bilddateien,
-// automatische Rand-/Eckenerkennung mit manueller Korrektur (inkl. Lupe),
-// Perspektivkorrektur, A4-/Auto-Format, Drehen – Ergebnis wird als PDF an
-// die Dateiliste übergeben, wo Kompressionsstufe & „Scan-Stil“ gewählt werden.
+// Scan-Studio: Fotos (Kamera des Geräts oder Bilddateien) und Seiten vom
+// Netzwerk-Scanner werden hier zu sauberen DIN-A4-Seiten: automatischer
+// Zuschnitt (Flachbett: fester A4-Ausschnitt ab der Anlegeecke; Foto:
+// Eckenerkennung mit Perspektivkorrektur), manuell nachjustierbar mit Lupe,
+// weißer Radierer, Drehen, Umsortieren. Am Ende entsteht EIN PDF, das als
+// Dokument in die Liste wandert.
+//
+// Eine Live-Kameravorschau gibt es bewusst nicht mehr: Die Kamera-App des
+// Geräts liefert bessere Fotos (Fokus, Belichtung, HDR) und funktioniert auch
+// ohne HTTPS.
 
 import { hydrateIcons, icon } from './icons.js';
+import { toast, confirmDialog, alertDialog } from './ui.js';
+import { A4_PT, readJpegDpi } from './pdfkit.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
 const DETECT_MAX = 440;      // Analysebreite für die Eckenerkennung
-const IMPORT_MAX = 3200;     // längste Kante beim Einlesen von Fotos
-const OUTPUT_MAX = 2800;     // längste Kante des entzerrten Scans
-const A4_PT = [595.28, 841.89];
+// Längste Kante beim Einlesen: 300-dpi-A4-Scans (3508 px) bleiben unangetastet.
+const IMPORT_MAX = /iPhone|iPad|Android/i.test(navigator.userAgent) ? 3600 : 4200;
+const OUTPUT_MAX = 3600;     // längste Kante des entzerrten Scans
 
 // ---------------------------------------------------------------- Bildanalyse
 
@@ -232,7 +240,7 @@ export function detectCornersOnCanvas(canvas) {
   return detectDocumentCorners(ctx.getImageData(0, 0, w, h));
 }
 
-function defaultCorners(margin = 0.04) {
+function defaultCorners(margin = 0) {
   return [
     { x: margin, y: margin },
     { x: 1 - margin, y: margin },
@@ -337,7 +345,8 @@ export function outputSize(srcW, srcH, corners) {
   const px = corners.map((p) => ({ x: p.x * srcW, y: p.y * srcH }));
   const quadW = Math.max(dist(px[0], px[1]), dist(px[3], px[2]));
   const quadH = Math.max(dist(px[0], px[3]), dist(px[1], px[2]));
-  const scale = Math.min(1.2, OUTPUT_MAX / Math.max(quadW, quadH));
+  // Nie hochrechnen – das erfindet keine Details, macht die Datei nur größer
+  const scale = Math.min(1, OUTPUT_MAX / Math.max(quadW, quadH));
   return {
     w: Math.max(8, Math.round(quadW * scale)),
     h: Math.max(8, Math.round(quadH * scale)),
@@ -385,391 +394,77 @@ function rotateCanvas90(canvas) {
   return out;
 }
 
-// ---------------------------------------------------------------- Scanner-UI
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-const state = {
-  root: null,
-  onDone: null,
-  pages: [],        // {src, corners, format}
-  queue: [],        // Canvases, die noch zugeschnitten werden müssen
-  editing: null,    // {src, corners, format, pageIndex} – aktueller Zuschnitt
-  cropReturn: 'capture',
-  lastFormat: 'auto',
-  lastStretch: false,
-  erasing: null,    // {pageIndex, backup, undo, redo, base, drawing}
-  stream: null,
-  torchOn: false,
-  liveTimer: null,
-  drag: null,
-  activeHandle: null,
-  building: false,
-};
-
-const TEMPLATE = `
-<div class="sc-overlay" role="dialog" aria-modal="true" aria-label="Dokument scannen">
-  <div class="sc-topbar">
-    <strong><i data-icon="scanFrame"></i> Dokument scannen</strong>
-    <span class="sc-pagecount" id="scPageCount"></span>
-    <button class="btn btn-small hidden" id="scBatchStopBtn" hidden><i data-icon="close" data-icon-size="15"></i> Stapel stoppen</button>
-    <button class="btn btn-small btn-ghost" id="scCloseBtn"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
-  </div>
-
-  <!-- Aufnahme -->
-  <div class="sc-view" id="scCaptureView">
-    <div class="sc-video-wrap" id="scVideoWrap">
-      <video id="scVideo" autoplay playsinline muted></video>
-      <canvas id="scLiveOverlay"></canvas>
-      <div class="sc-cam-msg hidden" id="scCamMsg"></div>
-    </div>
-    <p class="sc-hint">Dokument flach und vollständig ins Bild legen – die Ränder werden live erkannt und lassen sich danach fein anpassen.</p>
-    <div class="sc-capture-bar">
-      <button class="sc-round-btn" id="scTorchBtn" title="Blitz (Taschenlampe) an/aus" aria-pressed="false" hidden><i data-icon="bolt"></i></button>
-      <button class="sc-shutter" id="scShutterBtn" title="Foto aufnehmen" aria-label="Foto aufnehmen"><span></span></button>
-      <button class="sc-round-btn" id="scPickBtn" title="Bilder aus Dateien wählen"><i data-icon="image"></i></button>
-    </div>
-    <div class="sc-bottombar">
-      <button class="btn" id="scNetScanBtn" hidden><i data-icon="scanner"></i> Seite vom Netzwerk-Scanner</button>
-      <button class="btn" id="scToPagesBtn" hidden>Zu den Seiten <i data-icon="chevronRight" data-icon-size="15"></i></button>
-    </div>
-    <input type="file" id="scFileInput" accept="image/*" multiple hidden>
-  </div>
-
-  <!-- Zuschnitt -->
-  <div class="sc-view hidden" id="scCropView">
-    <div class="sc-toolbar">
-      <span class="sc-tgroup">
-        <span class="sc-tlabel">Auswahl</span>
-        <button class="btn btn-small" id="scFullBtn" title="Das ganze Bild auswählen"><i data-icon="square" data-icon-size="15"></i> Alles</button>
-        <button class="btn btn-small" id="scAutoBtn" title="Dokumentränder automatisch erkennen"><i data-icon="wand" data-icon-size="15"></i> Automatisch</button>
-        <button class="btn btn-small hidden" id="scA4BedBtn" hidden title="A4-Bereich der Scannerfläche auswählen"><i data-icon="scanFrame" data-icon-size="15"></i> A4-Fläche</button>
-        <button class="btn btn-small hidden" id="scA4CornerBtn" hidden title="Ecke wechseln, an der die Vorlage anliegt"><i data-icon="rotate" data-icon-size="15"></i> Ecke</button>
-      </span>
-      <span class="sc-sep"></span>
-      <span class="sc-tgroup">
-        <span class="sc-tlabel">Ausgabeformat</span>
-        <span class="sc-seg" role="radiogroup" aria-label="Ausgabeformat">
-          <button class="sc-seg-btn" data-format="auto" title="Format folgt der Auswahl">Auto</button>
-          <button class="sc-seg-btn" data-format="a4p" title="Auswahl auf A4 hochkant ausgeben">A4 hoch</button>
-          <button class="sc-seg-btn" data-format="a4l" title="Auswahl auf A4 quer ausgeben">A4 quer</button>
-        </span>
-        <label class="sc-check hidden" id="scStretchWrap" title="Auswahl auf das ganze A4-Blatt dehnen – verzerrt das Seitenverhältnis. Ohne Häkchen wird unverzerrt eingepasst.">
-          <input type="checkbox" id="scStretch"> strecken
-        </label>
-      </span>
-      <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scRotateBtn" title="Bild um 90° drehen"><i data-icon="rotate" data-icon-size="15"></i> Drehen</button>
-    </div>
-    <div class="sc-crop-stage" id="scCropStage">
-      <canvas id="scCropCanvas"></canvas>
-      <svg id="scCropSvg" tabindex="0" aria-label="Ecken anpassen (Pfeiltasten bewegen die zuletzt gewählte Ecke)"></svg>
-      <div class="sc-loupe hidden" id="scLoupe"><canvas width="150" height="150"></canvas></div>
-    </div>
-    <p class="sc-hint">Ecken (● groß) oder Kanten (● klein) ziehen – die Lupe zeigt die Ecke vergrößert, damit du sie exakt triffst. Pfeiltasten justieren fein nach.</p>
-    <div class="sc-bottombar">
-      <button class="btn" id="scCropCancelBtn">Verwerfen</button>
-      <button class="btn btn-primary" id="scCropOkBtn"><i data-icon="check" data-icon-size="16"></i> Übernehmen</button>
-    </div>
-  </div>
-
-  <!-- Radierer (weiß übermalen) -->
-  <div class="sc-view hidden" id="scEraseView">
-    <div class="sc-toolbar">
-      <label class="sc-brush-label"><i data-icon="eraser" data-icon-size="16"></i> Pinselgröße
-        <input type="range" id="scBrushSize" min="6" max="90" step="1" value="26">
-        <span class="sc-brush-dot" id="scBrushDot"></span>
-      </label>
-      <span class="sc-sep"></span>
-      <span class="sc-tgroup">
-        <span class="sc-tlabel">Zoom</span>
-        <button class="btn btn-small" id="scEraseZoomOut" title="Herauszoomen" aria-label="Herauszoomen"><i data-icon="minus" data-icon-size="15"></i></button>
-        <span class="sc-zoomlabel" id="scEraseZoomLabel">100 %</span>
-        <button class="btn btn-small" id="scEraseZoomIn" title="Hineinzoomen" aria-label="Hineinzoomen"><i data-icon="plus" data-icon-size="15"></i></button>
-        <button class="btn btn-small" id="scEraseZoomFit" title="Einpassen">Fit</button>
-      </span>
-      <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scEraseUndoBtn" title="Rückgängig" aria-label="Rückgängig"><i data-icon="undo" data-icon-size="15"></i></button>
-      <button class="btn btn-small" id="scEraseRedoBtn" title="Wiederholen" aria-label="Wiederholen"><i data-icon="redo" data-icon-size="15"></i></button>
-    </div>
-    <div class="sc-erase-stage" id="scEraseStage"><canvas id="scEraseCanvas"></canvas></div>
-    <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen. <span class="sc-hint-long">Zum Feinarbeiten hineinzoomen – mit zwei Fingern oder über die Zoom-Tasten; ein Finger radiert.</span></p>
-    <div class="sc-bottombar">
-      <button class="btn" id="scEraseCancelBtn">Verwerfen</button>
-      <button class="btn btn-primary" id="scEraseOkBtn"><i data-icon="check" data-icon-size="16"></i> Fertig</button>
-    </div>
-  </div>
-
-  <!-- Seitenübersicht -->
-  <div class="sc-view hidden" id="scPagesView">
-    <div class="sc-pagegrid" id="scPageGrid"></div>
-    <div class="sc-row">
-      <button class="btn btn-primary" id="scAddNetBtn" hidden><i data-icon="scanner"></i> Nächste Seite scannen</button>
-      <button class="btn" id="scAddCamBtn"><i data-icon="camera"></i> Seite mit Kamera</button>
-      <button class="btn" id="scAddFileBtn"><i data-icon="image"></i> Seiten aus Bildern</button>
-    </div>
-    <p class="sc-hint" id="scPagesHint">Weitere Seiten anfügen – alle Seiten hier landen zusammen in <strong>einer</strong> PDF. Danach „Als PDF übernehmen“, Kompressionsstufe wählen und komprimieren.</p>
-    <div class="sc-bottombar">
-      <button class="btn btn-primary" id="scDoneBtn"><i data-icon="check" data-icon-size="16"></i> Als PDF übernehmen</button>
-    </div>
-  </div>
-
-  <!-- Große Seitenvorschau -->
-  <div class="sc-preview hidden" id="scPreview" role="dialog" aria-modal="true" aria-label="Seitenvorschau">
-    <div class="sc-preview-bar">
-      <span class="sc-preview-label" id="scPreviewLabel"></span>
-      <button class="btn btn-small" id="scPreviewPrev" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="15"></i></button>
-      <button class="btn btn-small" id="scPreviewNext" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="15"></i></button>
-      <span class="sc-sep"></span>
-      <button class="btn btn-small" id="scPreviewCrop"><i data-icon="crop" data-icon-size="15"></i> Zuschnitt</button>
-      <button class="btn btn-small" id="scPreviewErase"><i data-icon="eraser" data-icon-size="15"></i> Radieren</button>
-      <button class="btn btn-small btn-ghost" id="scPreviewClose"><i data-icon="close" data-icon-size="15"></i> Schließen</button>
-    </div>
-    <div class="sc-preview-stage" id="scPreviewStage"></div>
-  </div>
-</div>`;
-
-function view(name) {
-  $('#scCaptureView', state.root).classList.toggle('hidden', name !== 'capture');
-  $('#scCropView', state.root).classList.toggle('hidden', name !== 'crop');
-  $('#scEraseView', state.root).classList.toggle('hidden', name !== 'erase');
-  $('#scPagesView', state.root).classList.toggle('hidden', name !== 'pages');
-  if (name === 'capture') startCamera();
-  else stopCamera();
-  if (name === 'pages') renderPages();
-  updatePageCount();
-}
-
-function updatePageCount() {
-  const el = $('#scPageCount', state.root);
-  const n = state.pages.length;
-  // Läuft gerade ein Stapel-Scan, hat dessen Fortschrittstext Vorrang.
-  if (!state.batchStatus) {
-    el.textContent = n === 0 ? '' : `${n} Seite${n === 1 ? '' : 'n'}`;
-  }
-  const toPages = $('#scToPagesBtn', state.root);
-  toPages.hidden = n === 0;
-  toPages.textContent = `Zu den Seiten (${n}) →`;
-}
-
-// ------------------------------------------------ Kamera & Blitz
-
-async function startCamera() {
-  const msg = $('#scCamMsg', state.root);
-  const video = $('#scVideo', state.root);
-  if (state.stream) return;
-  if (!navigator.mediaDevices?.getUserMedia) {
-    msg.classList.remove('hidden');
-    msg.innerHTML = 'Keine Kamera verfügbar.<br>Nutze <strong>Bilder wählen</strong>, um Fotos aus Dateien zu scannen.';
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 3840 },
-        height: { ideal: 2160 },
-      },
-      audio: false,
-    });
-    state.stream = stream;
-    video.srcObject = stream;
-    msg.classList.add('hidden');
-    // Blitz (Torch) anbieten, wenn die Kamera ihn unterstützt
-    const track = stream.getVideoTracks()[0];
-    const caps = track.getCapabilities?.();
-    const torchBtn = $('#scTorchBtn', state.root);
-    torchBtn.hidden = !caps?.torch;
-    state.torchOn = false;
-    torchBtn.classList.remove('active');
-    torchBtn.setAttribute('aria-pressed', 'false');
-    startLiveDetect();
-  } catch (e) {
-    msg.classList.remove('hidden');
-    msg.innerHTML = `Kamera nicht verfügbar (${e?.name || e}).<br>Nutze <strong>Bilder wählen</strong>, um Fotos aus Dateien zu scannen.`;
-  }
-}
-
-function stopCamera() {
-  stopLiveDetect();
-  if (state.stream) {
-    state.stream.getTracks().forEach((t) => t.stop());
-    state.stream = null;
-  }
-  const video = state.root && $('#scVideo', state.root);
-  if (video) video.srcObject = null;
-}
-
-async function toggleTorch() {
-  const track = state.stream?.getVideoTracks()[0];
-  if (!track) return;
-  state.torchOn = !state.torchOn;
-  try {
-    await track.applyConstraints({ advanced: [{ torch: state.torchOn }] });
-  } catch (e) {
-    console.warn('Blitz nicht schaltbar:', e);
-    state.torchOn = false;
-  }
-  const btn = $('#scTorchBtn', state.root);
-  btn.classList.toggle('active', state.torchOn);
-  btn.setAttribute('aria-pressed', String(state.torchOn));
-}
-
-// Live-Vorschau der erkannten Ränder über dem Kamerabild
-function startLiveDetect() {
-  stopLiveDetect();
-  const video = $('#scVideo', state.root);
-  const overlay = $('#scLiveOverlay', state.root);
-  const small = document.createElement('canvas');
-  const tick = () => {
-    if (!state.stream || !video.videoWidth) return;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const scale = Math.min(1, 320 / Math.max(vw, vh));
-    small.width = Math.max(2, Math.round(vw * scale));
-    small.height = Math.max(2, Math.round(vh * scale));
-    const sctx = small.getContext('2d', { willReadFrequently: true });
-    sctx.drawImage(video, 0, 0, small.width, small.height);
-    let corners = null;
-    try {
-      corners = detectDocumentCorners(sctx.getImageData(0, 0, small.width, small.height));
-    } catch { /* Einzelframe darf fehlschlagen */ }
-    // Overlay passend zum object-fit:contain-Ausschnitt des Videos zeichnen
-    const cw = video.clientWidth;
-    const ch = video.clientHeight;
-    overlay.width = cw;
-    overlay.height = ch;
-    const octx = overlay.getContext('2d');
-    octx.clearRect(0, 0, cw, ch);
-    if (!corners) return;
-    const fit = Math.min(cw / vw, ch / vh);
-    const dw = vw * fit;
-    const dh = vh * fit;
-    const ox = (cw - dw) / 2;
-    const oy = (ch - dh) / 2;
-    octx.strokeStyle = 'rgba(56, 189, 248, 0.95)';
-    octx.fillStyle = 'rgba(56, 189, 248, 0.15)';
-    octx.lineWidth = 3;
-    octx.beginPath();
-    corners.forEach((p, i) => {
-      const x = ox + p.x * dw;
-      const y = oy + p.y * dh;
-      if (i === 0) octx.moveTo(x, y); else octx.lineTo(x, y);
-    });
-    octx.closePath();
-    octx.fill();
-    octx.stroke();
-  };
-  state.liveTimer = setInterval(tick, 350);
-}
-
-function stopLiveDetect() {
-  if (state.liveTimer) {
-    clearInterval(state.liveTimer);
-    state.liveTimer = null;
-  }
-  const overlay = state.root && $('#scLiveOverlay', state.root);
-  if (overlay) overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
-}
-
-function capturePhoto() {
-  const video = $('#scVideo', state.root);
-  if (!video.videoWidth) return;
-  const c = document.createElement('canvas');
-  c.width = video.videoWidth;
-  c.height = video.videoHeight;
-  c.getContext('2d').drawImage(video, 0, 0);
-  // kurzes Auslöse-Feedback
-  const wrap = $('#scVideoWrap', state.root);
-  wrap.classList.add('sc-flash');
-  setTimeout(() => wrap.classList.remove('sc-flash'), 180);
-  openCrop(c, null, 'capture');
-}
-
-// ------------------------------------------------ Bilder aus Dateien
-
-async function fileToCanvas(file) {
-  let bmp;
-  try {
-    bmp = await createImageBitmap(file);
-  } catch {
-    bmp = await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Bild „${file.name}“ konnte nicht gelesen werden`));
-      img.src = URL.createObjectURL(file);
-    });
-  }
-  const w = bmp.width || bmp.naturalWidth;
-  const h = bmp.height || bmp.naturalHeight;
-  const scale = Math.min(1, IMPORT_MAX / Math.max(w, h));
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(w * scale));
-  c.height = Math.max(1, Math.round(h * scale));
-  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-  if (bmp.close) bmp.close();
-  if (bmp.src) URL.revokeObjectURL(bmp.src);
-  // Originalmaße & Scanauflösung anhängen – daraus lässt sich die reale Größe
-  // der Vorlage in Millimetern bestimmen (für den A4-Ausschnitt).
-  if (file.scanDpi) {
-    c.scanDpi = file.scanDpi;
-    c.sourcePx = { w, h };
-  }
-  return c;
-}
+// ---------------------------------------------------------------- A4 auf der Glasfläche
 
 /**
- * A4-Ausschnitt für einen Flachbett-Scan.
+ * Fester A4-Ausschnitt für Flachbett-Scans.
  *
- * Die Glasfläche ist meist größer als A4 (der Epson ET-2720 z. B. 215,9 × 297 mm
- * – Letter-Breite bei A4-Höhe). Die Vorlage liegt bündig in der Ecke am
- * Nullpunkt. Aus Pixelgröße und Scanauflösung ergibt sich die reale Größe der
- * Glasfläche, daraus der A4-Bereich ab der Ecke.
+ * Aus Pixelgröße und Scanauflösung ergibt sich die echte Glasfläche in mm
+ * (der Epson ET-2720 z. B. 215,9 × 297 mm). Der Ausschnitt ist exakt
+ * 210 × 297 mm ab der Anlegeecke, optional um ein paar Millimeter
+ * feinjustiert. Bewusst keine Kantenerkennung: Weißes Papier vor weißem
+ * Deckel liefert kein verlässliches Signal – mit der festen Position sitzt
+ * jede Seite immer exakt gleich.
  *
- * @returns normierte Ecken (0..1) oder null, wenn die Maße unbekannt sind
+ * @param canvas  Bild mit `scanDpi` (und optional `sourcePx` = Originalpixel)
+ * @param corner  'tl' | 'tr' | 'bl' | 'br' – wo die Vorlage anliegt
+ * @param offX/offY Versatz in mm (+ = nach rechts/unten)
+ * @returns normierte Ecken (TL, TR, BR, BL) oder null ohne bekannte Maße
  */
-export function a4CornersForScan(canvas, { originX = 'left', originY = 'top', detect = true } = {}) {
-  // Nur für Flachbett-Scans. Kamerafotos brauchen die perspektivische
-  // Eckenerkennung – dort wäre eine achsparallele Blattsuche falsch.
-  if (!canvas?.scanDpi) return null;
-
-  // Zwei Erkenntnisquellen, je Achse getrennt ausgewertet:
-  //   A) gemessene Blattkante (dunklere Glasfläche oder Schattenlinie)
-  //   B) Rechnung aus Pixelgröße und Scanauflösung (Glasfläche minus A4)
-  // Gemessen schlägt gerechnet – aber nur dort, wo wirklich etwas gefunden
-  // wurde. Im echten Scan ist z. B. die untere Kante sichtbar, die rechte
-  // nicht (weißes Papier vor weißem Deckel).
-  const found = detect ? detectSheetOnBed(canvas) : null;
-  const EPS = 0.002;
-
-  const dpi = canvas.scanDpi;
-  const px = canvas.sourcePx;
-  let calc = null;
-  if (dpi && px?.w && px?.h) {
-    const fw = Math.min(1, 210 / ((px.w / dpi) * 25.4));
-    const fh = Math.min(1, 297 / ((px.h / dpi) * 25.4));
-    const cx0 = originX === 'left' ? 0 : 1 - fw;
-    const cy0 = originY === 'top' ? 0 : 1 - fh;
-    calc = { x0: cx0, y0: cy0, x1: cx0 + fw, y1: cy0 + fh };
-  }
-  if (!found && !calc) return null;
-
-  // Je Kante die Messung nehmen, wenn sie etwas gefunden hat, sonst die Rechnung
-  const pick = (measured, computed, isStart) => {
-    const hit = isStart ? measured > EPS : measured < 1 - EPS;
-    if (hit) return measured;
-    return computed ?? measured;
-  };
-  const r = {
-    x0: found ? pick(found.x0, calc?.x0, true) : calc.x0,
-    y0: found ? pick(found.y0, calc?.y0, true) : calc.y0,
-    x1: found ? pick(found.x1, calc?.x1, false) : calc.x1,
-    y1: found ? pick(found.y1, calc?.y1, false) : calc.y1,
-  };
-  // Nichts zu holen? Dann keinen Zuschnitt anbieten.
-  if (r.x0 <= EPS && r.y0 <= EPS && r.x1 >= 1 - EPS && r.y1 >= 1 - EPS) return null;
+export function a4CornersForScan(canvas, { corner = 'tl', offX = 0, offY = 0 } = {}) {
+  const dpi = canvas?.scanDpi;
+  const px = canvas?.sourcePx || (canvas ? { w: canvas.width, h: canvas.height } : null);
+  if (!dpi || !px?.w || !px?.h) return null;
+  const bedW = (px.w / dpi) * 25.4;
+  const bedH = (px.h / dpi) * 25.4;
+  const landscape = bedW > bedH * 1.05;
+  const [aw, ah] = landscape ? [297, 210] : [210, 297];
+  const fw = Math.min(1, aw / bedW);
+  const fh = Math.min(1, ah / bedH);
+  const right = corner === 'tr' || corner === 'br';
+  const bottom = corner === 'bl' || corner === 'br';
+  const x0 = clamp((right ? 1 - fw : 0) + (Number(offX) || 0) / bedW, 0, 1 - fw);
+  const y0 = clamp((bottom ? 1 - fh : 0) + (Number(offY) || 0) / bedH, 0, 1 - fh);
   return [
-    { x: r.x0, y: r.y0 }, { x: r.x1, y: r.y0 },
-    { x: r.x1, y: r.y1 }, { x: r.x0, y: r.y1 },
+    { x: x0, y: y0 }, { x: x0 + fw, y: y0 },
+    { x: x0 + fw, y: y0 + fh }, { x: x0, y: y0 + fh },
   ];
+}
+
+/** Ist das ein Flachbett-Scan? Dann ist die physische Größe plausibel klein. */
+export function plausibleBedScan(w, h, dpi) {
+  if (!dpi || dpi < 100 || dpi > 1200) return false;
+  const a = Math.min(w, h) / dpi * 25.4;
+  const b = Math.max(w, h) / dpi * 25.4;
+  return a >= 140 && a <= 330 && b >= 200 && b <= 460;
+}
+
+const A4_RATIO = 210 / 297;
+
+/**
+ * Automatischer Zuschnitt einer neuen Seite.
+ *  - Flachbett: fester A4-Ausschnitt, exakt auf A4 abgebildet
+ *  - Foto: Ecken erkennen; ist das Blatt (fast) A4, exakt aufziehen,
+ *    sonst unverzerrt auf A4 einpassen
+ *  - nichts erkannt: ganzes Bild, auf A4 eingepasst
+ */
+export function autoLayout(canvas, { geometry = {}, a4 = true } = {}) {
+  const bed = canvas.scanDpi ? a4CornersForScan(canvas, geometry) : null;
+  if (bed) return { corners: bed, format: a4FormatFor(canvas, bed), stretch: true, how: 'bed' };
+  const det = detectCornersOnCanvas(canvas);
+  const corners = det || defaultCorners(0);
+  const { w, h } = outputSize(canvas.width, canvas.height, corners);
+  const portrait = h >= w;
+  const ratio = portrait ? w / h : h / w;
+  if (!a4) return { corners, format: 'auto', stretch: false, how: det ? 'photo' : 'full' };
+  return {
+    corners,
+    format: portrait ? 'a4p' : 'a4l',
+    stretch: !!det && Math.abs(ratio / A4_RATIO - 1) < 0.06,
+    how: det ? 'photo' : 'full',
+  };
 }
 
 /** Hoch- oder Querformat für eine Auswahl bestimmen (in Quellpixeln gemessen) */
@@ -779,175 +474,399 @@ function a4FormatFor(src, corners) {
   return h >= w ? 'a4p' : 'a4l';
 }
 
-const SHEET_ANALYZE = 700;   // Analysebreite für die Blatterkennung
-const SHEET_SEARCH = 0.14;   // Suchtiefe je Rand (Anteil der Kantenlänge)
+// ---------------------------------------------------------------- Bilder einlesen
 
-function medianOf(arr) {
-  const a = [...arr].sort((p, q) => p - q);
-  return a[a.length >> 1];
-}
-
-/**
- * Findet die Blattkante von einem Rand aus.
- *
- * Zwei Erscheinungsformen werden erkannt, in dieser Reihenfolge von außen nach
- * innen (die äußerste Fundstelle gewinnt – dadurch stört Dokumentinhalt weiter
- * innen nicht):
- *   1. Ein Bereich, der klar dunkler ist als das Papier – die unbedeckte
- *      Glasfläche bzw. der offene Deckel.
- *   2. Eine feine dunkle Linie – der Schattenwurf direkt an der Blattkante.
- *      Die ist oft nur wenige Helligkeitsstufen tief, aber eindeutig.
- *
- * @param prof Helligkeitsprofil, Index 0 = äußerster Rand
- * @returns Index der Blattkante (0 = kein Rand gefunden)
- */
-export function sheetEdgeFromProfile(prof) {
-  const search = Math.max(3, Math.round(prof.length * SHEET_SEARCH));
-  const paper = medianOf(prof.slice(search));           // sicher Papier
-  if (!(paper > 0)) return 0;
-
-  // 1. Deutlich dunkler Bereich am Rand: freie Glasfläche bzw. Deckel.
-  //    Der reicht vom äußersten Rand nach innen – Dokumentinhalt kann das
-  //    nicht vortäuschen, weil er nie bis an den Rand durchläuft.
-  let i = 0;
-  while (i < search && prof[i] < paper - 6) i++;
-  if (i > 0) {
-    while (i < search && prof[i] < paper - 2) i++;   // bis wirklich Papier
-    return i;
-  }
-
-  // 2. Feine Schattenlinie an der Blattkante. Nur ganz nah am Rand suchen und
-  //    nur schmale Senken akzeptieren – sonst würde eine Textzeile in Randnähe
-  //    fälschlich als Blattkante gelten.
-  const near = Math.max(2, Math.round(prof.length * 0.045));
-  const maxWidth = Math.max(3, Math.round(prof.length * 0.02));
-  const MAX_DEPTH = 40;   // tiefer = Druckinhalt, nicht Blattkante
-  for (let j = 1; j < near; j++) {
-    const depth = paper - prof[j];
-    if (depth < 2.5 || depth > MAX_DEPTH) continue;
-    if (!(prof[j] <= prof[j - 1] && prof[j] <= prof[j + 1])) continue;
-    // Ausdehnung der Senke bestimmen: eine Textzeile ist breiter und dunkler
-    let a = j;
-    while (a > 0 && paper - prof[a - 1] >= 2) a--;
-    let b = j;
-    while (b < prof.length - 1 && paper - prof[b + 1] >= 2) b++;
-    if (b - a + 1 > maxWidth) continue;
-    return b + 1;   // hinter der Linie beginnt das Papier
-  }
-  return 0;
-}
-
-/**
- * Sucht das Blatt auf der Scanfläche und liefert seine Ränder als Anteile
- * (0..1). Gibt null zurück, wenn das Bild nicht auswertbar ist.
- */
-export function detectSheetOnBed(canvas) {
+async function decodeImage(blob) {
   try {
-    const W = canvas?.width;
-    const H = canvas?.height;
-    if (!W || !H) return null;
-    // Ergebnis am Bild merken – die Ansicht zeichnet oft neu, die Analyse
-    // muss deshalb nicht jedes Mal laufen.
-    if (canvas.__sheet !== undefined) return canvas.__sheet;
-
-    // Verkleinert auswerten – schnell und unempfindlich gegen Rauschen
-    const s = Math.min(1, SHEET_ANALYZE / Math.max(W, H));
-    const aw = Math.max(40, Math.round(W * s));
-    const ah = Math.max(40, Math.round(H * s));
-    const c = document.createElement('canvas');
-    c.width = aw;
-    c.height = ah;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(canvas, 0, 0, aw, ah);
-    const px = ctx.getImageData(0, 0, aw, ah).data;
-    const lum = (x, y) => {
-      const i = (y * aw + x) * 4;
-      return (px[i] * 77 + px[i + 1] * 151 + px[i + 2] * 28) >> 8;
-    };
-
-    // Profile über die mittleren 60 % der jeweils anderen Achse (Median statt
-    // Mittelwert: einzelne Textzeilen ziehen das Ergebnis nicht herunter)
-    const colProf = [];
-    const y0 = Math.round(ah * 0.2);
-    const y1 = Math.round(ah * 0.8);
-    for (let x = 0; x < aw; x++) {
-      const vals = [];
-      for (let y = y0; y < y1; y++) vals.push(lum(x, y));
-      colProf.push(medianOf(vals));
-    }
-    const rowProf = [];
-    const x0 = Math.round(aw * 0.2);
-    const x1 = Math.round(aw * 0.8);
-    for (let y = 0; y < ah; y++) {
-      const vals = [];
-      for (let x = x0; x < x1; x++) vals.push(lum(x, y));
-      rowProf.push(medianOf(vals));
-    }
-
-    const left = sheetEdgeFromProfile(colProf);
-    const right = sheetEdgeFromProfile([...colProf].reverse());
-    const top = sheetEdgeFromProfile(rowProf);
-    const bottom = sheetEdgeFromProfile([...rowProf].reverse());
-
-    const r = {
-      x0: left / aw,
-      y0: top / ah,
-      x1: (aw - right) / aw,
-      y1: (ah - bottom) / ah,
-    };
-    // Unsinnige Ergebnisse verwerfen (Blatt füllt immer den Großteil)
-    const ok = (r.x1 - r.x0 >= 0.55 && r.y1 - r.y0 >= 0.55) ? r : null;
-    try { canvas.__sheet = ok; } catch { /* nicht beschreibbar: egal */ }
-    return ok;
+    return await createImageBitmap(blob);
   } catch {
-    return null;   // z. B. wenn das Canvas nicht auslesbar ist
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Bild „${blob.name || 'Bild'}“ konnte nicht gelesen werden`));
+      img.src = URL.createObjectURL(blob);
+    });
   }
 }
 
-async function importFiles(fileList) {
-  const files = [...fileList].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(f.name));
-  if (files.length === 0) return;
-  const canvases = [];
+/** Bild in ein (ggf. verkleinertes) Canvas laden, gedreht um `rot` Grad. */
+async function blobToCanvas(blob, rot = 0) {
+  const bmp = await decodeImage(blob);
+  const w = bmp.width || bmp.naturalWidth;
+  const h = bmp.height || bmp.naturalHeight;
+  const scale = Math.min(1, IMPORT_MAX / Math.max(w, h));
+  let c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * scale));
+  c.height = Math.max(1, Math.round(h * scale));
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  if (bmp.src) URL.revokeObjectURL(bmp.src);
+  for (let r = 0; r < ((rot / 90) | 0) % 4; r++) c = rotateCanvas90(c);
+  c.origPx = { w, h };
+  return c;
+}
+
+/** Scanauflösung einer Datei: vom Server mitgegeben, im Namen oder im JPEG-Kopf. */
+async function scanDpiOf(file, w, h) {
+  if (file.scanDpi) return file.scanDpi;
+  const m = /(\d{2,4})\s*dpi/i.exec(file.name || '');
+  let dpi = m ? parseInt(m[1], 10) : null;
+  if (!dpi && /jpe?g/i.test(file.type || file.name || '')) {
+    try { dpi = readJpegDpi(new Uint8Array(await file.slice(0, 131072).arrayBuffer())); } catch { dpi = null; }
+  }
+  return dpi && plausibleBedScan(w, h, dpi) ? dpi : null;
+}
+
+// Dekodierte Quellbilder nur für die zuletzt benutzten Seiten im Speicher
+// halten. Am iPhone würden zehn 300-dpi-Seiten sonst über 300 MB belegen.
+const srcCache = [];   // [{page, rot, canvas}]
+async function getSrc(page) {
+  const hit = srcCache.find((e) => e.page === page && e.rot === page.rot);
+  if (hit) return hit.canvas;
+  const canvas = await blobToCanvas(page.blob, page.rot);
+  if (page.scanDpi) {
+    canvas.scanDpi = page.scanDpi;
+    const turned = (page.rot / 90) % 2 === 1;
+    canvas.sourcePx = turned ? { w: page.px.h, h: page.px.w } : { ...page.px };
+  }
+  srcCache.unshift({ page, rot: page.rot, canvas });
+  while (srcCache.length > 2) srcCache.pop();
+  return canvas;
+}
+function dropSrc(page) {
+  for (let i = srcCache.length - 1; i >= 0; i--) if (srcCache[i].page === page) srcCache.splice(i, 1);
+}
+
+// ---------------------------------------------------------------- Studio-Zustand
+
+const state = {
+  root: null,
+  onDone: null,
+  opts: {},
+  pages: [],        // {blob, px:{w,h}, scanDpi, rot, corners, format, stretch, erase, thumb}
+  pending: 0,       // Bilder, die gerade eingelesen werden
+  editing: null,    // Zuschnitt: {src, corners, format, stretch, rot, isBedScan, pageIndex}
+  erasing: null,
+  drag: null,
+  activeHandle: null,
+  building: false,
+  batchStatus: '',
+  previewIdx: null,
+  view: 'pages',
+};
+
+const geometry = () => state.opts.geometry?.() || { corner: 'tl', offX: 0, offY: 0 };
+const wantA4 = () => (state.opts.a4 ? !!state.opts.a4() : true);
+
+const TEMPLATE = `
+<div class="sc-overlay" role="dialog" aria-modal="true" aria-label="Scan-Studio">
+  <header class="sc-topbar">
+    <button class="btn btn-icon btn-ghost" id="scCloseBtn" aria-label="Schließen"><i data-icon="close"></i></button>
+    <div class="sc-title"><strong>Scan-Studio</strong><small id="scPageCount"></small></div>
+    <button class="btn btn-small btn-danger hidden" id="scBatchStopBtn"><i data-icon="stop" data-icon-size="15"></i><span>Stopp</span></button>
+    <button class="btn btn-primary" id="scDoneBtn" disabled><i data-icon="check" data-icon-size="17"></i><span>Fertig</span></button>
+  </header>
+
+  <!-- Seiten -->
+  <div class="sc-view" id="scPagesView">
+    <div class="sc-pagegrid" id="scPageGrid"></div>
+    <p class="sc-hint" id="scPagesHint">Seite antippen für große Vorschau · <i data-icon="crop" data-icon-size="13"></i> Zuschnitt · <i data-icon="eraser" data-icon-size="13"></i> Radierer. <span class="sc-hint-long">Alle Seiten werden zusammen zu <strong>einer</strong> PDF.</span></p>
+  </div>
+
+  <!-- Zuschnitt -->
+  <div class="sc-view hidden" id="scCropView">
+    <div class="sc-toolbar">
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Auswahl</span>
+        <button class="btn btn-small hidden" id="scA4BedBtn" title="Fester A4-Ausschnitt ab der Anlegeecke"><i data-icon="a4" data-icon-size="15"></i><span>A4-Fläche</span></button>
+        <button class="btn btn-small hidden" id="scA4CornerBtn" title="Anlegeecke wechseln"><i data-icon="rotate" data-icon-size="15"></i><span id="scCornerLabel">Ecke</span></button>
+        <button class="btn btn-small" id="scAutoBtn" title="Dokumentränder automatisch erkennen"><i data-icon="wand" data-icon-size="15"></i><span>Erkennen</span></button>
+        <button class="btn btn-small" id="scFullBtn" title="Das ganze Bild auswählen"><i data-icon="square" data-icon-size="15"></i><span>Alles</span></button>
+      </span>
+      <span class="sc-sep"></span>
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Format</span>
+        <span class="sc-seg" role="radiogroup" aria-label="Ausgabeformat">
+          <button class="sc-seg-btn" data-format="a4p" title="DIN A4 hochkant">A4 hoch</button>
+          <button class="sc-seg-btn" data-format="a4l" title="DIN A4 quer">A4 quer</button>
+          <button class="sc-seg-btn" data-format="auto" title="Seitenformat folgt der Auswahl">Frei</button>
+        </span>
+        <label class="sc-check hidden" id="scStretchWrap" title="Auswahl auf das ganze A4-Blatt ziehen. Ohne Häkchen wird unverzerrt eingepasst.">
+          <input type="checkbox" id="scStretch"> exakt füllen
+        </label>
+      </span>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small" id="scRotateBtn" title="Um 90° drehen"><i data-icon="rotate" data-icon-size="15"></i><span>Drehen</span></button>
+    </div>
+    <div class="sc-crop-stage" id="scCropStage">
+      <canvas id="scCropCanvas"></canvas>
+      <svg id="scCropSvg" tabindex="0" aria-label="Ecken anpassen (Pfeiltasten bewegen die zuletzt gewählte Ecke)"></svg>
+      <div class="sc-loupe hidden" id="scLoupe"><canvas width="150" height="150"></canvas></div>
+    </div>
+    <p class="sc-hint">Ecken (groß) oder Kanten (klein) ziehen – die Lupe zeigt die Ecke vergrößert. <span class="sc-hint-long">Pfeiltasten justieren fein nach.</span></p>
+    <div class="sc-bottombar">
+      <button class="btn" id="scCropCancelBtn">Abbrechen</button>
+      <button class="btn btn-primary" id="scCropOkBtn"><i data-icon="check" data-icon-size="16"></i><span>Übernehmen</span></button>
+    </div>
+  </div>
+
+  <!-- Radierer (weiß übermalen) -->
+  <div class="sc-view hidden" id="scEraseView">
+    <div class="sc-toolbar">
+      <label class="sc-brush-label"><i data-icon="eraser" data-icon-size="16"></i> Pinsel
+        <input type="range" id="scBrushSize" min="6" max="90" step="1" value="26">
+        <span class="sc-brush-dot" id="scBrushDot"></span>
+      </label>
+      <span class="sc-sep"></span>
+      <span class="sc-tgroup">
+        <button class="btn btn-small btn-icon" id="scEraseZoomOut" title="Herauszoomen" aria-label="Herauszoomen"><i data-icon="minus" data-icon-size="15"></i></button>
+        <span class="sc-zoomlabel" id="scEraseZoomLabel">100 %</span>
+        <button class="btn btn-small btn-icon" id="scEraseZoomIn" title="Hineinzoomen" aria-label="Hineinzoomen"><i data-icon="plus" data-icon-size="15"></i></button>
+        <button class="btn btn-small" id="scEraseZoomFit" title="Einpassen">Fit</button>
+      </span>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small btn-icon" id="scEraseUndoBtn" title="Rückgängig" aria-label="Rückgängig"><i data-icon="undo" data-icon-size="15"></i></button>
+      <button class="btn btn-small btn-icon" id="scEraseRedoBtn" title="Wiederholen" aria-label="Wiederholen"><i data-icon="redo" data-icon-size="15"></i></button>
+    </div>
+    <div class="sc-erase-stage" id="scEraseStage"><canvas id="scEraseCanvas"></canvas></div>
+    <p class="sc-hint">Mit dem weißen Pinsel über Ränder, Schatten oder Störungen malen. <span class="sc-hint-long">Zoomen mit zwei Fingern, Mausrad oder den Tasten – ein Finger radiert.</span></p>
+    <div class="sc-bottombar">
+      <button class="btn" id="scEraseCancelBtn">Abbrechen</button>
+      <button class="btn btn-primary" id="scEraseOkBtn"><i data-icon="check" data-icon-size="16"></i><span>Fertig</span></button>
+    </div>
+  </div>
+
+  <!-- Große Seitenvorschau -->
+  <div class="sc-preview hidden" id="scPreview" role="dialog" aria-modal="true" aria-label="Seitenvorschau">
+    <div class="sc-preview-bar">
+      <button class="btn btn-icon btn-ghost" id="scPreviewClose" aria-label="Schließen"><i data-icon="close"></i></button>
+      <span class="sc-preview-label" id="scPreviewLabel"></span>
+      <button class="btn btn-small btn-icon" id="scPreviewPrev" aria-label="Vorherige Seite"><i data-icon="chevronLeft" data-icon-size="15"></i></button>
+      <button class="btn btn-small btn-icon" id="scPreviewNext" aria-label="Nächste Seite"><i data-icon="chevronRight" data-icon-size="15"></i></button>
+      <span class="sc-sep"></span>
+      <button class="btn btn-small" id="scPreviewCrop"><i data-icon="crop" data-icon-size="15"></i><span>Zuschnitt</span></button>
+      <button class="btn btn-small" id="scPreviewErase"><i data-icon="eraser" data-icon-size="15"></i><span>Radieren</span></button>
+    </div>
+    <div class="sc-preview-stage" id="scPreviewStage"></div>
+  </div>
+
+  <input type="file" id="scFileInput" accept="image/*,.heic,.heif" multiple hidden>
+  <input type="file" id="scCamInput" accept="image/*" capture="environment" hidden>
+</div>`;
+
+function view(name) {
+  state.view = name;
+  $('#scPagesView', state.root).classList.toggle('hidden', name !== 'pages');
+  $('#scCropView', state.root).classList.toggle('hidden', name !== 'crop');
+  $('#scEraseView', state.root).classList.toggle('hidden', name !== 'erase');
+  const onPages = name === 'pages';
+  $('#scDoneBtn', state.root).classList.toggle('hidden', !onPages);
+  if (onPages) renderPages();
+  updatePageCount();
+}
+
+function updatePageCount() {
+  if (!state.root) return;
+  const el = $('#scPageCount', state.root);
+  const n = state.pages.length;
+  // Läuft gerade ein Stapel-Scan, hat dessen Fortschrittstext Vorrang.
+  el.textContent = state.batchStatus
+    || (n + state.pending === 0 ? 'Noch keine Seiten' : `${n} Seite${n === 1 ? '' : 'n'}${state.pending ? ` · ${state.pending} wird gelesen …` : ''}`);
+  const done = $('#scDoneBtn', state.root);
+  done.disabled = n === 0 || state.pending > 0 || state.building;
+  if (!state.building) done.querySelector('span').textContent = n > 0 ? `Fertig (${n})` : 'Fertig';
+}
+
+// ---------------------------------------------------------------- Seiten anlegen
+
+/** Bilddatei einlesen, automatisch zuschneiden und als Seite anhängen. */
+async function addImageFile(file) {
+  state.pending++;
+  renderPages();
+  try {
+    const canvas = await blobToCanvas(file);
+    const px = canvas.origPx;
+    const dpi = await scanDpiOf(file, px.w, px.h);
+    if (dpi) {
+      canvas.scanDpi = dpi;
+      canvas.sourcePx = px;
+    }
+    const lay = autoLayout(canvas, { geometry: geometry(), a4: wantA4() });
+    const page = {
+      blob: file,
+      px,
+      scanDpi: dpi,
+      rot: 0,
+      corners: orderCorners(lay.corners.map((p) => ({ ...p }))),
+      format: lay.format,
+      stretch: lay.stretch,
+      how: lay.how,
+      erase: [],
+      thumb: null,
+    };
+    srcCache.unshift({ page, rot: 0, canvas });
+    while (srcCache.length > 2) srcCache.pop();
+    state.pages.push(page);
+    return page;
+  } finally {
+    state.pending--;
+    if (state.root && state.view === 'pages') renderPages();
+    updatePageCount();
+  }
+}
+
+async function addFiles(fileList) {
+  const files = [...fileList].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(f.name || ''));
   for (const f of files) {
     try {
-      canvases.push(await fileToCanvas(f));
+      await addImageFile(f);
     } catch (e) {
-      alert(e?.message || e);
+      toast(e?.message || String(e), 'err', 5000);
     }
   }
-  if (canvases.length === 0) return;
-  state.queue.push(...canvases.slice(1));
-  // Beim Abbrechen dorthin zurück, wo es sinnvoll ist: zur Seitenübersicht,
-  // sobald Seiten da sind – und im Netzwerk-Betrieb immer (die Kamera wird
-  // dort gar nicht gebraucht).
-  const back = (state.pages.length > 0 || state.netScan) ? 'pages' : 'capture';
-  openCrop(canvases[0], null, back);
 }
 
-// ------------------------------------------------ Zuschnitt (Ecken + Lupe)
+// ---------------------------------------------------------------- Seitenübersicht
 
-function openCrop(srcCanvas, pageIndex, returnTo) {
-  const existing = pageIndex != null ? state.pages[pageIndex] : null;
-  state.cropReturn = returnTo;
-  // Bei Flachbett-Scans nicht raten: Der A4-Bereich steht rechnerisch fest
-  // (Vorlage liegt bündig in der Ecke). Das trifft jede Seite gleich – anders
-  // als die Kantenerkennung, die bei weißem Blatt auf weißem Deckel scheitert.
-  const src = existing ? existing.src : srcCanvas;
-  const a4 = existing ? null : a4CornersForScan(src, {
-    originX: state.scanOriginX || 'left',
-    originY: state.scanOriginY || 'top',
+// Miniatur der fertigen Seite (inkl. A4-Einpassung/Streckung & Radierungen)
+function composeThumb(page, src, thumbH = 190) {
+  const { w, h } = outputSize(src.width, src.height, page.corners);
+  const isA4 = page.format === 'a4p' || page.format === 'a4l';
+  if (!isA4) {
+    const tw = Math.max(24, Math.round(thumbH * (w / h)));
+    return applyErase(warpPerspective(src, page.corners, tw, thumbH), page.erase);
+  }
+  const [aw, ah] = page.format === 'a4p' ? [210, 297] : [297, 210];
+  const tw = Math.max(24, Math.round(thumbH * (aw / ah)));
+  const c = document.createElement('canvas');
+  c.width = tw;
+  c.height = thumbH;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, tw, thumbH);
+  let iw = tw;
+  let ih = thumbH;
+  if (!page.stretch) {
+    const s = Math.min(tw / w, thumbH / h);
+    iw = Math.max(8, Math.round(w * s));
+    ih = Math.max(8, Math.round(h * s));
+  }
+  const warped = applyErase(warpPerspective(src, page.corners, iw, ih), page.erase);
+  ctx.drawImage(warped, Math.round((tw - iw) / 2), Math.round((thumbH - ih) / 2));
+  return c;
+}
+
+async function thumbFor(page) {
+  if (!page.thumb) {
+    const src = await getSrc(page);
+    page.thumb = composeThumb(page, src, 460).toDataURL('image/jpeg', 0.85);
+  }
+  return page.thumb;
+}
+
+function formatLabel(page) {
+  let fmt = page.format === 'a4p' ? 'A4 hoch' : page.format === 'a4l' ? 'A4 quer' : 'Frei';
+  if (page.format !== 'auto' && page.stretch) fmt += ' · exakt';
+  if (page.how === 'bed') fmt += ' · Glasfläche';
+  return fmt;
+}
+
+let renderToken = 0;
+async function renderPages() {
+  if (!state.root) return;
+  const token = ++renderToken;
+  const grid = $('#scPageGrid', state.root);
+  const frag = document.createDocumentFragment();
+  const mk = (html, title, fn, disabled = false) => {
+    const b = document.createElement('button');
+    b.className = 'btn btn-small btn-icon';
+    b.innerHTML = html;   // Icons aus dem eigenen Set, keine Benutzereingabe
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.disabled = disabled;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  state.pages.forEach((page, idx) => {
+    const cell = document.createElement('div');
+    cell.className = 'sc-pagecell';
+    const wrap = document.createElement('div');
+    wrap.className = 'sc-thumb-wrap';
+    const img = document.createElement('img');
+    img.className = 'sc-thumb';
+    img.alt = `Seite ${idx + 1}`;
+    img.title = 'Tippen für große Vorschau';
+    img.setAttribute('role', 'button');
+    img.tabIndex = 0;
+    img.addEventListener('click', () => openPagePreview(idx));
+    img.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPagePreview(idx); }
+    });
+    if (page.thumb) img.src = page.thumb;
+    else thumbFor(page).then((u) => { if (token === renderToken || img.isConnected) img.src = u; }).catch(() => {});
+    const no = document.createElement('span');
+    no.className = 'sc-pageno';
+    no.textContent = String(idx + 1);
+    wrap.append(img, no);
+    const label = document.createElement('div');
+    label.className = 'sc-pagelabel';
+    label.textContent = formatLabel(page);
+    const bar = document.createElement('div');
+    bar.className = 'sc-pagecell-bar';
+    bar.append(
+      mk(icon('crop', { size: 15 }), 'Zuschnitt & Format', () => openCrop(idx)),
+      mk(icon('eraser', { size: 15 }), 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
+      mk(icon('chevronLeft', { size: 15 }), 'Nach vorne', () => {
+        [state.pages[idx - 1], state.pages[idx]] = [state.pages[idx], state.pages[idx - 1]];
+        renderPages();
+      }, idx === 0),
+      mk(icon('chevronRight', { size: 15 }), 'Nach hinten', () => {
+        [state.pages[idx + 1], state.pages[idx]] = [state.pages[idx], state.pages[idx + 1]];
+        renderPages();
+      }, idx === state.pages.length - 1),
+      mk(icon('trash', { size: 15 }), 'Seite löschen', () => {
+        dropSrc(state.pages[idx]);
+        state.pages.splice(idx, 1);
+        renderPages();
+      }),
+    );
+    cell.append(wrap, label, bar);
+    frag.appendChild(cell);
   });
+  for (let i = 0; i < state.pending; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'sc-pagecell';
+    cell.innerHTML = `<div class="sc-thumb-wrap sc-pending">${icon('spinner', { size: 28 })}</div><div class="sc-pagelabel">wird eingelesen …</div>`;
+    frag.appendChild(cell);
+  }
+  // Kachel zum Anfügen weiterer Seiten
+  const add = document.createElement('div');
+  add.className = 'sc-addcell';
+  add.innerHTML = `
+    <span>${state.pages.length ? 'Weitere Seite' : 'Erste Seite hinzufügen'}</span>
+    <button class="btn btn-small touch-only" data-sc-add="camera">${icon('camera', { size: 16 })}<span>Kamera</span></button>
+    <button class="btn btn-small" data-sc-add="files">${icon('image', { size: 16 })}<span>Bilder</span></button>
+    ${state.opts.netScan ? `<button class="btn btn-small btn-primary" data-sc-add="scan" ${state.batchStatus ? 'disabled' : ''}>${icon('scanner', { size: 16 })}<span>Scanner</span></button>` : ''}`;
+  frag.appendChild(add);
+  grid.replaceChildren(frag);
+  updatePageCount();
+}
+
+// ---------------------------------------------------------------- Zuschnitt (Ecken + Lupe)
+
+async function openCrop(pageIndex) {
+  const page = state.pages[pageIndex];
+  if (!page) return;
+  closePagePreview();
+  const src = await getSrc(page);
   state.editing = {
     src,
-    corners: existing ? existing.corners.map((p) => ({ ...p }))
-      : (a4 || detectCornersOnCanvas(srcCanvas) || defaultCorners()),
-    // Erkanntes Blatt: Hoch- oder Querformat aus dem Seitenverhältnis ableiten
-    // und strecken – so wird die Ausgabe exakt A4 statt „A4 mit weißem Rand“.
-    format: existing ? existing.format : (a4 ? a4FormatFor(src, a4) : state.lastFormat),
-    stretch: existing ? !!existing.stretch : (a4 ? true : state.lastStretch),
-    // Aus der Quelle lesen, nicht aus srcCanvas: beim erneuten Öffnen einer
-    // bestehenden Seite ist srcCanvas null – dann verschwanden die A4-Knöpfe.
-    isBedScan: !!src?.scanDpi,
+    corners: page.corners.map((p) => ({ ...p })),
+    format: page.format,
+    stretch: !!page.stretch,
+    rot: page.rot,
+    isBedScan: !!page.scanDpi,
+    how: page.how,
     pageIndex,
   };
   state.activeHandle = null;
@@ -956,8 +875,7 @@ function openCrop(srcCanvas, pageIndex, returnTo) {
 }
 
 // Rand um das Bild herum. Ecken liegen oft genau auf der Bildkante – ohne
-// diesen Rand läge der halbe Anfasser außerhalb der Zeichenfläche und ließe
-// sich nicht greifen.
+// diesen Rand läge der halbe Anfasser außerhalb der Zeichenfläche.
 const CROP_PAD = 34;
 
 function cropDisplayMetrics() {
@@ -968,6 +886,8 @@ function cropDisplayMetrics() {
   const fit = Math.min(maxW / src.width, maxH / src.height);
   return { dw: Math.max(1, src.width * fit), dh: Math.max(1, src.height * fit) };
 }
+
+const CORNER_LABEL = { tl: 'oben links', tr: 'oben rechts', br: 'unten rechts', bl: 'unten links' };
 
 function renderCrop() {
   const ed = state.editing;
@@ -980,33 +900,22 @@ function renderCrop() {
   canvas.height = Math.round(dh * dpr);
   canvas.style.width = `${dw}px`;
   canvas.style.height = `${dh}px`;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(ed.src, 0, 0, canvas.width, canvas.height);
-  // Zeichenfläche ist rundum größer als das Bild; der Nullpunkt des Bildes
-  // liegt dadurch bei (CROP_PAD, CROP_PAD).
+  canvas.getContext('2d').drawImage(ed.src, 0, 0, canvas.width, canvas.height);
   svg.setAttribute('viewBox', `${-CROP_PAD} ${-CROP_PAD} ${dw + CROP_PAD * 2} ${dh + CROP_PAD * 2}`);
   svg.style.width = `${dw + CROP_PAD * 2}px`;
   svg.style.height = `${dh + CROP_PAD * 2}px`;
   drawCropOverlay();
-  // Formatwahl markieren
   state.root.querySelectorAll('.sc-seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.format === ed.format);
     b.setAttribute('aria-pressed', String(b.dataset.format === ed.format));
   });
   $('#scStretchWrap', state.root).classList.toggle('hidden', ed.format === 'auto');
   $('#scStretch', state.root).checked = !!ed.stretch;
-
-  // A4-Werkzeuge nur zeigen, wenn die Vorlage vom Flachbett kommt und die
-  // Glasfläche tatsächlich größer als A4 ist.
-  const bedA4 = ed.isBedScan && !!a4CornersForScan(ed.src, {
-    originX: state.scanOriginX || 'left',
-    originY: state.scanOriginY || 'top',
-  });
-  for (const id of ['#scA4BedBtn', '#scA4CornerBtn']) {
-    const b = $(id, state.root);
-    b.hidden = !bedA4;
-    b.classList.toggle('hidden', !bedA4);
-  }
+  // A4-Werkzeuge nur bei Flachbett-Scans
+  const bed = ed.isBedScan;
+  $('#scA4BedBtn', state.root).classList.toggle('hidden', !bed);
+  $('#scA4CornerBtn', state.root).classList.toggle('hidden', !bed);
+  $('#scCornerLabel', state.root).textContent = `Ecke: ${CORNER_LABEL[geometry().corner] || 'oben links'}`;
 }
 
 function drawCropOverlay() {
@@ -1019,19 +928,20 @@ function drawCropOverlay() {
     const q = pts[(i + 1) % 4];
     return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
   });
+  const c = '#4f7bff';
   svg.innerHTML = `
-    <path d="M0,0 H${dw} V${dh} H0 Z ${quadPath}" fill="rgba(2,6,16,0.55)" fill-rule="evenodd"></path>
-    <path d="${quadPath}" fill="none" stroke="#38bdf8" stroke-width="2.5"></path>
+    <path d="M0,0 H${dw} V${dh} H0 Z ${quadPath}" fill="rgba(6,10,20,0.55)" fill-rule="evenodd"></path>
+    <path d="${quadPath}" fill="none" stroke="${c}" stroke-width="2.5"></path>
     ${mids.map((m, i) => `
       <g class="sc-handle sc-handle-edge" data-edge="${i}">
         <circle cx="${m.x}" cy="${m.y}" r="26" fill="transparent"></circle>
-        <circle cx="${m.x}" cy="${m.y}" r="8" fill="#38bdf8" stroke="#06232f" stroke-width="2"></circle>
+        <circle cx="${m.x}" cy="${m.y}" r="8" fill="${c}" stroke="#fff" stroke-width="2"></circle>
       </g>`).join('')}
     ${pts.map((p, i) => `
       <g class="sc-handle sc-handle-corner" data-corner="${i}">
         <circle cx="${p.x}" cy="${p.y}" r="40" fill="transparent"></circle>
-        <circle cx="${p.x}" cy="${p.y}" r="15" fill="rgba(56,189,248,0.28)" stroke="#38bdf8" stroke-width="3.5"></circle>
-        <circle cx="${p.x}" cy="${p.y}" r="3" fill="#38bdf8"></circle>
+        <circle cx="${p.x}" cy="${p.y}" r="15" fill="rgba(79,123,255,0.25)" stroke="${c}" stroke-width="3.5"></circle>
+        <circle cx="${p.x}" cy="${p.y}" r="3" fill="${c}"></circle>
       </g>`).join('')}`;
 }
 
@@ -1044,7 +954,7 @@ function updateLoupe(cornerIdx, pointerX) {
   const ed = state.editing;
   const p = ed.corners[cornerIdx];
   const size = 150;
-  const region = clamp(Math.max(ed.src.width, ed.src.height) * 0.07, 40, 260); // Quellausschnitt in px
+  const region = clamp(Math.max(ed.src.width, ed.src.height) * 0.07, 40, 260);
   const cx = p.x * (ed.src.width - 1);
   const cy = p.y * (ed.src.height - 1);
   const ctx = lc.getContext('2d');
@@ -1056,12 +966,11 @@ function updateLoupe(cornerIdx, pointerX) {
   ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
   ctx.clip();
   ctx.drawImage(ed.src, cx - region / 2, cy - region / 2, region, region, 0, 0, size, size);
-  // Quadkanten in Lupenkoordinaten einzeichnen
   const toL = (q) => ({
     x: (q.x * (ed.src.width - 1) - (cx - region / 2)) * (size / region),
     y: (q.y * (ed.src.height - 1) - (cy - region / 2)) * (size / region),
   });
-  ctx.strokeStyle = 'rgba(56,189,248,0.9)';
+  ctx.strokeStyle = 'rgba(79,123,255,0.95)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ed.corners.forEach((q, i) => {
@@ -1070,30 +979,26 @@ function updateLoupe(cornerIdx, pointerX) {
   });
   ctx.closePath();
   ctx.stroke();
-  // Fadenkreuz
-  ctx.strokeStyle = 'rgba(248,113,113,0.95)';
+  ctx.strokeStyle = 'rgba(255,90,90,0.95)';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(size / 2 - 14, size / 2); ctx.lineTo(size / 2 + 14, size / 2);
   ctx.moveTo(size / 2, size / 2 - 14); ctx.lineTo(size / 2, size / 2 + 14);
   ctx.stroke();
   ctx.restore();
-  // Seite wählen: Lupe weg vom Finger
   const onLeft = pointerX - stage.getBoundingClientRect().left > stage.clientWidth / 2;
   loupe.classList.toggle('sc-loupe-left', onLeft);
   loupe.classList.remove('hidden');
 }
 
 function hideLoupe() {
-  $('#scLoupe', state.root).classList.add('hidden');
+  $('#scLoupe', state.root)?.classList.add('hidden');
 }
 
 function svgPoint(e) {
   const svg = $('#scCropSvg', state.root);
   const r = svg.getBoundingClientRect();
   const { dw, dh } = cropDisplayMetrics();
-  // Die Fläche ist rundum um CROP_PAD größer als das Bild – erst den Rand
-  // abziehen, dann auf 0..1 des Bildes normieren.
   const padX = (CROP_PAD / (dw + CROP_PAD * 2)) * r.width;
   const padY = (CROP_PAD / (dh + CROP_PAD * 2)) * r.height;
   const innerW = r.width - padX * 2;
@@ -1101,7 +1006,6 @@ function svgPoint(e) {
   return {
     x: clamp((e.clientX - r.left - padX) / innerW, 0, 1),
     y: clamp((e.clientY - r.top - padY) / innerH, 0, 1),
-    dw, dh,
   };
 }
 
@@ -1109,17 +1013,14 @@ function onCropPointerDown(e) {
   const handle = e.target.closest?.('.sc-handle');
   if (!handle || !state.editing) return;
   e.preventDefault();
-  const svg = $('#scCropSvg', state.root);
-  svg.setPointerCapture?.(e.pointerId);
+  $('#scCropSvg', state.root).setPointerCapture?.(e.pointerId);
   if (handle.dataset.corner != null) {
     const idx = Number(handle.dataset.corner);
     state.drag = { type: 'corner', idx };
     state.activeHandle = idx;
     updateLoupe(idx, e.clientX);
   } else {
-    const idx = Number(handle.dataset.edge);
-    const p = svgPoint(e);
-    state.drag = { type: 'edge', idx, last: p };
+    state.drag = { type: 'edge', idx: Number(handle.dataset.edge), last: svgPoint(e) };
   }
 }
 
@@ -1138,8 +1039,8 @@ function onCropPointerMove(e) {
     state.drag.last = p;
     const i = state.drag.idx;
     const j = (i + 1) % 4;
-    ed.corners[i] = { x: clamp(ed.corners[i].x + dx, 0, 1), y: clamp(ed.corners[i].y + dy, 0, 1) };
-    ed.corners[j] = { x: clamp(ed.corners[j].x + dx, 0, 1), y: clamp(ed.corners[j].y + dy, 0, 1) };
+    ed.corners[i] = { x: clamp01(ed.corners[i].x + dx), y: clamp01(ed.corners[i].y + dy) };
+    ed.corners[j] = { x: clamp01(ed.corners[j].x + dx), y: clamp01(ed.corners[j].y + dy) };
     drawCropOverlay();
   }
 }
@@ -1151,78 +1052,75 @@ function onCropPointerUp() {
 
 function onCropKeydown(e) {
   if (state.activeHandle == null || !state.editing) return;
-  const step = (e.shiftKey ? 10 : 1.5) / Math.max(state.editing.src.width, state.editing.src.height) * 4;
-  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
-  const mv = moves[e.key];
+  const step = ((e.shiftKey ? 10 : 1.5) / Math.max(state.editing.src.width, state.editing.src.height)) * 4;
+  const mv = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
   if (!mv) return;
   e.preventDefault();
   const c = state.editing.corners[state.activeHandle];
-  state.editing.corners[state.activeHandle] = {
-    x: clamp(c.x + mv[0], 0, 1),
-    y: clamp(c.y + mv[1], 0, 1),
-  };
+  state.editing.corners[state.activeHandle] = { x: clamp01(c.x + mv[0]), y: clamp01(c.y + mv[1]) };
   drawCropOverlay();
 }
 
 function rotateEditing() {
   const ed = state.editing;
+  const scanDpi = ed.src.scanDpi;
+  const srcPx = ed.src.sourcePx;
   ed.src = rotateCanvas90(ed.src);
+  if (scanDpi) {
+    ed.src.scanDpi = scanDpi;
+    ed.src.sourcePx = srcPx ? { w: srcPx.h, h: srcPx.w } : null;
+  }
+  ed.rot = (ed.rot + 90) % 360;
   ed.corners = orderCorners(ed.corners.map((p) => ({ x: 1 - p.y, y: p.x })));
-  // A4-Ausrichtung dreht sinnvollerweise mit
   if (ed.format === 'a4p') ed.format = 'a4l';
   else if (ed.format === 'a4l') ed.format = 'a4p';
-  state.lastFormat = ed.format;
   renderCrop();
 }
 
 function applyCrop() {
   const ed = state.editing;
   if (!ed) return;
-  const page = {
-    src: ed.src,
-    corners: orderCorners(ed.corners.map((p) => ({ ...p }))),
-    format: ed.format,
-    stretch: !!ed.stretch,
-    erase: ed.pageIndex != null ? (state.pages[ed.pageIndex].erase || []) : [],
-  };
-  state.lastFormat = ed.format;
-  state.lastStretch = !!ed.stretch;
-  if (ed.pageIndex != null) state.pages[ed.pageIndex] = page;
-  else state.pages.push(page);
+  const page = state.pages[ed.pageIndex];
+  if (page.rot !== ed.rot) {
+    dropSrc(page);
+    page.rot = ed.rot;
+    srcCache.unshift({ page, rot: page.rot, canvas: ed.src });
+    while (srcCache.length > 2) srcCache.pop();
+  }
+  page.corners = orderCorners(ed.corners.map((p) => ({ ...p })));
+  page.format = ed.format;
+  page.stretch = !!ed.stretch;
+  page.how = ed.how;
+  page.thumb = null;
   state.editing = null;
-  nextFromQueueOrPages();
+  view('pages');
 }
 
 function cancelCrop() {
   state.editing = null;
-  nextFromQueueOrPages(state.cropReturn === 'capture');
-}
-
-function nextFromQueueOrPages(backToCapture = false) {
-  if (state.queue.length > 0) {
-    openCrop(state.queue.shift(), null, state.cropReturn);
-    return;
-  }
-  if (backToCapture || state.pages.length === 0) view('capture');
-  else view('pages');
+  view('pages');
 }
 
 // ------------------------------------------------ Radierer (weiß übermalen)
 
 const ERASE_BASE_MAX = 2200;   // Auflösung der Arbeitskopie im Radierer
 
-function openErase(pageIndex) {
+async function openErase(pageIndex) {
   const page = state.pages[pageIndex];
+  if (!page) return;
+  closePagePreview();
   page.erase = page.erase || [];
+  const src = await getSrc(page);
   state.erasing = {
     pageIndex,
+    src,
     backup: JSON.stringify(page.erase),
     undo: [],
     redo: [],
     base: null,
     drawing: null,
-    zoom: 1,          // 1 = eingepasst
-    pan: { x: 0, y: 0 },  // linke obere Ecke des Sichtfensters in Basispixeln
+    zoom: 1,
+    pan: { x: 0, y: 0 },
     pinch: null,
     pointers: new Map(),
   };
@@ -1241,7 +1139,6 @@ function eraseMetrics() {
   const vh = Math.max(40, stage.clientHeight - 12);
   const fit = Math.min(vw / bw, vh / bh);
   const scale = fit * er.zoom;
-  // Sichtbarer Ausschnitt des Basisbildes
   const visW = Math.min(bw, vw / scale);
   const visH = Math.min(bh, vh / scale);
   er.pan.x = clamp(er.pan.x, 0, Math.max(0, bw - visW));
@@ -1253,15 +1150,11 @@ function renderErase() {
   const er = state.erasing;
   if (!er) return;
   const page = state.pages[er.pageIndex];
-
-  // Arbeitskopie in guter Auflösung – nur einmal berechnen. Beim Hineinzoomen
-  // wird daraus ausschnittweise gezeichnet, dadurch sieht man wirklich mehr.
   if (!er.base) {
-    const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
+    const { w, h } = outputSize(er.src.width, er.src.height, page.corners);
     const s = Math.min(1, ERASE_BASE_MAX / Math.max(w, h));
-    er.base = warpPerspective(page.src, page.corners, Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
+    er.base = warpPerspective(er.src, page.corners, Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
   }
-
   const m = eraseMetrics();
   const canvas = $('#scEraseCanvas', state.root);
   const dpr = Math.min(2.5, window.devicePixelRatio || 1);
@@ -1269,15 +1162,11 @@ function renderErase() {
   canvas.style.height = `${Math.round(m.cssH)}px`;
   canvas.width = Math.max(1, Math.round(m.cssW * dpr));
   canvas.height = Math.max(1, Math.round(m.cssH * dpr));
-
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(er.base, er.pan.x, er.pan.y, m.visW, m.visH, 0, 0, canvas.width, canvas.height);
-
-  // Radierspuren im selben Ausschnitt zeichnen (Striche sind normiert
-  // gespeichert und damit unabhängig von Zoom und Auflösung)
-  const k = canvas.width / m.visW;       // Basispixel -> Zeichenpixel
+  const k = canvas.width / m.visW;
   ctx.save();
   ctx.strokeStyle = '#ffffff';
   ctx.fillStyle = '#ffffff';
@@ -1305,15 +1194,11 @@ function renderErase() {
 function updateEraseZoomUi() {
   const er = state.erasing;
   if (!er || !state.root) return;
-  const out = $('#scEraseZoomOut', state.root);
-  const inn = $('#scEraseZoomIn', state.root);
-  const lbl = $('#scEraseZoomLabel', state.root);
-  if (lbl) lbl.textContent = `${Math.round(er.zoom * 100)} %`;
-  if (out) out.disabled = er.zoom <= 1.01;
-  if (inn) inn.disabled = er.zoom >= 7.9;
+  $('#scEraseZoomLabel', state.root).textContent = `${Math.round(er.zoom * 100)} %`;
+  $('#scEraseZoomOut', state.root).disabled = er.zoom <= 1.01;
+  $('#scEraseZoomIn', state.root).disabled = er.zoom >= 7.9;
 }
 
-/** Zoomen um einen Bildpunkt herum (Standard: Mitte des Sichtfensters) */
 function eraseZoomTo(zoom, focus) {
   const er = state.erasing;
   if (!er?.base) return;
@@ -1333,22 +1218,18 @@ function updateEraseButtons() {
   $('#scEraseRedoBtn', state.root).disabled = !er || er.redo.length === 0;
 }
 
-// Bildschirmpunkt -> normierte Seitenkoordinate (0..1), zoomrichtig
 function erasePoint(e) {
   const er = state.erasing;
-  const canvas = $('#scEraseCanvas', state.root);
-  const r = canvas.getBoundingClientRect();
+  const r = $('#scEraseCanvas', state.root).getBoundingClientRect();
   const m = eraseMetrics();
   const bx = er.pan.x + clamp((e.clientX - r.left) / r.width, 0, 1) * m.visW;
   const by = er.pan.y + clamp((e.clientY - r.top) / r.height, 0, 1) * m.visH;
-  return { x: clamp(bx / m.bw, 0, 1), y: clamp(by / m.bh, 0, 1) };
+  return { x: clamp01(bx / m.bw), y: clamp01(by / m.bh) };
 }
 
-// Basispunkt unter dem Zeiger (für Zoom-Fokus und Verschieben)
 function eraseBasePoint(clientX, clientY) {
   const er = state.erasing;
-  const canvas = $('#scEraseCanvas', state.root);
-  const r = canvas.getBoundingClientRect();
+  const r = $('#scEraseCanvas', state.root).getBoundingClientRect();
   const m = eraseMetrics();
   return {
     x: er.pan.x + clamp((clientX - r.left) / r.width, 0, 1) * m.visW,
@@ -1361,14 +1242,13 @@ function onErasePointerDown(e) {
   if (!er) return;
   e.preventDefault();
   // Ein primärer Zeiger startet eine frische Geste – verhindert „Geisterfinger“
-  // nach einem verlorenen pointerup (siehe Editor).
+  // nach einem verlorenen pointerup.
   if (e.isPrimary) {
     er.pointers.clear();
     er.pinch = null;
     er.drawing = null;
   }
-  const canvas = $('#scEraseCanvas', state.root);
-  try { canvas.setPointerCapture?.(e.pointerId); } catch { /* nicht kritisch */ }
+  try { $('#scEraseCanvas', state.root).setPointerCapture?.(e.pointerId); } catch { /* nicht kritisch */ }
   er.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
   // Zwei Finger: zoomen und verschieben statt radieren
@@ -1379,7 +1259,6 @@ function onErasePointerDown(e) {
       zoom: er.zoom,
       base: eraseBasePoint((a.x + b.x) / 2, (a.y + b.y) / 2),
     };
-    // angefangenen Strich zurücknehmen – die Geste war als Zoom gemeint
     if (er.drawing) {
       const page = state.pages[er.pageIndex];
       const i = page.erase.indexOf(er.drawing);
@@ -1410,12 +1289,11 @@ function onErasePointerMove(e) {
   const er = state.erasing;
   if (!er) return;
   if (er.pointers.has(e.pointerId)) er.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
   if (er.pinch && er.pointers.size === 2) {
     e.preventDefault();
     const [a, b] = [...er.pointers.values()];
-    const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
-    eraseZoomTo(er.pinch.zoom * (dist / er.pinch.dist), er.pinch.base);
+    const d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    eraseZoomTo(er.pinch.zoom * (d / er.pinch.dist), er.pinch.base);
     return;
   }
   if (!er.drawing) return;
@@ -1455,58 +1333,30 @@ function eraseRedo() {
 function closeErase(discard) {
   const er = state.erasing;
   if (!er) return;
-  if (discard) state.pages[er.pageIndex].erase = JSON.parse(er.backup);
+  const page = state.pages[er.pageIndex];
+  if (discard) page.erase = JSON.parse(er.backup);
+  else page.thumb = null;
   state.erasing = null;
   view('pages');
 }
 
-// ------------------------------------------------ Seitenübersicht & PDF
+// ------------------------------------------------ Große Seitenvorschau
 
-// Miniatur der fertigen PDF-Seite (inkl. A4-Einpassung/Streckung & Radierungen)
-function composeThumb(page, thumbH = 190) {
-  const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
-  const isA4 = page.format === 'a4p' || page.format === 'a4l';
-  if (!isA4) {
-    const tw = Math.max(24, Math.round(thumbH * (w / h)));
-    const thumb = warpPerspective(page.src, page.corners, tw, thumbH);
-    return applyErase(thumb, page.erase);
-  }
-  const [aw, ah] = page.format === 'a4p' ? [210, 297] : [297, 210];
-  const tw = Math.max(24, Math.round(thumbH * (aw / ah)));
-  const c = document.createElement('canvas');
-  c.width = tw;
-  c.height = thumbH;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, tw, thumbH);
-  let iw = tw;
-  let ih = thumbH;
-  if (!page.stretch) {
-    const s = Math.min(tw / w, thumbH / h);
-    iw = Math.max(8, Math.round(w * s));
-    ih = Math.max(8, Math.round(h * s));
-  }
-  const warped = applyErase(warpPerspective(page.src, page.corners, iw, ih), page.erase);
-  ctx.drawImage(warped, Math.round((tw - iw) / 2), Math.round((thumbH - ih) / 2));
-  return c;
-}
-
-// Große Vorschau einer Seite – zum Prüfen vor dem Übernehmen. Von hier aus
-// lassen sich Zuschnitt und Radierer direkt öffnen.
-function openPagePreview(idx) {
+async function openPagePreview(idx) {
   const page = state.pages[idx];
   if (!page) return;
   const box = $('#scPreview', state.root);
   const stage = $('#scPreviewStage', state.root);
-  const big = composeThumb(page, Math.max(900, Math.round(window.innerHeight * 1.6)));
-  big.className = 'sc-preview-img';
-  stage.innerHTML = '';
-  stage.appendChild(big);
-  $('#scPreviewLabel', state.root).textContent = `Seite ${idx + 1} von ${state.pages.length}`;
+  state.previewIdx = idx;
+  $('#scPreviewLabel', state.root).textContent = `Seite ${idx + 1} von ${state.pages.length} · ${formatLabel(page)}`;
   $('#scPreviewPrev', state.root).disabled = idx === 0;
   $('#scPreviewNext', state.root).disabled = idx === state.pages.length - 1;
-  state.previewIdx = idx;
   box.classList.remove('hidden');
+  const src = await getSrc(page);
+  if (state.previewIdx !== idx) return;
+  const big = composeThumb(page, src, Math.max(900, Math.round(window.innerHeight * 1.6)));
+  big.className = 'sc-preview-img';
+  stage.replaceChildren(big);
 }
 
 function closePagePreview() {
@@ -1514,101 +1364,41 @@ function closePagePreview() {
   state.previewIdx = null;
 }
 
-function renderPages() {
-  const grid = $('#scPageGrid', state.root);
-  grid.innerHTML = '';
-  state.pages.forEach((page, idx) => {
-    const cell = document.createElement('div');
-    cell.className = 'sc-pagecell';
-    const thumb = composeThumb(page, 420);
-    thumb.className = 'sc-thumb';
-    thumb.title = 'Tippen für große Vorschau';
-    thumb.setAttribute('role', 'button');
-    thumb.setAttribute('tabindex', '0');
-    thumb.addEventListener('click', () => openPagePreview(idx));
-    thumb.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPagePreview(idx); }
-    });
-    const label = document.createElement('div');
-    label.className = 'sc-pagelabel';
-    let fmt = page.format === 'a4p' ? 'A4 hoch' : page.format === 'a4l' ? 'A4 quer' : 'Auto';
-    if (page.format !== 'auto' && page.stretch) fmt += ' · gestreckt';
-    label.textContent = `Seite ${idx + 1} · ${fmt}`;
-    const bar = document.createElement('div');
-    bar.className = 'sc-pagecell-bar';
-    // Beschriftung ist Markup (Icons) – die Werte stammen ausschließlich aus
-    // dem eigenen Icon-Set, nicht aus Benutzereingaben.
-    const mk = (html, title, fn, disabled = false) => {
-      const b = document.createElement('button');
-      b.className = 'btn btn-small';
-      b.innerHTML = html;
-      b.title = title;
-      b.setAttribute('aria-label', title);
-      b.disabled = disabled;
-      b.addEventListener('click', fn);
-      return b;
-    };
-    bar.append(
-      mk(icon('crop', { size: 15 }), 'Zuschnitt/Format bearbeiten', () => openCrop(null, idx, 'pages')),
-      mk(icon('eraser', { size: 15 }), 'Radieren – Ränder/Schatten weiß übermalen', () => openErase(idx)),
-      mk(icon('chevronLeft', { size: 15 }), 'Nach vorne schieben', () => {
-        [state.pages[idx - 1], state.pages[idx]] = [state.pages[idx], state.pages[idx - 1]];
-        renderPages();
-      }, idx === 0),
-      mk(icon('chevronRight', { size: 15 }), 'Nach hinten schieben', () => {
-        [state.pages[idx + 1], state.pages[idx]] = [state.pages[idx], state.pages[idx + 1]];
-        renderPages();
-      }, idx === state.pages.length - 1),
-      mk(icon('close', { size: 15 }), 'Seite löschen', () => {
-        state.pages.splice(idx, 1);
-        if (state.pages.length === 0) view('capture');
-        else renderPages();
-        updatePageCount();
-      }),
-    );
-    cell.append(thumb, label, bar);
-    grid.appendChild(cell);
-  });
-  $('#scDoneBtn', state.root).innerHTML = `${icon('check', { size: 16 })} Als PDF übernehmen (${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'})`;
-  updatePageCount();
-}
+// ------------------------------------------------ PDF bauen
 
 async function buildPdf() {
-  if (state.building || state.pages.length === 0) return;
+  if (state.building || state.pages.length === 0 || state.pending) return;
   state.building = true;
   const btn = $('#scDoneBtn', state.root);
   btn.disabled = true;
   try {
-    const { PDFDocument } = window.PDFLib;
+    const { PDFDocument, rgb } = window.PDFLib;
     const doc = await PDFDocument.create();
-    doc.setProducer('PDF Presser Scanner (lokal im Browser)');
+    doc.setProducer('PDF Presser Scan-Studio (lokal im Browser)');
     for (let i = 0; i < state.pages.length; i++) {
-      btn.textContent = `Erstelle PDF … Seite ${i + 1}/${state.pages.length}`;
-      await new Promise((r) => setTimeout(r, 0)); // UI atmen lassen
+      btn.querySelector('span').textContent = `PDF … ${i + 1}/${state.pages.length}`;
+      await new Promise((r) => setTimeout(r, 0));
       const page = state.pages[i];
-      const { w, h } = outputSize(page.src.width, page.src.height, page.corners);
-      const warped = applyErase(warpPerspective(page.src, page.corners, w, h), page.erase);
-      const blob = await new Promise((r) => warped.toBlob(r, 'image/jpeg', 0.9));
+      const src = await getSrc(page);
+      const { w, h } = outputSize(src.width, src.height, page.corners);
+      const warped = applyErase(warpPerspective(src, page.corners, w, h), page.erase);
+      const blob = await new Promise((r) => warped.toBlob(r, 'image/jpeg', 0.92));
+      warped.width = 1;
       const img = await doc.embedJpg(new Uint8Array(await blob.arrayBuffer()));
       if (page.format === 'a4p' || page.format === 'a4l') {
         const [pw, ph] = page.format === 'a4p' ? A4_PT : [A4_PT[1], A4_PT[0]];
         const pdfPage = doc.addPage([pw, ph]);
-        // Weißer Seitenhintergrund, damit die Ränder auch nach der
-        // Bild-Kompression sicher weiß bleiben
-        pdfPage.drawRectangle({ x: 0, y: 0, width: pw, height: ph, color: window.PDFLib.rgb(1, 1, 1) });
+        pdfPage.drawRectangle({ x: 0, y: 0, width: pw, height: ph, color: rgb(1, 1, 1) });
         if (page.stretch) {
           pdfPage.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
         } else {
           const s = Math.min(pw / w, ph / h);
-          const iw = w * s;
-          const ih = h * s;
-          pdfPage.drawImage(img, { x: (pw - iw) / 2, y: (ph - ih) / 2, width: iw, height: ih });
+          pdfPage.drawImage(img, { x: (pw - w * s) / 2, y: (ph - h * s) / 2, width: w * s, height: h * s });
         }
       } else {
         let pw;
         let ph;
-        if (w <= h) { ph = A4_PT[1]; pw = ph * (w / h); }
-        else { pw = A4_PT[1]; ph = pw * (h / w); }
+        if (w <= h) { ph = A4_PT[1]; pw = ph * (w / h); } else { pw = A4_PT[1]; ph = pw * (h / w); }
         doc.addPage([pw, ph]).drawImage(img, { x: 0, y: 0, width: pw, height: ph });
       }
     }
@@ -1619,9 +1409,9 @@ async function buildPdf() {
     closeScanner();
     done?.(file);
   } catch (e) {
-    alert(`PDF konnte nicht erstellt werden: ${e?.message || e}`);
-    btn.disabled = false;
-    btn.innerHTML = `${icon('check', { size: 16 })} Als PDF übernehmen`;
+    alertDialog('PDF konnte nicht erstellt werden', e?.message || String(e));
+    state.building = false;
+    updatePageCount();
   } finally {
     state.building = false;
   }
@@ -1630,24 +1420,35 @@ async function buildPdf() {
 // ------------------------------------------------ Öffnen / Schließen
 
 function closeScanner() {
-  stopCamera();
   document.removeEventListener('keydown', onGlobalKeydown);
   window.removeEventListener('resize', onResize);
   state.root?.remove();
   state.root = null;
   state.pages = [];
-  state.queue = [];
+  state.pending = 0;
   state.editing = null;
   state.erasing = null;
   state.onDone = null;
   state.building = false;
+  state.batchStatus = '';
+  srcCache.length = 0;
+}
+
+async function requestClose() {
+  if (state.batchStatus) state.opts.onCancelBatch?.();
+  if (state.pages.length > 0) {
+    const ok = await confirmDialog('Studio schließen?', `${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'} gehen verloren.`, 'Verwerfen', 'danger');
+    if (!ok) return;
+  }
+  closeScanner();
 }
 
 function onGlobalKeydown(e) {
-  if (e.key !== 'Escape' || !state.root) return;
-  // Erst die Vorschau schließen, nicht gleich den ganzen Scanner.
+  if (e.key !== 'Escape' || !state.root || document.querySelector('.dlg-wrap')) return;
   if (state.previewIdx != null) { closePagePreview(); return; }
-  closeScanner();
+  if (state.view === 'crop') { cancelCrop(); return; }
+  if (state.view === 'erase') { closeErase(true); return; }
+  requestClose();
 }
 
 function onResize() {
@@ -1656,10 +1457,16 @@ function onResize() {
 }
 
 /**
- * Öffnet den Scanner. onDone(file) erhält das fertige Scan-PDF (File).
+ * Öffnet das Studio. onDone(file) erhält das fertige Scan-PDF (File).
+ * opts:
+ *   initialFiles  Bilder, die sofort als Seiten angelegt werden
+ *   netScan       () => void – startet einen Scan (App steuert den Stapel)
+ *   onCancelBatch () => void – Stapel abbrechen
+ *   geometry      () => {corner, offX, offY} – A4-Lage auf der Glasfläche
+ *   a4            () => boolean – Fotos standardmäßig auf A4 setzen
  */
 export function openScanner(onDone, opts = {}) {
-  if (state.root) return;
+  if (state.root) closeScanner();
   const root = document.createElement('div');
   root.id = 'scannerRoot';
   root.innerHTML = TEMPLATE;
@@ -1667,107 +1474,93 @@ export function openScanner(onDone, opts = {}) {
   document.body.appendChild(root);
   state.root = root;
   state.onDone = onDone;
+  state.opts = opts;
   state.pages = [];
-  state.queue = [];
-  state.lastFormat = 'auto';
-  state.netScan = opts.netScan || null;   // Funktion, die eine weitere Seite holt
+  state.pending = 0;
+  state.batchStatus = '';
 
-  // Nachschub vom Netzwerk-Scanner: nur einblenden, wenn verfügbar.
-  const netBtns = [$('#scNetScanBtn', root), $('#scAddNetBtn', root)];
-  if (state.netScan) {
-    netBtns.forEach((b) => { b.hidden = false; b.addEventListener('click', () => addNetworkPage(b)); });
-  }
-
-  state.onCancelBatch = opts.onCancelBatch || null;
+  $('#scCloseBtn', root).addEventListener('click', requestClose);
   $('#scBatchStopBtn', root).addEventListener('click', () => {
-    state.onCancelBatch?.();
-    setScanStatus('Stapel wird beendet …');
+    state.opts.onCancelBatch?.();
+    setScanStatus('Stapel wird beendet …', false);
   });
-  $('#scCloseBtn', root).addEventListener('click', () => {
-    state.onCancelBatch?.();
-    if (state.pages.length > 0 && !confirm('Scanner schließen? Die aufgenommenen Seiten gehen verloren.')) return;
-    closeScanner();
-  });
-  $('#scShutterBtn', root).addEventListener('click', capturePhoto);
-  $('#scTorchBtn', root).addEventListener('click', toggleTorch);
+  $('#scDoneBtn', root).addEventListener('click', buildPdf);
+
   const fileInput = $('#scFileInput', root);
-  $('#scPickBtn', root).addEventListener('click', () => fileInput.click());
-  $('#scAddFileBtn', root).addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    importFiles(fileInput.files);
-    fileInput.value = '';
+  const camInput = $('#scCamInput', root);
+  const take = (input) => { const f = [...input.files]; input.value = ''; return f; };
+  fileInput.addEventListener('change', () => addFiles(take(fileInput)));
+  camInput.addEventListener('change', () => addFiles(take(camInput)));
+  $('#scPageGrid', root).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sc-add]');
+    if (!b) return;
+    if (b.dataset.scAdd === 'camera') camInput.click();
+    else if (b.dataset.scAdd === 'files') fileInput.click();
+    else if (b.dataset.scAdd === 'scan') state.opts.netScan?.();
   });
-  $('#scToPagesBtn', root).addEventListener('click', () => view('pages'));
 
   // Große Seitenvorschau
   $('#scPreviewClose', root).addEventListener('click', closePagePreview);
   $('#scPreviewPrev', root).addEventListener('click', () => openPagePreview(state.previewIdx - 1));
   $('#scPreviewNext', root).addEventListener('click', () => openPagePreview(state.previewIdx + 1));
-  $('#scPreviewCrop', root).addEventListener('click', () => {
-    const i = state.previewIdx;
-    closePagePreview();
-    openCrop(null, i, 'pages');
-  });
-  $('#scPreviewErase', root).addEventListener('click', () => {
-    const i = state.previewIdx;
-    closePagePreview();
-    openErase(i);
-  });
-  $('#scAddCamBtn', root).addEventListener('click', () => view('capture'));
+  $('#scPreviewCrop', root).addEventListener('click', () => openCrop(state.previewIdx));
+  $('#scPreviewErase', root).addEventListener('click', () => openErase(state.previewIdx));
 
-  // A4-Ausschnitt der Glasfläche erneut setzen
+  // Zuschnitt-Werkzeuge
   $('#scA4BedBtn', root).addEventListener('click', () => {
-    if (!state.editing) return;
-    const c = a4CornersForScan(state.editing.src, {
-      originX: state.scanOriginX || 'left',
-      originY: state.scanOriginY || 'top',
-    });
+    const ed = state.editing;
+    if (!ed) return;
+    const c = a4CornersForScan(ed.src, geometry());
     if (!c) return;
-    state.editing.corners = c;
-    state.editing.format = a4FormatFor(state.editing.src, c);
-    state.editing.stretch = true;   // erkanntes Blatt exakt auf A4 abbilden
+    ed.corners = c;
+    ed.format = a4FormatFor(ed.src, c);
+    ed.stretch = true;
+    ed.how = 'bed';
     renderCrop();
   });
-  // Liegt die Vorlage an einer anderen Ecke an? Durch alle vier durchschalten.
+  // Liegt die Vorlage an einer anderen Ecke an? Durch alle vier durchschalten
+  // – die Wahl gilt ab jetzt auch für neue Scans.
   $('#scA4CornerBtn', root).addEventListener('click', () => {
-    if (!state.editing) return;
-    const order = [['left', 'top'], ['right', 'top'], ['right', 'bottom'], ['left', 'bottom']];
-    const cur = order.findIndex(([x, y]) => x === (state.scanOriginX || 'left') && y === (state.scanOriginY || 'top'));
-    const [nx, ny] = order[(cur + 1) % order.length];
-    state.scanOriginX = nx;
-    state.scanOriginY = ny;
-    const c = a4CornersForScan(state.editing.src, { originX: nx, originY: ny });
-    if (c) { state.editing.corners = c; renderCrop(); }
-    $('#scA4CornerBtn', root).title = `Vorlage liegt an: ${ny === 'top' ? 'oben' : 'unten'} ${nx === 'left' ? 'links' : 'rechts'}`;
-  });
-
-  $('#scAutoBtn', root).addEventListener('click', () => {
-    if (!state.editing) return;
-    state.editing.corners = detectCornersOnCanvas(state.editing.src) || defaultCorners();
+    const ed = state.editing;
+    if (!ed) return;
+    const order = ['tl', 'tr', 'br', 'bl'];
+    const g = geometry();
+    const next = order[(order.indexOf(g.corner || 'tl') + 1) % order.length];
+    state.opts.setCorner?.(next);
+    const c = a4CornersForScan(ed.src, { ...g, corner: next });
+    if (c) {
+      ed.corners = c;
+      ed.stretch = true;
+      ed.how = 'bed';
+    }
     renderCrop();
   });
-  // „Alles“: das komplette Bild auswählen. Das Ausgabeformat bleibt bewusst
-  // unangetastet – wer A4 will, wählt es daneben (und optional „strecken“).
+  $('#scAutoBtn', root).addEventListener('click', () => {
+    const ed = state.editing;
+    if (!ed) return;
+    const det = detectCornersOnCanvas(ed.src);
+    if (!det) toast('Keine Dokumentränder erkannt – Ecken bitte von Hand setzen', 'info');
+    ed.corners = det || defaultCorners(0.04);
+    ed.how = det ? 'photo' : 'manual';
+    renderCrop();
+  });
   $('#scFullBtn', root).addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.corners = defaultCorners(0);
+    state.editing.how = 'full';
     renderCrop();
   });
   root.querySelectorAll('.sc-seg-btn').forEach((b) => b.addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.format = b.dataset.format;
-    state.lastFormat = b.dataset.format;
     renderCrop();
   }));
   $('#scStretch', root).addEventListener('change', (e) => {
-    if (!state.editing) return;
-    state.editing.stretch = e.target.checked;
-    state.lastStretch = e.target.checked;
+    if (state.editing) state.editing.stretch = e.target.checked;
   });
   $('#scRotateBtn', root).addEventListener('click', rotateEditing);
   $('#scCropOkBtn', root).addEventListener('click', applyCrop);
   $('#scCropCancelBtn', root).addEventListener('click', cancelCrop);
-  $('#scDoneBtn', root).addEventListener('click', buildPdf);
 
   const svg = $('#scCropSvg', root);
   svg.addEventListener('pointerdown', onCropPointerDown);
@@ -1788,14 +1581,11 @@ export function openScanner(onDone, opts = {}) {
     state.erasing.pan = { x: 0, y: 0 };
     eraseZoomTo(1);
   });
-  // Mausrad/Trackpad am Rechner
   $('#scEraseStage', root).addEventListener('wheel', (e) => {
     if (!state.erasing) return;
     e.preventDefault();
-    const f = eraseBasePoint(e.clientX, e.clientY);
-    eraseZoomTo(state.erasing.zoom * (e.deltaY > 0 ? 0.85 : 1.18), f);
+    eraseZoomTo(state.erasing.zoom * (e.deltaY > 0 ? 0.85 : 1.18), eraseBasePoint(e.clientX, e.clientY));
   }, { passive: false });
-
   $('#scEraseUndoBtn', root).addEventListener('click', eraseUndo);
   $('#scEraseRedoBtn', root).addEventListener('click', eraseRedo);
   $('#scEraseCancelBtn', root).addEventListener('click', () => closeErase(true));
@@ -1813,44 +1603,22 @@ export function openScanner(onDone, opts = {}) {
   document.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('resize', onResize);
 
-  // Kommen schon Bilder mit (z. B. frisch vom Netzwerk-Scanner), direkt in den
-  // Zuschnitt-Editor springen – ohne die Kamera anzufordern (am iPhone würde
-  // das sonst unnötig nach Kameraerlaubnis fragen).
-  if (opts.initialFiles && opts.initialFiles.length) {
-    importFiles(opts.initialFiles);
-  } else {
-    view('capture');
-  }
+  view('pages');
+  if (opts.initialFiles?.length) addFiles(opts.initialFiles);
 }
 
 /**
- * Fügt ein Bild direkt als fertige Seite an – ohne den Zuschnitt-Dialog.
- * Für den Stapel-Scan: die Ecken werden automatisch bestimmt (Blattkante bzw.
- * Randerkennung), nachjustieren kann man später in der Seitenübersicht.
+ * Bild direkt als fertige Seite anhängen (Stapel-Scan). Zuschnitt wird
+ * automatisch gesetzt – bei Flachbett-Scans der feste A4-Ausschnitt.
  */
 export async function addPageDirect(file) {
   if (!state.root) return null;
-  const canvas = await fileToCanvas(file);
-  const a4 = a4CornersForScan(canvas, {
-    originX: state.scanOriginX || 'left',
-    originY: state.scanOriginY || 'top',
-  });
-  const corners = a4 || detectCornersOnCanvas(canvas) || defaultCorners();
-  const page = {
-    src: canvas,
-    corners: orderCorners(corners.map((p) => ({ ...p }))),
-    format: a4 ? a4FormatFor(canvas, corners) : state.lastFormat,
-    stretch: a4 ? true : state.lastStretch,
-    erase: [],
-  };
-  state.pages.push(page);
-  updatePageCount();
-  return page;
+  return addImageFile(file);
 }
 
-/** Zur Seitenübersicht wechseln (nach einem Stapel-Scan) */
+/** Zur Seitenübersicht wechseln */
 export function showPages() {
-  if (state.root) view('pages');
+  if (state.root && state.view !== 'crop' && state.view !== 'erase') view('pages');
 }
 
 /** Anzahl der bisher gesammelten Seiten */
@@ -1858,39 +1626,17 @@ export function pageCount() {
   return state.pages.length;
 }
 
-/** Fortschritt/Countdown im Scanner anzeigen (für den Stapel-Scan) */
-export function setScanStatus(text) {
+/** Fortschritt/Countdown im Studio anzeigen; `stoppable` blendet „Stopp“ ein. */
+export function setScanStatus(text, stoppable = !!text) {
   if (!state.root) return;
+  const was = !!state.batchStatus;
   state.batchStatus = text || '';
-  const stop = $('#scBatchStopBtn', state.root);
-  if (stop) {
-    stop.hidden = !text;
-    stop.classList.toggle('hidden', !text);
-  }
-  const el = $('#scPageCount', state.root);
-  if (!el) return;
-  if (text) el.textContent = text;
-  else updatePageCount();
+  $('#scBatchStopBtn', state.root).classList.toggle('hidden', !text || !stoppable);
+  updatePageCount();
+  if (was !== !!state.batchStatus && state.view === 'pages') renderPages();
 }
 
-// Weitere Seite vom Netzwerk-Scanner holen und an den laufenden Scan anhängen.
-async function addNetworkPage(btn) {
-  if (!state.netScan || state.netBusy) return;
-  state.netBusy = true;
-  const buttons = [$('#scNetScanBtn', state.root), $('#scAddNetBtn', state.root)].filter(Boolean);
-  const labels = buttons.map((b) => b.innerHTML);
-  buttons.forEach((b) => { b.disabled = true; b.classList.add('busy'); });
-  if (btn) btn.innerHTML = '<span>Scanne … bitte Vorlage auflegen</span>';
-  try {
-    const file = await state.netScan();
-    importFiles([file]);
-  } catch (e) {
-    alert(`Netzwerk-Scan fehlgeschlagen: ${e?.message || e}`);
-  } finally {
-    state.netBusy = false;
-    buttons.forEach((b, i) => { b.disabled = false; b.classList.remove('busy'); b.innerHTML = labels[i]; });
-  }
-}
+export const isOpen = () => !!state.root;
 
 // Für die automatisierten Tests
 window.__pdfscanner = {
@@ -1900,6 +1646,10 @@ window.__pdfscanner = {
   orderCorners,
   outputSize,
   applyErase,
+  a4CornersForScan,
+  autoLayout,
+  plausibleBedScan,
   openScanner,
+  addPageDirect,
   state,
 };

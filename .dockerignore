@@ -2,9 +2,13 @@
 .github
 node_modules
 tests
+test-results
+playwright-report
 docs
+scripts
 playwright.config.js
 package-lock.json
 *.md
-!README.md
+*.tmp.mjs
+consume
 scratchpad

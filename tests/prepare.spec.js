@@ -1,206 +1,118 @@
-// „Paperless Prepare“: Sammelordner, Übernehmen/Zusammenführen, Standardstufe,
-// Übergabe an Paperless und anschließendes Aufräumen.
+// Sammelordner („Paperless Prepare“): ablegen, sichten, als EIN Dokument
+// übernehmen, nach der Übergabe an Paperless aufräumen.
 import { test, expect } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+import { PDFDocument } from 'pdf-lib';
+import { ready, bedScanJpeg, photoJpeg, fakeConfig } from './helpers.js';
 
-async function ready(page) {
-  await page.goto('/');
-  await page.waitForFunction(() => window.__pdfpresser && window.PDFLib);
-  await page.waitForTimeout(900);   // Serverprofil abwarten
+test.describe.configure({ mode: 'serial' });
+
+const RAW = path.join('test-results', 'raw');
+
+function clearRaw() {
+  fs.mkdirSync(RAW, { recursive: true });
+  for (const f of fs.readdirSync(RAW)) fs.rmSync(path.join(RAW, f), { force: true });
 }
 
-/** Sammelordner leeren, damit jeder Test von vorn anfängt */
-async function clearRaw(page) {
-  await page.evaluate(async () => {
-    const r = await fetch('/api/raw', { cache: 'no-store' });
-    const { files = [] } = await r.json();
-    for (const f of files) {
-      await fetch(`/api/raw?name=${encodeURIComponent(f.name)}`, { method: 'DELETE' });
-    }
-  });
+async function smallPdf() {
+  const doc = await PDFDocument.create();
+  doc.addPage([595.28, 841.89]);
+  return Buffer.from(await doc.save());
 }
 
-/** Ein PDF mit n Seiten in den Sammelordner legen */
-async function putPdf(page, name, pages = 1) {
-  return page.evaluate(async ({ name, pages }) => {
-    const { PDFDocument, rgb } = window.PDFLib;
-    const doc = await PDFDocument.create();
-    for (let i = 0; i < pages; i++) {
-      const p = doc.addPage([595.28, 841.89]);
-      p.drawRectangle({ x: 0, y: 0, width: 595.28, height: 841.89, color: rgb(1, 1, 1) });
-      p.drawRectangle({ x: 60, y: 700 - i * 30, width: 300, height: 18, color: rgb(0.1, 0.1, 0.1) });
-    }
-    const bytes = await doc.save();
-    const res = await fetch(`/api/raw?name=${encodeURIComponent(name)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: bytes,
-    });
-    return (await res.json()).name;
-  }, { name, pages });
-}
-
-/** Ein Bild in den Sammelordner legen */
-async function putImage(page, name) {
-  return page.evaluate(async (name) => {
-    const c = document.createElement('canvas');
-    c.width = 600; c.height = 800;
-    const x = c.getContext('2d');
-    x.fillStyle = '#fff'; x.fillRect(0, 0, 600, 800);
-    x.fillStyle = '#2266aa'; x.fillRect(60, 90, 480, 620);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
-    const res = await fetch(`/api/raw?name=${encodeURIComponent(name)}`, {
-      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: await blob.arrayBuffer(),
-    });
-    return (await res.json()).name;
-  }, name);
-}
-
-test('Sammelordner: ablegen, auflisten, löschen', async ({ page }) => {
+test('Ablegen, Auswahl und Löschen mit Rückfrage', async ({ page }) => {
+  clearRaw();
   await ready(page);
-  await clearRaw(page);
+  await page.click('.nav-item[data-view="inbox"]');
+  await expect(page.locator('#viewInbox')).toBeVisible();
+  await expect(page.locator('.raw-empty')).toBeVisible();
+  await page.setInputFiles('#rawUploadInput', [
+    { name: 'a.pdf', mimeType: 'application/pdf', buffer: await smallPdf() },
+    { name: 'b.jpg', mimeType: 'image/jpeg', buffer: await photoJpeg(page, 600, 450) },
+  ]);
+  await expect(page.locator('.raw-item')).toHaveCount(2);
+  await expect(page.locator('#navRawCount')).toHaveText('2');
+  await expect(page.locator('.raw-item img')).toHaveCount(1);   // Bild-Miniatur
 
-  await putPdf(page, 'brief.pdf');
-  await putImage(page, 'foto.png');
-  await page.evaluate(() => window.__pdfprepare.refresh());
-
-  await expect(page.locator('#prepSection')).toBeVisible();
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(2);
-  await expect(page.locator('#prepList')).toContainText('brief.pdf');
-  await expect(page.locator('#prepList')).toContainText('foto.png');
-
-  // Löschen wirkt
-  const n = await page.evaluate(() => window.__pdfprepare.deleteSelection(['foto.png'], false));
-  expect(n).toBe(1);
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(1);
+  await page.click('.raw-item[data-name="a.pdf"]');
+  await expect(page.locator('#rawSelInfo')).toContainText('1 ausgewählt');
+  await page.click('#rawDeleteBtn');
+  await page.click('.dlg .btn-danger');
+  await expect(page.locator('.raw-item')).toHaveCount(1);
+  expect(fs.existsSync(path.join(RAW, 'a.pdf'))).toBe(false);
 });
 
-test('Namen kollidieren nicht und Pfad-Ausbrüche werden entschärft', async ({ page }) => {
+test('Rohscans (nur Bilder) öffnen im Studio mit festem A4-Ausschnitt, danach Aufräumen', async ({ page }) => {
+  clearRaw();
   await ready(page);
-  await clearRaw(page);
+  // Rohscans wie vom Scanner abgelegt: Auflösung steht im Namen
+  fs.writeFileSync(path.join(RAW, 'Scan_S01_300dpi.jpg'), await bedScanJpeg(page, { label: 'EINS' }));
+  fs.writeFileSync(path.join(RAW, 'Scan_S02_300dpi.jpg'), await bedScanJpeg(page, { label: 'ZWEI' }));
+  await page.click('.nav-item[data-view="inbox"]');
+  await expect(page.locator('.raw-item')).toHaveCount(2);
+  await page.check('#rawSelectAll');
+  await page.click('#rawOpenBtn');
+  await expect(page.locator('#scannerRoot .sc-overlay')).toBeVisible();
+  await expect(page.locator('.sc-pagecell .sc-thumb')).toHaveCount(2, { timeout: 30000 });
+  await expect(page.locator('.sc-pagelabel').first()).toContainText('Glasfläche');
+  await page.click('#scDoneBtn');
+  await expect(page.locator('.doc')).toHaveCount(1);
+  const raw = await page.evaluate(() => window.__pdfpresser.state.docs[0].rawSources);
+  expect(raw).toEqual(['Scan_S01_300dpi.jpg', 'Scan_S02_300dpi.jpg']);
 
-  const a = await putPdf(page, 'gleich.pdf');
-  const b = await putPdf(page, 'gleich.pdf');
-  expect(a).toBe('gleich.pdf');
-  expect(b).not.toBe('gleich.pdf');     // zweite Datei bekommt einen freien Namen
-  expect(b).toContain('gleich');
-
-  const evil = await putPdf(page, '../../etc/passwd.pdf');
-  expect(evil).toBe('passwd.pdf');
-  expect(evil).not.toContain('/');
-
-  await expect.poll(async () => {
-    await page.evaluate(() => window.__pdfprepare.refresh());
-    return page.locator('.prep-item').count();
-  }).toBe(3);
+  // Komprimieren, an Paperless – dann wird das Aufräumen angeboten
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].pages === 2);
+  await page.locator('#inspOcr').evaluate((el) => { if (el.checked) el.click(); });
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 120000 });
+  await page.click('#inspector .insp-foot [data-act="paperless"]');
+  await expect(page.locator('.dlg')).toContainText('Sammelordner aufräumen');
+  await page.click('.dlg .btn-danger');
+  await expect.poll(() => fs.readdirSync(RAW).length).toBe(0);
 });
 
-test('Mehrere Dateien werden beim Übernehmen zu einer PDF zusammengeführt', async ({ page }) => {
+test('Gemischte Auswahl (PDF + Bild) wird direkt ein Dokument; Ablehnen lässt Dateien liegen', async ({ page }) => {
+  clearRaw();
   await ready(page);
-  await clearRaw(page);
-  await putPdf(page, 'teil1.pdf', 2);
-  await putPdf(page, 'teil2.pdf', 1);
-  await putImage(page, 'anhang.png');
-  await page.evaluate(() => window.__pdfprepare.refresh());
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(3);
-
-  await page.click('#prepSelectAll');
-  await expect(page.locator('#prepSelInfo')).toContainText('zusammengeführt');
-  await page.click('#prepOpenBtn');
-
-  // Eine Datei in der Arbeitsliste mit 2 + 1 + 1 = 4 Seiten
-  await expect(page.locator('.file-item')).toHaveCount(1, { timeout: 30000 });
-  const info = await page.evaluate(async () => {
-    const { PDFDocument } = window.PDFLib;
-    const item = window.__pdfpresser.items[0];
-    const doc = await PDFDocument.load(await item.file.arrayBuffer());
-    return { pages: doc.getPageCount(), sources: item.file.rawSources, name: item.file.name };
+  fs.writeFileSync(path.join(RAW, 'brief.pdf'), await smallPdf());
+  fs.writeFileSync(path.join(RAW, 'foto.jpg'), await photoJpeg(page, 600, 450));
+  await page.click('.nav-item[data-view="inbox"]');
+  await page.check('#rawSelectAll');
+  await page.click('#rawOpenBtn');
+  await expect(page.locator('.doc')).toHaveCount(1);
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].pages === 2);
+  const sizes = await page.evaluate(async () => {
+    const d = await window.PDFLib.PDFDocument.load(window.__pdfpresser.state.docs[0].bytes);
+    return d.getPages().map((p) => [Math.round(p.getWidth()), Math.round(p.getHeight())]);
   });
-  expect(info.pages).toBe(4);
-  expect(info.sources.length).toBe(3);
-  expect(info.name).toContain('Sammlung');
+  expect(sizes[1]).toEqual([842, 595]);   // Querfoto auf A4 quer
+
+  await page.click('.profile:has(input[value="verlustfrei"])');
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 60000 });
+  await page.click('#inspector .insp-foot [data-act="paperless"]');
+  await expect(page.locator('.dlg')).toBeVisible();
+  await page.click('.dlg .btn:not(.btn-danger)');
+  await page.waitForTimeout(300);
+  expect(fs.readdirSync(RAW).sort()).toEqual(['brief.pdf', 'foto.jpg']);
 });
 
-test('Standardstufe wird beim Übernehmen angewendet', async ({ page }) => {
-  await ready(page);
-  await clearRaw(page);
-  await putPdf(page, 'einzeln.pdf');
-  await page.evaluate(() => window.__pdfprepare.refresh());
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(1);
-
-  // Standard auf „Extrem S/W“ + OCR stellen, davor bewusst etwas anderes wählen
-  await page.locator('input[name="preset"][value="mittel"]').check();
-  await page.selectOption('#prepPreset', 'extrem-sw');
-  await page.uncheck('#prepOcr');
-
-  await page.click('.prep-item input');
-  await page.click('#prepOpenBtn');
-  await expect(page.locator('.file-item')).toHaveCount(1, { timeout: 30000 });
-
-  expect(await page.locator('input[name="preset"][value="extrem-sw"]').isChecked()).toBe(true);
-  expect(await page.locator('#ocrEnabled').isChecked()).toBe(false);
-});
-
-test('Nach der Übergabe an Paperless wird das Aufräumen angeboten', async ({ page }) => {
-  await ready(page);
-  await clearRaw(page);
-  await putPdf(page, 'fertig.pdf');
-  await page.evaluate(() => window.__pdfprepare.refresh());
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(1);
-
-  await page.click('.prep-item input');
-  await page.click('#prepOpenBtn');
-  await expect(page.locator('.file-item')).toHaveCount(1, { timeout: 30000 });
-
-  // Ohne Kompression direkt übergeben: Ergebnis setzen und senden
-  await page.evaluate(async () => {
-    const it = window.__pdfpresser.items[0];
-    it.result = new Uint8Array(await it.file.arrayBuffer());
-  });
-
-  // Rückfrage bejahen
-  page.once('dialog', (d) => d.accept());
-  await page.evaluate(() => window.__pdfpresser.saveItemToPaperless(window.__pdfpresser.items[0], { quiet: true }));
-
-  // Datei liegt bei Paperless und ist aus dem Sammelordner verschwunden
-  await expect.poll(async () => {
-    const r = await page.evaluate(async () => (await (await fetch('/api/raw', { cache: 'no-store' })).json()).files.length);
-    return r;
-  }, { timeout: 20000 }).toBe(0);
-});
-
-test('Aufräumen wird übersprungen, wenn man ablehnt', async ({ page }) => {
-  await ready(page);
-  await clearRaw(page);
-  await putPdf(page, 'behalten.pdf');
-  await page.evaluate(() => window.__pdfprepare.refresh());
-  await expect.poll(() => page.locator('.prep-item').count()).toBe(1);
-
-  await page.click('.prep-item input');
-  await page.click('#prepOpenBtn');
-  await expect(page.locator('.file-item')).toHaveCount(1, { timeout: 30000 });
-  await page.evaluate(async () => {
-    const it = window.__pdfpresser.items[0];
-    it.result = new Uint8Array(await it.file.arrayBuffer());
-  });
-
-  page.once('dialog', (d) => d.dismiss());
-  await page.evaluate(() => window.__pdfpresser.saveItemToPaperless(window.__pdfpresser.items[0], { quiet: true }));
-  await page.waitForTimeout(600);
-
-  const n = await page.evaluate(async () => (await (await fetch('/api/raw', { cache: 'no-store' })).json()).files.length);
-  expect(n, 'Datei bleibt im Sammelordner').toBe(1);
-});
-
-test('Ohne RAW-Ordner bleibt der Bereich unsichtbar', async ({ page }) => {
-  await page.goto('/');
-  await page.waitForFunction(() => window.__pdfpresser);
-  // /api/config so beantworten, als wäre kein RAW-Ordner konfiguriert
-  await page.route('**/api/config', async (route) => {
-    await route.fulfill({
-      status: 200, contentType: 'application/json',
-      body: JSON.stringify({ scanner: false, consume: true, profile: false, raw: false, version: 3 }),
-    });
-  });
-  await page.reload();
-  await page.waitForFunction(() => window.__pdfpresser);
-  await page.waitForTimeout(700);
-  await expect(page.locator('#prepSection')).toBeHidden();
+test('Direkt in den Sammelordner scannen (Ziel im Scanner-Blatt)', async ({ page }) => {
+  clearRaw();
+  await fakeConfig(page);
+  await ready(page, { scanPages: 2, scanDelay: 0 });
+  const jpeg = await bedScanJpeg(page, { w: 1275, h: 1754 });
+  await page.route('**/api/scanner/scan*', (route) => route.fulfill({ status: 200, headers: { 'Content-Type': 'image/jpeg', 'X-Scan-Dpi': '150' }, body: jpeg }));
+  await page.click('.nav-item[data-view="inbox"]');
+  await page.click('#rawScanBtn');
+  await expect(page.locator('#scanSheet')).toHaveClass(/open/);
+  await expect(page.locator('#scanTargetSeg button[data-v="raw"]')).toHaveClass(/active/);
+  await page.click('#scanStartBtn');
+  await expect(page.locator('.raw-item')).toHaveCount(2, { timeout: 30000 });
+  const names = fs.readdirSync(RAW).sort();
+  expect(names[0]).toMatch(/^Scan_.*_S01_150dpi\.jpg$/);
+  expect(names[1]).toMatch(/_S02_150dpi\.jpg$/);
+  await page.evaluate(() => window.__pdfpresser.resetSettings());
+  clearRaw();
 });
