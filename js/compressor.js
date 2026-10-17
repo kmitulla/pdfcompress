@@ -2,10 +2,12 @@
 // Alles läuft lokal im Browser, es werden keine Daten hochgeladen.
 
 import { encodeG4 } from './ccitt-g4.js';
-import { recognizePage } from './ocr.js';
+import { recognizePage, warmOcr, releaseOcrSoon, ocrWorkerCount } from './ocr.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+}
 
 // Zeichensatz-/Font-Ressourcen für pdf.js (für PDFs ohne eingebettete Fonts)
 const PDFJS_DOC_OPTS = {
@@ -15,6 +17,7 @@ const PDFJS_DOC_OPTS = {
 };
 
 const PT_PER_INCH = 72;
+export const A4_PT = [595.28, 841.89];
 
 export const PRESETS = {
   verlustfrei: { mode: 'lossless' },
@@ -26,16 +29,21 @@ export const PRESETS = {
   'extrem-sw': { mode: 'raster', colorMode: 'bw', dpi: 300 },
 };
 
-// Reihenfolge + Anzeigenamen für die Simulation
+// Reihenfolge + Anzeigenamen (Oberfläche, Simulation)
 export const PRESET_INFO = [
-  ['verlustfrei', 'Verlustfrei (nur Optimierung)'],
-  ['leicht', 'Leicht – Farbe 200 dpi'],
-  ['mittel', 'Mittel – Farbe 150 dpi'],
-  ['stark', 'Stark – Farbe 110 dpi'],
-  ['extrem-grau', 'Extrem – Graustufen 100 dpi'],
-  ['extrem-farbe', 'Extrem Farbe – Scanner-Stil (16 Farben)'],
-  ['extrem-sw', 'Extrem S/W – Scanner-Stil (G4)'],
+  { key: 'verlustfrei', name: 'Verlustfrei', desc: 'Nur aufräumen – Text & Bilder bleiben unangetastet' },
+  { key: 'leicht', name: 'Leicht', desc: 'Farbe · 200 dpi · sehr hohe Qualität' },
+  { key: 'mittel', name: 'Ausgewogen', desc: 'Farbe · 150 dpi · gute Balance' },
+  { key: 'stark', name: 'Stark', desc: 'Farbe · 110 dpi · deutlich kleiner' },
+  { key: 'extrem-grau', name: 'Graustufen', desc: 'Grau · 100 dpi · sehr klein' },
+  { key: 'extrem-farbe', name: 'Scan Farbe', desc: '16 Farben · 150 dpi · Büroscanner-Look' },
+  { key: 'extrem-sw', name: 'Scan S/W', desc: '1-Bit · 300 dpi · CCITT G4 · gestochen scharf' },
 ];
+export const presetName = (key) => PRESET_INFO.find((p) => p.key === key)?.name || key;
+
+const abortError = () => Object.assign(new Error('Abgebrochen'), { name: 'AbortError' });
+const checkAbort = (signal) => { if (signal?.aborted) throw abortError(); };
+const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 
 // ---------------------------------------------------------------- Bild-Helfer
 
@@ -58,7 +66,6 @@ function toGray(imageData) {
 // bias:     Helligkeitsregler (-40..+40); positiv = heller (mehr Weiß)
 // contrast: Kontrast/Empfindlichkeit (-50..+50); positiv = mehr Struktur wird
 //           als Text gewertet, negativ = nur kräftige Tinte bleibt übrig.
-//           Steuert zugleich, ab wann eine Fläche als „leer“ gilt.
 // darkAreas: 'auto' | 'invert' | 'ignore'
 //   invert = dunkle Flächen als Farbbalken behandeln (Fläche schwarz, helle
 //            Schrift weiß) – richtig bei Briefköpfen und Tabellenköpfen.
@@ -66,7 +73,7 @@ function toGray(imageData) {
 //            dunklen Fotos/Bildschirmaufnahmen, wo sonst der ganze Rand zu
 //            schwarzem Rauschen kippt.
 //   auto   = anhand des Bildes entscheiden.
-function binarize(imageData, bias, contrast = 0, darkAreas = 'auto') {
+export function binarize(imageData, bias, contrast = 0, darkAreas = 'auto') {
   const { width: w, height: h } = imageData;
   const gray = toGray(imageData);
   const b = bias | 0;
@@ -127,8 +134,7 @@ function binarize(imageData, bias, contrast = 0, darkAreas = 'auto') {
   // Ist ein großer Teil der Seite dunkel, handelt es sich nicht um einzelne
   // Farbbalken, sondern um eine insgesamt dunkle Aufnahme (Foto, Bildschirm,
   // starke Vignette). Dort ist die Inversion falsch: sie macht aus flächigem
-  // Rauschen eine schwarze Masse. Am echten Beispiel gemessen: der Rand fiel
-  // damit von 94 % auf 17 % Schwarzanteil, der Text blieb erhalten.
+  // Rauschen eine schwarze Masse.
   let dimBlocks = 0;
   for (let i = 0; i < blurred.length; i++) if (blurred[i] < 110) dimBlocks++;
   const dimFrac = dimBlocks / (blurred.length || 1);
@@ -137,10 +143,8 @@ function binarize(imageData, bias, contrast = 0, darkAreas = 'auto') {
 
   // Pro Pixel: lokalen Hintergrund bilinear samplen und schwellen
   const C = Math.min(80, Math.max(5, 28 + b - k * 0.35)); // Abstand zum Papier
-  // Ab welcher lokalen Streuung gilt eine Fläche als „hat Inhalt“? Flächen
-  // ohne Struktur (gleichmäßig dunkler Rand, Schattenverlauf, Bildrauschen)
-  // enthalten keinen Text und werden weiß – sonst kippen sie zu schwarzem
-  // Rauschen, was den Scan unlesbar und riesig macht.
+  // Flächen ohne Struktur (gleichmäßig dunkler Rand, Schattenverlauf,
+  // Bildrauschen) enthalten keinen Text und werden weiß.
   const FLAT = Math.max(3, 11 - k * 0.12);
   const bitmap = new Uint8Array(gray.length);
   const half = BLOCK / 2;
@@ -224,7 +228,7 @@ function quantizeIndexed(imageData, colors, bias) {
 
   // Median-Cut auf den Nicht-Weiß-Pixeln
   const maxBoxes = Math.max(1, colors - 1);
-  let boxes = samples.length ? [samples] : [];
+  const boxes = samples.length ? [samples] : [];
   const boxRange = (box) => {
     const mins = [255, 255, 255];
     const maxs = [0, 0, 0];
@@ -320,7 +324,7 @@ async function canvasToJpeg(canvas, quality) {
 }
 
 // 1-Bit-Bitmap (1 = schwarz) zeilenweise zu Bytes packen; Bit 1 = weiß
-// (DeviceGray: 0 = schwarz), wie es FlateDecode + /Decode [0 1] erwartet.
+// (DeviceGray: 0 = schwarz), wie es FlateDecode erwartet.
 function packBits(bitmap, width, height) {
   const rowBytes = (width + 7) >> 3;
   const out = new Uint8Array(rowBytes * height);
@@ -448,7 +452,7 @@ function drawOcrWords(page, font, words, dpi, pageHeightPt) {
     if (!text) continue;
     const boxH = (w.bbox.y1 - w.bbox.y0) * s;
     if (boxH <= 0.1) continue;
-    const size = Math.max(2, Math.min(72, boxH * 1.0));
+    const size = Math.max(2, Math.min(72, boxH));
     try {
       page.drawText(text, {
         x: w.bbox.x0 * s,
@@ -471,38 +475,53 @@ function drawOcrWords(page, font, words, dpi, pageHeightPt) {
 const MAX_PIXELS_BW = 16e6;
 const MAX_PIXELS_COLOR = 12e6; // JPEG-Encode braucht zusätzlich Speicher
 
-async function renderPage(page, dpi, maxPixels) {
-  const base = page.getViewport({ scale: 1 });
-  // Seiten jenseits von ~A2 sind fast immer Scans, deren Seitengröße in
-  // Pixelmaßen statt Punkten hinterlegt ist (z. B. iPhone-/Büroscans mit
-  // MediaBox 2480x3507 = nominell 87x123 cm). Solche Seiten werden auf
-  // A4-Äquivalent normalisiert: Die dpi-Stufen bedeuten dann wieder echte
-  // Papier-dpi (Mittel 150 dpi rechnet den 300-dpi-Scan sauber herunter),
-  // und die Ausgabeseite bekommt reale A4-Maße statt Postergröße.
+/**
+ * Lage der Quellseite auf der Ausgabeseite (in Punkt).
+ *  a4 = true: jede Seite landet auf DIN A4 (hoch oder quer wie die Vorlage).
+ *    Fast-A4 (< 2,5 % Abweichung, z. B. Letter-Scans) wird exakt aufgezogen,
+ *    alles andere unverzerrt eingepasst und mittig gesetzt.
+ *  a4 = false: Originalgröße. Nur Pixelmaß-Scans (nominell größer als A2,
+ *    z. B. MediaBox 2480x3507) werden auf A4-Äquivalent normiert – sonst
+ *    bedeuteten die dpi-Stufen nichts.
+ */
+export function pageLayout(srcW, srcH, a4) {
+  if (a4) {
+    const landscape = srcW > srcH;
+    const [tw, th] = landscape ? [A4_PT[1], A4_PT[0]] : A4_PT;
+    const sx = tw / srcW;
+    const sy = th / srcH;
+    if (Math.abs(sx / sy - 1) < 0.025) return { wPt: tw, hPt: th, sx, sy, ox: 0, oy: 0 };
+    const s = Math.min(sx, sy);
+    return { wPt: tw, hPt: th, sx: s, sy: s, ox: (tw - srcW * s) / 2, oy: (th - srcH * s) / 2 };
+  }
   let norm = 1;
-  if (base.width * base.height > 1.7e6) {
-    norm = Math.min(
-      841.89 / Math.max(base.width, base.height),
-      595.28 / Math.min(base.width, base.height),
-    );
+  if (srcW * srcH > 1.7e6) {
+    norm = Math.min(A4_PT[1] / Math.max(srcW, srcH), A4_PT[0] / Math.min(srcW, srcH));
   }
-  const wPt = base.width * norm;
-  const hPt = base.height * norm;
-  let scale = (dpi / PT_PER_INCH) * norm;
-  const projected = base.width * base.height * scale * scale;
-  if (maxPixels && projected > maxPixels) {
-    scale *= Math.sqrt(maxPixels / projected);
-  }
-  const viewport = page.getViewport({ scale });
-  const wPx = Math.max(1, Math.round(viewport.width));
-  const hPx = Math.max(1, Math.round(viewport.height));
+  return { wPt: srcW * norm, hPt: srcH * norm, sx: norm, sy: norm, ox: 0, oy: 0 };
+}
+
+async function renderPage(page, dpi, maxPixels, a4 = false) {
+  const base = page.getViewport({ scale: 1 });
+  const L = pageLayout(base.width, base.height, a4);
+  let k = dpi / PT_PER_INCH;
+  const projected = L.wPt * L.hPt * k * k;
+  if (maxPixels && projected > maxPixels) k *= Math.sqrt(maxPixels / projected);
+  const wPx = Math.max(1, Math.round(L.wPt * k));
+  const hPx = Math.max(1, Math.round(L.hPt * k));
   const canvas = document.createElement('canvas');
   canvas.width = wPx;
   canvas.height = hPx;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, wPx, hPx);
-  await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
+  const viewport = page.getViewport({ scale: L.sx * k });
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+    intent: 'print',
+    transform: [1, 0, 0, L.sy / L.sx, L.ox * k, L.oy * k],
+  }).promise;
   // Kaputte/leere Canvas erkennen (liefert überall Alpha 0 statt des weißen
   // Hintergrunds) -> klarer Fehler statt komplett schwarzer Seiten
   const corner1 = ctx.getImageData(0, 0, 1, 1).data;
@@ -510,201 +529,429 @@ async function renderPage(page, dpi, maxPixels) {
   if (corner1[3] === 0 && corner2[3] === 0) {
     throw new Error(`Seite konnte nicht gerendert werden (${wPx}×${hPx} Pixel sind für diesen Browser zu groß)`);
   }
-  return { canvas, ctx, wPx, hPx, wPt, hPt, effDpi: (wPx / wPt) * PT_PER_INCH };
+  return { canvas, ctx, wPx, hPx, wPt: L.wPt, hPt: L.hPt, effDpi: (wPx / L.wPt) * PT_PER_INCH };
 }
+
+function freeCanvas(c) {
+  // iOS gibt Canvas-Speicher sonst erst spät frei
+  if (c) { c.width = 1; c.height = 1; }
+}
+
+// OCR arbeitet am besten und schnellsten um 300 dpi: darunter leidet die
+// Erkennung, darüber steigt die Rechenzeit quadratisch ohne Gewinn.
+const OCR_DPI = 300;
+async function ocrInputFor(page, r, a4) {
+  let canvas = r.canvas;
+  let dpi = r.effDpi;
+  let temp = null;
+  if (dpi > 340) {
+    const s = OCR_DPI / dpi;
+    temp = document.createElement('canvas');
+    temp.width = Math.max(1, Math.round(r.wPx * s));
+    temp.height = Math.max(1, Math.round(r.hPx * s));
+    temp.getContext('2d').drawImage(r.canvas, 0, 0, temp.width, temp.height);
+    canvas = temp;
+    dpi = (temp.width / r.wPt) * PT_PER_INCH;
+  } else if (dpi < 220) {
+    const rr = await renderPage(page, OCR_DPI, MAX_PIXELS_COLOR, a4);
+    temp = rr.canvas;
+    canvas = temp;
+    dpi = rr.effDpi;
+  }
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.9));
+  freeCanvas(temp);
+  return { image: blob || canvas, dpi };
+}
+
+// ---------------------------------------------------------------- pdf.js-Dokumente
+
+async function openPdf(bytes) {
+  // pdf.js überträgt den Puffer in seinen Worker -> immer eine Kopie übergeben
+  const data = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes).slice();
+  return pdfjsLib.getDocument({ data, ...PDFJS_DOC_OPTS }).promise;
+}
+
+// Kleiner Zwischenspeicher für Vorschau/Miniaturen: dasselbe Dokument wird beim
+// Blättern nicht jedes Mal neu eingelesen.
+const pdfCache = [];   // [{key, promise, users, dead}]
+async function withPdf(bytes, fn) {
+  let entry = pdfCache.find((e) => e.key === bytes);
+  if (!entry) {
+    entry = { key: bytes, promise: openPdf(bytes), users: 0, dead: false };
+    pdfCache.unshift(entry);
+    while (pdfCache.length > 3) {
+      const old = pdfCache.pop();
+      old.dead = true;
+      if (old.users === 0) old.promise.then((d) => d.destroy()).catch(() => {});
+    }
+  }
+  entry.users++;
+  try {
+    const doc = await entry.promise;
+    return await fn(doc);
+  } catch (e) {
+    const i = pdfCache.indexOf(entry);
+    if (i >= 0) pdfCache.splice(i, 1);
+    throw e;
+  } finally {
+    entry.users--;
+    if (entry.dead && entry.users === 0) entry.promise.then((d) => d.destroy()).catch(() => {});
+  }
+}
+
+/** Seitenzahl eines PDFs. */
+export async function countPages(bytes) {
+  return withPdf(bytes, (doc) => doc.numPages);
+}
+
+/**
+ * Rendert eine Seite als Bild (Miniatur, Originalansicht).
+ * @returns {Promise<{url:string, numPages:number, w:number, h:number}>}
+ */
+export async function renderPageImage(bytes, pageNumber = 1, maxW = 300, { a4 = false } = {}) {
+  return withPdf(bytes, async (doc) => {
+    const n = Math.min(Math.max(1, pageNumber), doc.numPages);
+    const page = await doc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const L = pageLayout(base.width, base.height, a4);
+    const dpi = (maxW / L.wPt) * PT_PER_INCH;
+    const r = await renderPage(page, dpi, MAX_PIXELS_COLOR, a4);
+    const url = r.canvas.toDataURL('image/jpeg', 0.86);
+    page.cleanup();
+    freeCanvas(r.canvas);
+    return { url, numPages: doc.numPages, w: r.wPx, h: r.hPx };
+  });
+}
+
+// ---------------------------------------------------------------- Kodieren einer Seite
+
+/** Optionen für eine bestimmte Seite (Seiten-Ausnahmen überlagern die globalen). */
+function optsForPage(opts, p) {
+  return opts.pageOverrides?.[p] ? { ...opts, ...opts.pageOverrides[p] } : opts;
+}
+
+const clampDpi = (d) => Math.min(Math.max(d || 150, 50), 600);
+const maxPixelsFor = (o) => (o.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR);
 
 // ---------------------------------------------------------------- Hauptpipeline
 
-async function rasterCompress(srcBytes, opts, onProgress) {
+async function rasterCompress(srcBytes, opts, onProgress, signal) {
   const PDFLib = window.PDFLib;
-  const loadingTask = pdfjsLib.getDocument({ data: srcBytes, ...PDFJS_DOC_OPTS });
-  const srcDoc = await loadingTask.promise;
-  const pageNumbers = opts._pages?.length
-    ? opts._pages.filter((p) => p >= 1 && p <= srcDoc.numPages)
-    : Array.from({ length: srcDoc.numPages }, (_, i) => i + 1);
+  const srcDoc = await openPdf(srcBytes);
+  const lang = opts.ocrLang || 'deu';
+  if (opts.ocr) warmOcr(lang);   // Worker startet, während Seite 1 gerendert wird
+  try {
+    const pageNumbers = Array.from({ length: srcDoc.numPages }, (_, i) => i + 1);
+    const total = pageNumbers.length;
+    const newDoc = await PDFLib.PDFDocument.create();
+    newDoc.setProducer('PDF Presser (lokal im Browser)');
+    const font = opts.ocr ? await newDoc.embedFont(PDFLib.StandardFonts.Helvetica) : null;
 
-  const newDoc = await PDFLib.PDFDocument.create();
-  newDoc.setProducer('PDF Presser (lokal im Browser)');
-  const font = opts.ocr ? await newDoc.embedFont(PDFLib.StandardFonts.Helvetica) : null;
+    let rendered = 0;
+    let recognized = 0;
+    const report = (phase, page) => {
+      const steps = opts.ocr ? total * 2 : total;
+      onProgress?.({ phase, page, pages: total, rendered, recognized, frac: Math.min(0.99, (rendered + recognized) / steps) });
+    };
 
-  for (let idx = 0; idx < pageNumbers.length; idx++) {
-    const p = pageNumbers[idx];
-    // Seiten-individuelle Einstellungen (aus der Vorschau) überlagern die globalen
-    const pOpts = opts.pageOverrides?.[p] ? { ...opts, ...opts.pageOverrides[p] } : opts;
-    const dpi = Math.min(Math.max(pOpts.dpi || 150, 50), 600);
-    onProgress?.({ phase: 'render', page: idx + 1, pages: pageNumbers.length });
-    const page = await srcDoc.getPage(p);
-    const maxPixels = pOpts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
-    const { canvas, ctx, wPx, hPx, wPt, hPt, effDpi } = await renderPage(page, dpi, maxPixels);
-    const outPage = newDoc.addPage([wPt, hPt]);
+    // OCR läuft im Worker parallel zum Rendern der nächsten Seiten. Damit der
+    // Speicher nicht vollläuft, rendern wir höchstens ein paar Seiten voraus.
+    const pending = new Set();
+    const ahead = ocrWorkerCount() + 1;
+    let ocrError = null;
 
-    if (pOpts.colorMode === 'bw') {
-      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), pOpts.bias || 0, pOpts.contrast || 0, pOpts.darkAreas || 'auto');
-      const ref = embedBwImage(newDoc, PDFLib, bitmap, wPx, hPx, pOpts.bwFilter || 'auto');
-      drawImageRef(outPage, PDFLib, ref, wPt, hPt);
-    } else if (pOpts.colorMode === 'indexed') {
-      const { indices, palette } = quantizeIndexed(
-        ctx.getImageData(0, 0, wPx, hPx),
-        Math.min(16, Math.max(4, pOpts.colors || 16)),
-        pOpts.bias || 0,
-      );
-      const ref = embedIndexedImage(newDoc, PDFLib, indices, palette, wPx, hPx);
-      drawImageRef(outPage, PDFLib, ref, wPt, hPt);
-    } else {
-      if (pOpts.colorMode === 'gray') {
-        const imageData = ctx.getImageData(0, 0, wPx, hPx);
-        applyGrayInPlace(imageData);
-        ctx.putImageData(imageData, 0, 0);
+    for (const p of pageNumbers) {
+      checkAbort(signal);
+      const pOpts = optsForPage(opts, p);
+      report('render', p);
+      const page = await srcDoc.getPage(p);
+      const r = await renderPage(page, clampDpi(pOpts.dpi), maxPixelsFor(pOpts), !!opts.a4);
+      const outPage = newDoc.addPage([r.wPt, r.hPt]);
+
+      // Für OCR das (unveränderte) Farbbild sichern, bevor Graustufen es ändern
+      const ocrIn = opts.ocr ? await ocrInputFor(page, r, !!opts.a4) : null;
+
+      if (pOpts.colorMode === 'bw') {
+        const { bitmap } = binarize(r.ctx.getImageData(0, 0, r.wPx, r.hPx), pOpts.bias || 0, pOpts.contrast || 0, pOpts.darkAreas || 'auto');
+        const ref = embedBwImage(newDoc, PDFLib, bitmap, r.wPx, r.hPx, pOpts.bwFilter || 'auto');
+        drawImageRef(outPage, PDFLib, ref, r.wPt, r.hPt);
+      } else if (pOpts.colorMode === 'indexed') {
+        const { indices, palette } = quantizeIndexed(
+          r.ctx.getImageData(0, 0, r.wPx, r.hPx),
+          Math.min(16, Math.max(4, pOpts.colors || 16)),
+          pOpts.bias || 0,
+        );
+        const ref = embedIndexedImage(newDoc, PDFLib, indices, palette, r.wPx, r.hPx);
+        drawImageRef(outPage, PDFLib, ref, r.wPt, r.hPt);
+      } else {
+        if (pOpts.colorMode === 'gray') {
+          const imageData = r.ctx.getImageData(0, 0, r.wPx, r.hPx);
+          applyGrayInPlace(imageData);
+          r.ctx.putImageData(imageData, 0, 0);
+        }
+        const jpeg = await canvasToJpeg(r.canvas, pOpts.quality ?? 0.6);
+        const img = await newDoc.embedJpg(jpeg);
+        outPage.drawImage(img, { x: 0, y: 0, width: r.wPt, height: r.hPt });
       }
-      const jpeg = await canvasToJpeg(canvas, pOpts.quality ?? 0.6);
-      const img = await newDoc.embedJpg(jpeg);
-      outPage.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
+      page.cleanup();
+      freeCanvas(r.canvas);
+      rendered++;
+      report('render', p);
+
+      if (ocrIn) {
+        const job = recognizePage(ocrIn.image, lang)
+          .then((words) => {
+            drawOcrWords(outPage, font, words, ocrIn.dpi, r.hPt);
+            recognized++;
+            report('ocr', p);
+          })
+          .catch((e) => { ocrError = ocrError || e; })
+          .finally(() => pending.delete(job));
+        pending.add(job);
+        while (pending.size >= ahead) await Promise.race(pending);
+        if (ocrError) throw ocrError;
+      }
+      await nextFrame();   // Oberfläche zwischendurch atmen lassen
     }
 
-    if (opts.ocr) {
-      onProgress?.({ phase: 'ocr', page: idx + 1, pages: pageNumbers.length });
-      // Für gute OCR-Qualität ggf. höher auflösen als das Zielbild
-      let ocrCanvas = canvas;
-      let ocrDpi = effDpi;
-      if (effDpi < 200) {
-        const rendered = await renderPage(page, 240, MAX_PIXELS_COLOR);
-        ocrCanvas = rendered.canvas;
-        ocrDpi = rendered.effDpi;
-      }
-      const words = await recognizePage(ocrCanvas, opts.ocrLang || 'deu', (prog) => {
-        onProgress?.({ phase: 'ocr', page: idx + 1, pages: pageNumbers.length, detail: prog });
-      });
-      drawOcrWords(outPage, font, words, ocrDpi, hPt);
+    if (pending.size) report('ocr');
+    while (pending.size) {
+      checkAbort(signal);
+      await Promise.race(pending);
     }
-
-    page.cleanup();
+    if (ocrError) throw ocrError;
+    onProgress?.({ phase: 'save', pages: total, frac: 0.995 });
+    return await newDoc.save({ useObjectStreams: true });
+  } finally {
+    await srcDoc.destroy();
+    if (opts.ocr) releaseOcrSoon();
   }
-
-  await srcDoc.destroy();
-  onProgress?.({ phase: 'save' });
-  return newDoc.save({ useObjectStreams: true });
 }
 
-async function losslessCompress(srcBytes, onProgress) {
+/** Seiten mit pdf-lib auf A4 bringen, ohne sie zu rastern (für „Verlustfrei“). */
+function normalizeA4Vector(doc) {
+  for (const page of doc.getPages()) {
+    const box = page.getMediaBox();
+    const L = pageLayout(box.width, box.height, true);
+    if (Math.abs(L.wPt - box.width) < 1 && Math.abs(L.hPt - box.height) < 1) continue;
+    page.scaleContent(L.sx, L.sy);
+    page.scaleAnnotations?.(L.sx, L.sy);
+    page.translateContent(L.ox - box.x * L.sx, L.oy - box.y * L.sy);
+    page.setMediaBox(0, 0, L.wPt, L.hPt);
+    page.setCropBox(0, 0, L.wPt, L.hPt);
+    page.setTrimBox?.(0, 0, L.wPt, L.hPt);
+    page.setBleedBox?.(0, 0, L.wPt, L.hPt);
+    page.setArtBox?.(0, 0, L.wPt, L.hPt);
+  }
+}
+
+async function losslessCompress(srcBytes, opts = {}, onProgress) {
   const PDFLib = window.PDFLib;
-  onProgress?.({ phase: 'optimize' });
+  onProgress?.({ phase: 'optimize', frac: 0.5 });
   const doc = await PDFLib.PDFDocument.load(srcBytes, { updateMetadata: false });
+  if (opts.a4) normalizeA4Vector(doc);
   return doc.save({ useObjectStreams: true });
 }
 
-// opts: { mode: 'lossless'|'raster', colorMode: 'color'|'gray'|'bw'|'indexed',
-//         dpi, quality, colors, bias, bwFilter: 'auto'|'g4'|'flate', ocr, ocrLang,
-//         pageOverrides: { [seitennummer]: Teil-Opts, überlagern die globalen } }
-export async function compressPdf(arrayBuffer, opts, onProgress) {
-  const srcBytes = new Uint8Array(arrayBuffer);
-  if (opts.mode === 'lossless') {
-    return losslessCompress(srcBytes, onProgress);
-  }
-  // pdf.js überträgt den Buffer in seinen Worker -> Kopie übergeben
-  return rasterCompress(srcBytes.slice(), opts, onProgress);
+/**
+ * opts: { mode: 'lossless'|'raster', colorMode: 'color'|'gray'|'bw'|'indexed',
+ *         dpi, quality, colors, bias, contrast, darkAreas, bwFilter, ocr, ocrLang,
+ *         a4: alle Seiten auf DIN A4,
+ *         pageOverrides: { [seitennummer]: Teil-Opts, überlagern die globalen } }
+ */
+export async function compressPdf(arrayBuffer, opts, onProgress, signal) {
+  const srcBytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+  if (opts.mode === 'lossless') return losslessCompress(srcBytes, opts, onProgress);
+  return rasterCompress(srcBytes, opts, onProgress, signal);
 }
 
 // ---------------------------------------------------------------- Vorschau
 
-// Verarbeitet Seite 1 mit den aktuellen Einstellungen und liefert ein
+// Verarbeitet eine Seite mit den gegebenen Einstellungen und liefert ein
 // Vorschaubild + die kodierte Größe dieser Seite.
-export async function previewPage(arrayBuffer, opts, pageNumber = 1) {
-  const srcBytes = new Uint8Array(arrayBuffer).slice();
-  const doc = await pdfjsLib.getDocument({ data: srcBytes, ...PDFJS_DOC_OPTS }).promise;
-  const page = await doc.getPage(Math.min(Math.max(1, pageNumber), doc.numPages));
-  const dpi = Math.min(Math.max(opts.dpi || 150, 50), 600);
-  const maxPixels = opts.colorMode === 'bw' ? MAX_PIXELS_BW : MAX_PIXELS_COLOR;
-  const { canvas, ctx, wPx, hPx } = await renderPage(page, dpi, maxPixels);
+export async function previewPage(bytes, opts, pageNumber = 1, maxW = 1100) {
+  if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes);
+  return withPdf(bytes, async (doc) => {
+    const n = Math.min(Math.max(1, pageNumber), doc.numPages);
+    const page = await doc.getPage(n);
+    const o = opts.mode === 'lossless'
+      ? { ...opts, colorMode: 'color', dpi: 110, quality: 0.92 }
+      : optsForPage(opts, n);
+    const r = await renderPage(page, clampDpi(o.dpi), maxPixelsFor(o), !!opts.a4);
+    const { canvas, ctx, wPx, hPx } = r;
+    let pageBytes = 0;
 
-  let pageBytes;
-  let viewCanvas = canvas;
-
-  if (opts.colorMode === 'bw') {
-    const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), opts.bias || 0, opts.contrast || 0, opts.darkAreas || 'auto');
-    const g4 = encodeG4(bitmap, wPx, hPx);
-    const flate = await deflateSize(packBits(bitmap, wPx, hPx));
-    pageBytes = Math.min(g4.length, flate);
-    const out = ctx.createImageData(wPx, hPx);
-    for (let i = 0, p = 0; i < bitmap.length; i++, p += 4) {
-      const v = bitmap[i] ? 0 : 255;
-      out.data[p] = v;
-      out.data[p + 1] = v;
-      out.data[p + 2] = v;
-      out.data[p + 3] = 255;
-    }
-    ctx.putImageData(out, 0, 0);
-  } else if (opts.colorMode === 'indexed') {
-    const imageData = ctx.getImageData(0, 0, wPx, hPx);
-    const { indices, palette } = quantizeIndexed(imageData, Math.min(16, Math.max(4, opts.colors || 16)), opts.bias || 0);
-    pageBytes = await deflateSize(pack4Bit(indices, wPx, hPx));
-    for (let i = 0, p = 0; i < indices.length; i++, p += 4) {
-      const [r, g, b] = palette[indices[i]];
-      imageData.data[p] = r;
-      imageData.data[p + 1] = g;
-      imageData.data[p + 2] = b;
-      imageData.data[p + 3] = 255;
-    }
-    ctx.putImageData(imageData, 0, 0);
-  } else {
-    if (opts.colorMode === 'gray') {
+    if (o.colorMode === 'bw') {
+      const { bitmap } = binarize(ctx.getImageData(0, 0, wPx, hPx), o.bias || 0, o.contrast || 0, o.darkAreas || 'auto');
+      const g4 = encodeG4(bitmap, wPx, hPx);
+      const flate = await deflateSize(packBits(bitmap, wPx, hPx));
+      pageBytes = Math.min(g4.length, flate);
+      const out = ctx.createImageData(wPx, hPx);
+      for (let i = 0, p = 0; i < bitmap.length; i++, p += 4) {
+        const v = bitmap[i] ? 0 : 255;
+        out.data[p] = v;
+        out.data[p + 1] = v;
+        out.data[p + 2] = v;
+        out.data[p + 3] = 255;
+      }
+      ctx.putImageData(out, 0, 0);
+    } else if (o.colorMode === 'indexed') {
       const imageData = ctx.getImageData(0, 0, wPx, hPx);
-      applyGrayInPlace(imageData);
+      const { indices, palette } = quantizeIndexed(imageData, Math.min(16, Math.max(4, o.colors || 16)), o.bias || 0);
+      pageBytes = await deflateSize(pack4Bit(indices, wPx, hPx));
+      for (let i = 0, p = 0; i < indices.length; i++, p += 4) {
+        const [rr, g, b] = palette[indices[i]];
+        imageData.data[p] = rr;
+        imageData.data[p + 1] = g;
+        imageData.data[p + 2] = b;
+        imageData.data[p + 3] = 255;
+      }
       ctx.putImageData(imageData, 0, 0);
+    } else {
+      if (o.colorMode === 'gray') {
+        const imageData = ctx.getImageData(0, 0, wPx, hPx);
+        applyGrayInPlace(imageData);
+        ctx.putImageData(imageData, 0, 0);
+      }
+      const jpeg = await canvasToJpeg(canvas, o.quality ?? 0.6);
+      pageBytes = jpeg.length;
+      if (opts.mode !== 'lossless') {
+        // Echte JPEG-Artefakte anzeigen
+        const bmp = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }));
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close?.();
+      }
     }
-    const jpeg = await canvasToJpeg(canvas, opts.quality ?? 0.6);
-    pageBytes = jpeg.length;
-    // Echte JPEG-Artefakte anzeigen
-    const bmp = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }));
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close?.();
-  }
 
-  // Fürs UI herunterskalieren
-  const maxW = 900;
-  if (wPx > maxW) {
-    const s = maxW / wPx;
-    const small = document.createElement('canvas');
-    small.width = Math.round(wPx * s);
-    small.height = Math.round(hPx * s);
-    small.getContext('2d').drawImage(viewCanvas, 0, 0, small.width, small.height);
-    viewCanvas = small;
-  }
-  const dataUrl = viewCanvas.toDataURL('image/png');
-  const numPages = doc.numPages;
-  page.cleanup();
-  await doc.destroy();
-  return { dataUrl, pageBytes, numPages, wPx, hPx };
+    // Fürs UI verkleinern
+    let view = canvas;
+    if (wPx > maxW) {
+      const s = maxW / wPx;
+      view = document.createElement('canvas');
+      view.width = Math.round(wPx * s);
+      view.height = Math.round(hPx * s);
+      const vctx = view.getContext('2d');
+      vctx.imageSmoothingQuality = 'high';
+      vctx.drawImage(canvas, 0, 0, view.width, view.height);
+    }
+    const dataUrl = view.toDataURL('image/png');
+    page.cleanup();
+    freeCanvas(canvas);
+    if (view !== canvas) freeCanvas(view);
+    return { dataUrl, pageBytes, numPages: doc.numPages, wPx, hPx };
+  });
 }
 
 // ---------------------------------------------------------------- Simulation
 
-// Rechnet alle Presets durch. Bei langen Dokumenten wird auf Stichproben-
-// Seiten (erste/mittlere/letzte) gerechnet und hochgerechnet.
-export async function simulatePdf(arrayBuffer, onProgress) {
-  const srcBytes = new Uint8Array(arrayBuffer);
-  const probe = await pdfjsLib.getDocument({ data: srcBytes.slice(), ...PDFJS_DOC_OPTS }).promise;
-  const totalPages = probe.numPages;
-  await probe.destroy();
+const PAGE_OVERHEAD = 420;     // Seitenobjekt, Bildobjekt, Inhalt (gemessen)
+const DOC_OVERHEAD = 900;      // Katalog, Seitenbaum, XRef, Producer
 
-  const samples = totalPages <= 3
-    ? Array.from({ length: totalPages }, (_, i) => i + 1)
-    : [1, Math.ceil(totalPages / 2), totalPages];
-  const estimated = samples.length < totalPages;
+/**
+ * Schätzt für mehrere Einstellungen die Ergebnisgröße.
+ *
+ * variants: [{ key, opts }] – vollständige Optionen je Zeile.
+ * Gerechnet wird auf bis zu drei Beispielseiten (erste, mittlere, letzte).
+ * Jede Seite wird pro Auflösung nur EINMAL gerendert und dann für alle
+ * Varianten mit dieser Auflösung kodiert – deutlich schneller als jede Stufe
+ * einzeln komplett durchzurechnen. OCR wird nicht mitgerechnet (der
+ * unsichtbare Textlayer macht typischerweise nur wenige KB aus).
+ *
+ * @returns {Promise<{sizes: Object<string, number>, totalPages, sampledPages}>}
+ */
+export async function simulateVariants(bytes, variants, onProgress, signal) {
+  if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes);
+  const sizes = {};
+  const raster = variants.filter((v) => v.opts.mode !== 'lossless');
+  const lossless = variants.filter((v) => v.opts.mode === 'lossless');
 
-  const results = [];
-  for (const [key, label] of PRESET_INFO) {
-    onProgress?.({ preset: key, label });
-    const preset = PRESETS[key];
-    let size;
-    if (preset.mode === 'lossless') {
-      const out = await losslessCompress(srcBytes);
-      size = out.length;
-      results.push({ key, label, size, estimated: false });
-    } else {
-      const out = await rasterCompress(srcBytes.slice(), { ...preset, _pages: samples });
-      size = Math.round((out.length / samples.length) * totalPages);
-      results.push({ key, label, size, estimated });
+  return withPdf(bytes, async (doc) => {
+    const totalPages = doc.numPages;
+    const samples = totalPages <= 3
+      ? Array.from({ length: totalPages }, (_, i) => i + 1)
+      : [1, Math.ceil(totalPages / 2), totalPages];
+    const acc = Object.fromEntries(raster.map((v) => [v.key, 0]));
+    const steps = samples.length * new Set(raster.map((v) => clampDpi(v.opts.dpi))).size + lossless.length;
+    let step = 0;
+    const tick = (label) => onProgress?.({ frac: Math.min(1, step / Math.max(1, steps)), label });
+
+    for (const v of lossless) {
+      checkAbort(signal);
+      tick(v.key);
+      sizes[v.key] = (await losslessCompress(bytes.slice(), v.opts)).length;
+      step++;
     }
-  }
-  return { results, totalPages, sampledPages: samples.length };
+
+    for (const p of samples) {
+      const page = await doc.getPage(p);
+      const byDpi = new Map();
+      for (const v of raster) {
+        const o = optsForPage(v.opts, p);
+        const d = clampDpi(o.dpi);
+        if (!byDpi.has(d)) byDpi.set(d, []);
+        byDpi.get(d).push({ v, o });
+      }
+      for (const [dpi, group] of byDpi) {
+        checkAbort(signal);
+        tick(group[0].v.key);
+        const maxPx = Math.min(...group.map(({ o }) => maxPixelsFor(o)));
+        const a4 = !!group[0].v.opts.a4;
+        const r = await renderPage(page, dpi, maxPx, a4);
+        // Reihenfolge: erst alles, was das Canvas direkt kodiert, dann die
+        // Pixel-Varianten, zuletzt Graustufen (verändert die Pixel).
+        for (const { v, o } of group.filter((g) => g.o.colorMode === 'color')) {
+          acc[v.key] += (await canvasToJpeg(r.canvas, o.quality ?? 0.6)).length + PAGE_OVERHEAD;
+        }
+        const pixelGroup = group.filter((g) => g.o.colorMode === 'bw' || g.o.colorMode === 'indexed');
+        const grayGroup = group.filter((g) => g.o.colorMode === 'gray');
+        if (pixelGroup.length || grayGroup.length) {
+          const imageData = r.ctx.getImageData(0, 0, r.wPx, r.hPx);
+          for (const { v, o } of pixelGroup) {
+            checkAbort(signal);
+            if (o.colorMode === 'bw') {
+              const { bitmap } = binarize(imageData, o.bias || 0, o.contrast || 0, o.darkAreas || 'auto');
+              const g4 = encodeG4(bitmap, r.wPx, r.hPx).length;
+              const fl = await deflateSize(packBits(bitmap, r.wPx, r.hPx));
+              acc[v.key] += Math.min(g4, fl) + PAGE_OVERHEAD;
+            } else {
+              const { indices, palette } = quantizeIndexed(imageData, Math.min(16, Math.max(4, o.colors || 16)), o.bias || 0);
+              acc[v.key] += (await deflateSize(pack4Bit(indices, r.wPx, r.hPx))) + palette.length * 6 + PAGE_OVERHEAD;
+            }
+            await nextFrame();
+          }
+          if (grayGroup.length) {
+            applyGrayInPlace(imageData);
+            r.ctx.putImageData(imageData, 0, 0);
+            for (const { v, o } of grayGroup) {
+              acc[v.key] += (await canvasToJpeg(r.canvas, o.quality ?? 0.6)).length + PAGE_OVERHEAD;
+            }
+          }
+        }
+        freeCanvas(r.canvas);
+        step++;
+        tick(group[0].v.key);
+        await nextFrame();
+      }
+      page.cleanup();
+    }
+
+    for (const v of raster) {
+      sizes[v.key] = Math.round((acc[v.key] / samples.length) * totalPages + DOC_OVERHEAD);
+    }
+    onProgress?.({ frac: 1 });
+    return { sizes, totalPages, sampledPages: samples.length, estimated: samples.length < totalPages };
+  });
+}
+
+/** Kompatibel zur alten Schnittstelle: alle Stufen mit Standardwerten schätzen. */
+export async function simulatePdf(arrayBuffer, onProgress, extra = {}) {
+  const variants = PRESET_INFO.map(({ key }) => ({ key, opts: { ...PRESETS[key], ...extra } }));
+  const { sizes, totalPages, sampledPages, estimated } = await simulateVariants(
+    new Uint8Array(arrayBuffer), variants,
+    onProgress ? (p) => onProgress({ label: p.label, frac: p.frac }) : null,
+  );
+  const results = PRESET_INFO.map(({ key, name }) => ({
+    key, label: name, size: sizes[key], estimated: key !== 'verlustfrei' && estimated,
+  }));
+  return { results, totalPages, sampledPages };
 }

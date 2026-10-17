@@ -1,75 +1,92 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF Presser – Stack für Portainer / Docker Compose
+# PDF Presser – Stack für Portainer / Docker Compose (z. B. ThinkCentre mit ZimaOS)
 #
-# In Portainer:  Stacks → Add stack → "Web editor" → diesen Inhalt einfügen,
-#                unten die drei Werte anpassen → Deploy the stack.
+# Portainer:  Stacks → pdfpresser → Editor → diesen Inhalt einfügen → unten die
+#             Werte anpassen → "Update the stack" (bzw. "Deploy the stack").
 #
+# Das Image wird fertig von GitHub geladen (ghcr.io) – auf dem Server wird
+# nichts mehr gebaut. Der kleine Watchtower-Dienst unten prüft alle 5 Minuten,
+# ob es eine neue Version gibt, und tauscht den Container dann selbst aus.
 # Ausführliche Anleitung: docs/portainer-nas-scanner-setup.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
   pdfpresser:
+    image: ghcr.io/kmitulla/pdfcompress:latest
     container_name: pdfpresser
-    # Direkt aus dem Repository bauen – kein Vorab-Build, kein Klonen nötig.
-    build:
-      context: "https://github.com/kmitulla/pdfcompress.git#main"
-    image: pdfpresser:latest
     restart: unless-stopped
-    # Als root laufen, damit der gemountete Zielordner sicher beschreibbar ist.
-    # Weglassen, wenn der Ordner dem Benutzer mit uid 1000 gehört.
+    # Als root laufen, damit gemountete Ordner sicher beschreibbar sind.
+    # Weglassen, wenn die Ordner dem Benutzer mit uid 1000 gehören.
     user: "0:0"
     ports:
       - "8823:8823"
     environment:
-      # ── 1. Scanner ────────────────────────────────────────────────────────
-      # IP/Hostname des Netzwerk-Scanners. WICHTIG: Viele Epson-Geräte (z. B.
-      # ET-2720) sprechen eSCL nur über HTTPS – dann "https://" voranstellen.
-      # Leer lassen, um die Scanner-Funktion abzuschalten.
+      # ── Scanner ───────────────────────────────────────────────────────────
+      # IP des Netzwerk-Scanners. Viele Epson-Geräte (z. B. ET-2720) sprechen
+      # eSCL nur über HTTPS – dann "https://" voranstellen. Leer = aus.
       SCANNER_HOST: "${SCANNER_HOST:-}"
 
-      # ── 2. Zielordner ─────────────────────────────────────────────────────
-      # Pfad IM CONTAINER – wird unten auf den Paperless-Ordner gemountet.
+      # ── Paperless ─────────────────────────────────────────────────────────
+      # Weg 1 (empfohlen, kein Ordner-Mount nötig): direkt über die API.
+      #   Token: Paperless → Profil (oben rechts) → "API-Token".
+      PAPERLESS_URL: "${PAPERLESS_URL:-}"        # z. B. http://192.168.1.20:8000
+      PAPERLESS_TOKEN: "${PAPERLESS_TOKEN:-}"
+      # Weg 2: in den consume-Ordner legen (wird auch als Rückfall genutzt,
+      # falls die API mal nicht erreichbar ist).
       CONSUME_DIR: "/data/consume"
 
-      # ── 3. Sammelordner der Vorstufe („Paperless Prepare“) ────────────────
-      # Hier landen Rohscans und Fotos, bis sie gesichtet, bearbeitet und an
-      # Paperless uebergeben werden. Leer lassen, um die Vorstufe abzuschalten.
+      # ── Sammelordner („Paperless Prepare“) ────────────────────────────────
+      # Rohscans/Fotos parken, sichten, erst dann an Paperless. Leer = aus.
       RAW_DIR: "/data/raw"
 
-      # ── 4. Profilspeicher ─────────────────────────────────────────────────
-      # Einstellungen & Unterschriften liegen auf dem eigenen Server, damit sie
-      # auf iPhone UND Laptop gelten. Nur in dieser selbst gehosteten Variante –
-      # die öffentliche GitHub-Pages-Version bleibt rein lokal im Browser.
+      # ── Profilspeicher ────────────────────────────────────────────────────
+      # Einstellungen & Unterschriften gelten so auf iPhone UND Laptop.
       DATA_DIR: "/data/app"
+      TZ: "Europe/Berlin"
 
     volumes:
-      # Linke Seite = der Ordner, den Paperless als "consume" überwacht.
-      #   lokaler Ordner (ZimaOS/Host):  /DATA/scannerinput:/data/consume
-      #   gemountete NAS-Freigabe:       /mnt/nas/scannerinput:/data/consume
-      #   gemeinsames Docker-Volume:     paperless_consume:/data/consume
+      # Linke Seite = Ordner, den Paperless als "consume" überwacht, z. B.
+      #   /DATA/AppData/paperless/consume:/data/consume   (ZimaOS)
+      #   /mnt/nas/scannerinput:/data/consume             (NAS-Freigabe)
       - "${CONSUME_HOST_PATH:-./consume}:/data/consume"
-
-      # Sammelordner „Scanner_RAW“ – am besten ein Ordner, in den du auch vom
-      # Rechner aus schauen kannst:
-      #   - /DATA/Scanner_RAW:/data/raw
+      # Sammelordner – am besten ein Ordner, in den du auch vom Rechner schaust:
+      #   /DATA/Scanner_RAW:/data/raw
       - "${RAW_HOST_PATH:-pdfpresser_raw}:/data/raw"
-
-      # Profilspeicher – eigenes Volume, sonst sind Unterschriften nach einem
-      # Container-Update weg.
+      # Profilspeicher – eigenes Volume, damit Unterschriften Updates überleben
       - pdfpresser_data:/data/app
+
+  # ── Auto-Update ────────────────────────────────────────────────────────────
+  # Prüft alle 5 Minuten, ob auf ghcr.io ein neues Image liegt, und startet
+  # pdfpresser damit neu. Kümmert sich NUR um den Container „pdfpresser“.
+  # Der Fork nickfedor/watchtower wird gepflegt (das Original ist archiviert).
+  # Wer keine automatischen Updates will: diesen Block löschen.
+  watchtower:
+    image: nickfedor/watchtower:latest
+    container_name: pdfpresser-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: "Europe/Berlin"
+    command: --cleanup --interval 300 pdfpresser
 
 volumes:
   pdfpresser_data:
   pdfpresser_raw:
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Variante ohne GitHub-Image: direkt aus dem Repository bauen (langsamer, und
+# Updates nur per "Re-build image" in Portainer). Dann oben "image:" ersetzen:
+#
+#    build:
+#      context: "https://github.com/kmitulla/pdfcompress.git#main"
+#    image: pdfpresser:local
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Variante: NAS-Freigabe direkt einbinden (statt sie auf dem Host zu mounten).
 # Dann oben "- ${CONSUME_HOST_PATH...}" durch "- paperless_consume:/data/consume"
-# ersetzen und diesen Block aktivieren.
-#
-# ACHTUNG: Das Passwort darf KEIN Komma enthalten – die Optionen sind
-# kommagetrennt, ein Komma im Passwort zerreißt sie ("invalid argument").
-# ─────────────────────────────────────────────────────────────────────────────
+# ersetzen und diesen Block unter "volumes:" ergänzen.
+# ACHTUNG: Das Passwort darf KEIN Komma enthalten (Optionen sind kommagetrennt).
 #
 #   paperless_consume:
 #     driver: local
@@ -77,30 +94,3 @@ volumes:
 #       type: cifs
 #       device: "//192.168.178.94/scannerinput"
 #       o: "username=NAS_USER,password=NAS_PASSWORT_OHNE_KOMMA,uid=1000,gid=1000,vers=3.0,file_mode=0664,dir_mode=0775"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Optional: Paperless-ngx im selben Stack mitlaufen lassen – dann teilen sich
-# beide denselben consume-Ordner und du brauchst gar kein NAS-Mount.
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#   paperless-broker:
-#     image: redis:7
-#     restart: unless-stopped
-#     volumes:
-#       - redisdata:/data
-#
-#   paperless:
-#     image: ghcr.io/paperless-ngx/paperless-ngx:latest
-#     restart: unless-stopped
-#     depends_on:
-#       - paperless-broker
-#     ports:
-#       - "8010:8000"
-#     environment:
-#       PAPERLESS_REDIS: redis://paperless-broker:6379
-#       PAPERLESS_OCR_LANGUAGE: deu
-#       PAPERLESS_TIME_ZONE: Europe/Berlin
-#     volumes:
-#       - paperless_data:/usr/src/paperless/data
-#       - paperless_media:/usr/src/paperless/media
-#       - paperless_consume:/usr/src/paperless/consume

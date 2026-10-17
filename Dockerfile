@@ -1,20 +1,30 @@
-# PDF Presser – Web-App + Scanner-/Speicher-Backend in einem schlanken Image.
+# PDF Presser – Web-App + Scanner-/Paperless-Backend in einem schlanken Image.
 # Kein Build-Schritt nötig: reines Node ohne externe Abhängigkeiten.
-FROM node:20-alpine
+FROM node:22-alpine
 
-# Nicht als root laufen.
 WORKDIR /app
 
-# Nur die für den Betrieb nötigen Dateien kopieren (Tests/Doku bleiben außen vor,
-# siehe .dockerignore).
-COPY . /app
+# Nur die für den Betrieb nötigen Dateien (siehe .dockerignore)
+COPY index.html manifest.webmanifest sw.js package.json ./
+COPY css ./css
+COPY js ./js
+COPY icons ./icons
+COPY vendor ./vendor
+COPY server ./server
 
-ENV PORT=8823 \
+# Versionskennung (setzt der GitHub-Workflow auf den Commit). Ohne Angabe
+# berechnet der Server sie aus dem Inhalt der App.
+ARG APP_VERSION=""
+ENV APP_VERSION=${APP_VERSION} \
+    PORT=8823 \
     NODE_ENV=production
+
+LABEL org.opencontainers.image.source="https://github.com/kmitulla/pdfcompress" \
+      org.opencontainers.image.description="PDF Presser – PDFs & Scans lokal verkleinern, DIN A4, OCR, an Paperless senden" \
+      org.opencontainers.image.licenses="ISC"
 
 EXPOSE 8823
 
-# Einfacher Healthcheck über den Config-Endpunkt.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8823/api/config >/dev/null 2>&1 || exit 1
 

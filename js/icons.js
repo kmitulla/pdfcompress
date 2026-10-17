@@ -1,4 +1,4 @@
-// Icon-Set: schlanke SVG-Strichsymbole im SF-Symbols-Stil (iOS).
+// Icon-Set: schlanke SVG-Strichsymbole (SF-Symbols/Fluent-Stil).
 // Bewusst inline statt Icon-Font/Sprite-Datei – so bleibt alles offline-fähig
 // und die Icons erben Farbe (currentColor) und Strichstärke vom Kontext.
 
@@ -56,7 +56,23 @@ const P = {
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5l1.2 2.4 2.6-.5.4 2.6 2.4 1.2-1.4 2.3 1.4 2.3-2.4 1.2-.4 2.6-2.6-.5L12 21.5l-1.2-2.4-2.6.5-.4-2.6-2.4-1.2L6.8 13 5.4 10.7l2.4-1.2.4-2.6 2.6.5z"/>',
   cloud: '<path d="M7 18a4 4 0 01-.6-7.95A5.5 5.5 0 0117.5 10 3.75 3.75 0 0117 18z"/>',
   device: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 5.5h3"/>',
+  // Neu in 2.0
+  send: '<path d="M21 3L10 14M21 3l-7 18-4-7-7-4z"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/>',
+  inbox: '<path d="M3 13l2.6-7.2A2 2 0 017.5 4.5h9a2 2 0 011.9 1.3L21 13v5a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
+  more: '<circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
+  checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16.5 9.5"/>',
+  warning: '<path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.5v.01"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+  a4: '<path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M8.5 16.5l1.7-5 1.7 5M9 15h2.4M15.5 16.5v-5l-2.4 3.4h3.2"/>',
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.6"/><path d="M10.5 18.5h3"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0119 0M5.5 12.5a9.5 9.5 0 0113 0M8.5 16a5 5 0 017 0"/><circle cx="12" cy="19.2" r=".9"/>',
 };
+
 
 const SIZE_DEFAULT = 20;
 

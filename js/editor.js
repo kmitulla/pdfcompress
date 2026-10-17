@@ -6,6 +6,7 @@
 import { processSignatureImage, strokeToSvgPath, normalizeStrokes } from './signature.js';
 import { listSignatures, saveSignature, deleteSignature, listStamps, saveStamp, deleteStamp } from './store.js';
 import { hydrateIcons, icon } from './icons.js';
+import { toast, alertDialog } from './ui.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -739,7 +740,7 @@ function updateProps() {
       }
     };
     $('#edCropClear').onclick = () => { snapshot(); delete curPage().crop; ed.tempRect = null; renderOverlay(); };
-    $('#edFormatA4').onclick = () => { snapshot(); curPage().resizeTo = A4.slice(); alert('Seite wird beim Übernehmen auf A4 skaliert.'); };
+    $('#edFormatA4').onclick = () => { snapshot(); curPage().resizeTo = A4.slice(); toast('Seite wird beim Übernehmen auf A4 skaliert', 'ok'); };
   } else {
     props.classList.add('hidden');
     props.innerHTML = '';
@@ -1164,7 +1165,7 @@ async function openSignModal() {
       ed.pending = { type: 'image', assetId, w: 160, h: 160 / stamp.aspect };
       closeSignModal();
       ed.tool = 'place';
-      alert('Tippe/Klicke an die Stelle für den Stempel.');
+      toast('Tippe an die Stelle für den Stempel', 'info', 4000);
       return;
     }
     const sig = { kind: 'image', name: $('#sigPhotoName').value || 'Unterschrift', dataUrl, aspect: processed.width / processed.height };
@@ -1228,7 +1229,7 @@ function insertSignature(sig) {
   }
   closeSignModal();
   ed.tool = 'place';
-  alert('Tippe/Klicke an die Stelle, an der die Unterschrift stehen soll. Danach kannst du sie verschieben und in der Größe ändern.');
+  toast('Tippe an die Stelle für die Unterschrift – danach verschieben und Größe ändern', 'info', 5000);
 }
 
 function addAssetFromDataUrl(dataUrl, kind) {
@@ -1284,7 +1285,7 @@ async function openStampTplModal() {
           note: st.note || '', style: st.style || 'stamp', date: st.dateAuto ? new Date().toLocaleDateString('de-DE') : '' };
       }
       ed.tool = 'place';
-      alert('Tippe/Klicke an die Stelle für den Stempel.');
+      toast('Tippe an die Stelle für den Stempel', 'info', 4000);
     };
     const del = document.createElement('button');
     del.className = 'btn btn-small btn-ghost';
@@ -1616,7 +1617,7 @@ export async function openEditor(item, onApplied) {
         ed.onApplied?.(out);
         closeEditor();
       } catch (e) {
-        alert(`Übernehmen fehlgeschlagen: ${e?.message || e}`);
+        alertDialog('Übernehmen fehlgeschlagen', String(e?.message || e));
       } finally {
         $('#edApply').disabled = false;
         $('#edApply').textContent = 'Übernehmen';
@@ -1638,7 +1639,7 @@ export async function openEditor(item, onApplied) {
       const w = Math.min(ed.pagePt.w * 0.5, 250);
       ed.pending = { type: 'image', assetId, w, h: w * (canvas.height / canvas.width), color: '#000000' };
       ed.tool = 'place';
-      alert('Tippe/Klicke an die Stelle für das Bild.');
+      toast('Tippe an die Stelle für das Bild', 'info', 4000);
     });
     attachPointerHandlers();
   }
