@@ -238,11 +238,20 @@ async function pump() {
     const sig = sigFor(doc);
     const t0 = performance.now();
     try {
-      const out = await compressPdf(doc.bytes, optsFor(doc), (p) => {
+      const opts = optsFor(doc);
+      let out = await compressPdf(doc.bytes, opts, (p) => {
         doc.progress = p.frac ?? doc.progress;
         doc.message = progressText(p);
         updateProgress(doc);
       }, doc.abort);
+      // Reine Text-/Vektor-PDFs werden durchs Rastern oft größer. Ohne
+      // Texterkennung lohnt sich dann die verlustfreie Optimierung mehr –
+      // die kleinere Fassung gewinnt.
+      let fellBack = false;
+      if (opts.mode !== 'lossless' && !opts.ocr && out.length >= doc.bytes.length) {
+        const alt = await compressPdf(doc.bytes, { mode: 'lossless', a4: opts.a4 });
+        if (alt.length < out.length) { out = alt; fellBack = true; }
+      }
       doc.result = out;
       doc.resultSig = sig;
       doc.status = 'done';
@@ -251,9 +260,11 @@ async function pump() {
       doc.delivered = false;
       doc.progress = 1;
       const secs = (performance.now() - t0) / 1000;
-      doc.message = out.length < doc.bytes.length
-        ? `Fertig in ${secs.toFixed(secs < 10 ? 1 : 0).replace('.', ',')} s`
-        : 'Fertig – nicht kleiner als vorher (anderes Profil probieren)';
+      doc.message = fellBack
+        ? 'Schon optimal: verlustfrei optimiert (Rastern wäre größer)'
+        : out.length < doc.bytes.length
+          ? `Fertig in ${secs.toFixed(secs < 10 ? 1 : 0).replace('.', ',')} s`
+          : 'Fertig – nicht kleiner als vorher (anderes Profil probieren)';
       renderDoc(doc);
       if (doc.id === state.selectedId) renderInspector();
       if (state.outDir) await saveToDir(doc, { quiet: true });
@@ -1674,11 +1685,8 @@ async function detectBackend() {
 async function registerSw() {
   try {
     const reg = await navigator.serviceWorker.register('sw.js');
-    const ready = () => $('#statusOffline').classList.remove('hidden');
-    if (reg.active) ready();
-    reg.addEventListener('updatefound', () => {
-      reg.installing?.addEventListener('statechange', function () { if (this.state === 'activated') ready(); });
-    });
+    // Sobald ein Service Worker aktiv ist, liegt alles offline bereit
+    navigator.serviceWorker.ready.then(() => $('#statusOffline').classList.remove('hidden'));
     // Regelmäßig nach Updates schauen, solange die App offen ist
     setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
   } catch (e) {
