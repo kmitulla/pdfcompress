@@ -7,7 +7,7 @@
 ```
  Handy/Laptop (Browser) ──HTTP──► pdfpresser-Container (ThinkCentre)
    │  Oberfläche, Zuschnitt, Kompression und OCR rechnen im Browser
-   ├─ /api/scanner/scan ─► eSCL ─► Epson ET-2720 (LAN)
+   ├─ /api/scan-jobs ────► eSCL ─► Epson ET-2720 (LAN) – läuft auch ohne App weiter
    ├─ /api/save ─────────► Paperless-API  (oder consume-Ordner)
    └─ /api/raw  ─────────► Sammelordner „Scanner_RAW“
  ghcr.io/kmitulla/pdfcompress ◄── GitHub baut bei jedem Push ein Image
@@ -79,53 +79,93 @@ will: den `watchtower`-Block aus der Compose löschen.
 ## 2. Epson ET-2720 als Netzwerk-Scanner
 
 1. Drucker ins WLAN bringen, im Router eine **feste IP** (DHCP-Reservierung) vergeben.
-2. Test vom ThinkCentre:
-   ```bash
-   curl -sk https://192.168.178.69/eSCL/ScannerCapabilities | head -c 300
-   ```
-   Kommt XML mit `MakeAndModel`, passt es. Der ET-2720 spricht eSCL meist nur
-   über **HTTPS** → `SCANNER_HOST=https://…`.
-3. In der App: **Einstellungen → Netzwerk-Scanner → Prüfen** zeigt das Modell.
+2. In der App: **Einstellungen → Netzwerk-Scanner → Suchen** findet das Gerät
+   im Netz – **Übernehmen** tippen. (Oder die Adresse von Hand eintragen, z. B.
+   `https://192.168.178.69`, und **Speichern**. Der Wert aus der
+   docker-compose.yml ist dann nur noch der Standard.)
+3. **Prüfen** zeigt Modell und die Auflösungen, die das Gerät wirklich kann
+   (beim ET-2720: 100/200/300/600 dpi).
 
-### Fester A4-Ausschnitt auf der Glasfläche
+### Auflösung und Farbe
 
-Die Glasfläche des ET-2720 ist 215,9 × 297 mm – also 6 mm breiter als A4.
-Die App schneidet jede Seite **immer exakt 210 × 297 mm ab der Anlegeecke**
-aus (aus Pixelgröße und Scanauflösung berechnet, keine wackelige
-Kantenerkennung). Das Ergebnis ist eine exakte A4-Seite.
+Das Scan-Blatt bietet nur Auflösungen an, die der Scanner meldet. Wünsche, die
+das Gerät nicht kennt, werden passend umgesetzt – deshalb gibt es kein „Scanner
+belegt / HTTP 409“ mehr bei 150 dpi oder S/W:
 
-- **Einstellungen → Netzwerk-Scanner → Anlegeecke:** wo die Vorlage anliegt
-  (Standard: oben links – beim Epson die Ecke mit dem Pfeil).
-- **Feinjustage X/Y (mm):** falls dein Gerät den Nullpunkt minimal versetzt.
-  + verschiebt den Ausschnitt nach rechts bzw. unten.
-- Im Studio lässt sich jede Seite trotzdem von Hand nachziehen; **„A4-Fläche“**
-  setzt den festen Ausschnitt zurück.
+| Wahl in der App | geht an den Scanner als | Ergebnis |
+| --- | --- | --- |
+| 150 dpi (ältere Einstellung) | nächste unterstützte, z. B. 200 dpi | Datei heißt `…_200dpi.jpg` |
+| Grau | Graustufen-JPEG | – |
+| S/W | Graustufen-JPEG (1-Bit-JPEG gibt es nicht) | sauberes Schwarz-Weiß macht die Kompression („Scan S/W“) |
+
+Hängt am Gerät noch ein alter Auftrag, räumt der Server ihn vorher ab.
+
+### Scans laufen auf dem Server weiter
+
+Ein Scan ist ein **Auftrag auf dem Server**: Der Server spricht den Scanner an,
+wartet die Pausen ab und speichert jede Seite sofort. Du kannst die App
+schließen oder das Handy sperren – der Stapel läuft weiter. Öffnest du die App
+wieder, steht oben **„Scan vom … · 3 Seiten“** → **Öffnen** holt die Seiten ins
+Studio (läuft er noch, kommen weitere Seiten live dazu). Erst wenn daraus ein
+Dokument geworden ist, wird der Auftrag gelöscht. Auch ein Neustart des
+Containers verliert keine gescannten Seiten (der Auftrag heißt dann
+„unterbrochen“ und lässt sich fortsetzen).
+
+### A4-Bereich einrichten (mit Testscan)
+
+**Einstellungen → Netzwerk-Scanner → A4-Bereich → Einrichten …**
+
+1. Ein A4-Blatt so auflegen, wie du immer scannst → **Testscan**.
+2. Den blauen Rahmen auf die Papierkanten legen: **ziehen** verschiebt, eine
+   **Ecke ziehen** skaliert. Das Seitenverhältnis 210 : 297 ist gesperrt – wer
+   die Höhe ändert, ändert die Breite automatisch mit.
+3. Fein: Felder X/Y/Höhe in mm oder die Pfeile (Schrittweite antippen: 0,1 /
+   0,5 / 1 / 5 mm). Die **Ecken-Lupe** zeigt alle vier Ecken stark vergrößert.
+4. **Speichern** – gilt ab sofort für jeden Scan.
+
+Im Studio lässt sich jede Seite weiterhin nachziehen; dort kann man unter
+**Seitenverhältnis** wählen: *Frei* (Ecken einzeln, Perspektive), *A4* oder
+*Fest* (aktuelles Verhältnis bleibt).
 
 ### Mehrere Seiten (Stapel)
 
-**Scanner** antippen → im Blatt **Seiten** und **Pause** einstellen →
-**Scannen**. Die App scannt die Seiten nacheinander, zählt die Pause herunter
-(„nächste in 6 s · Vorlage wechseln“) und legt jede Seite gleich mit
-A4-Zuschnitt ab. **Stopp** beendet vorzeitig, eingelesene Seiten bleiben.
-Weitere Seiten jederzeit über die Kachel **„Weitere Seite“** im Studio.
-
-Damit das Handy währenddessen nicht einschläft, spielt die App eine stille
-Tonspur und hält – nur über HTTPS – zusätzlich den Bildschirm wach.
+**Scanner** antippen → **Seiten** und **Pause** einstellen → **Scannen**. Die
+Pause zum Vorlagenwechsel zählt im Studio herunter; **Stopp** beendet vorzeitig,
+eingelesene Seiten bleiben. Weitere Seiten jederzeit über **„Weitere Seite →
+Scanner“** im Studio.
 
 ---
 
 ## 3. Paperless anbinden
 
-**Weg 1 – API (empfohlen):** `PAPERLESS_URL` und `PAPERLESS_TOKEN` setzen.
-Der Name des Dokuments in der App wird zum Titel in Paperless. Kein
-gemeinsamer Ordner nötig.
+Alles lässt sich in der App unter **Einstellungen → Paperless** eintragen
+(gespeichert auf dem Server, gilt für alle Geräte). Werte aus der
+docker-compose.yml sind nur der Standard.
 
-**Weg 2 – consume-Ordner:** `CONSUME_HOST_PATH` auf den Ordner zeigen lassen,
-den Paperless überwacht. Geschrieben wird atomar (`.name.part` → umbenennen),
+**Weg 1 – API (empfohlen):** Der Server schickt das PDF direkt an Paperless,
+der Name aus der App wird der Titel. Kein gemeinsamer Ordner nötig.
+
+1. Paperless öffnen → oben rechts dein Name → **Mein Profil** → bei
+   **API-Token** auf ↻ tippen (erzeugen) → Token kopieren.
+2. In der App: **Adresse** von Paperless eintragen – so, wie der *Server* sie
+   erreicht, z. B. `http://192.168.178.20:8000` (nicht `localhost`, außer
+   Paperless läuft im selben Container-Netz).
+3. Token einfügen → **Verbindung testen** („Verbunden mit Paperless 2.x · N
+   Dokumente“) → **Speichern**.
+
+Der Token wird nie wieder angezeigt, nur „gespeichert“. Zum Entfernen den
+Papierkorb neben dem Feld tippen.
+
+**Weg 2 – consume-Ordner:** Das PDF wird in den Ordner gelegt, den Paperless
+überwacht. In der App steht der Pfad **im Container** (Standard
+`/data/consume`). Damit die Datei auf dem ThinkCentre ankommt, muss der Ordner
+in der Compose eingebunden sein, z. B. `/DATA/paperless/consume:/data/consume`.
+Unterordner davon (`/data/consume/scans`) gehen ohne Änderung; die App zeigt die
+eingebundenen Ordner an. Geschrieben wird atomar (`.name.part` → umbenennen),
 gleichnamige Dateien werden nicht überschrieben.
 
-Sind beide gesetzt, wird die API benutzt; ist sie nicht erreichbar, landet die
-Datei im Ordner (die App meldet das).
+Sind beide eingerichtet, wird die API benutzt; ist sie nicht erreichbar, landet
+die Datei im Ordner (die App meldet das).
 
 **Ohne Extra-Tipp:** *Einstellungen → Automatik → Sofort komprimieren* und
 *Danach an Paperless senden* einschalten – dann reicht Scannen/Fotografieren.
@@ -168,7 +208,7 @@ Rohscans erst parken, dann gesammelt übernehmen:
 | Aufgabe | läuft auf |
 | --- | --- |
 | Zuschnitt, Kompression, Texterkennung, Vorschau | **Handy/Laptop** (Browser) |
-| Scanner ansprechen, Dateien ablegen, Paperless-Upload, Profil speichern | ThinkCentre |
+| Scanner ansprechen (Scan-Aufträge), Dateien ablegen, Paperless-Upload, Profil & Einstellungen speichern | ThinkCentre |
 
 Das ThinkCentre bleibt dadurch praktisch unbelastet. Die Texterkennung nutzt am
 Rechner zwei Worker parallel, am Handy einen.
@@ -181,10 +221,11 @@ Rechner zwei Worker parallel, am Handy einen.
 | --- | --- |
 | Update kommt nicht an | *Actions* auf GitHub grün? Package **public**? `docker logs pdfpresser-watchtower` ansehen. Sofort: Container *Recreate* mit „Re-pull image“. |
 | `pull access denied` / `unauthorized` für ghcr.io | Package ist noch privat → auf Public stellen (Abschnitt 1a) oder Registry in Portainer hinterlegen. |
-| Scanner „nicht erreichbar“ | `SCANNER_HOST` mit `https://` versuchen; `curl -sk https://IP/eSCL/ScannerCapabilities` vom ThinkCentre. |
-| Scan endet mit HTTP 503/409 | Gerät noch belegt – wird automatisch wiederholt; sonst Drucker kurz aus/an. |
-| A4-Ausschnitt sitzt 1–2 mm daneben | *Einstellungen → Netzwerk-Scanner → Feinjustage* in mm. |
-| Paperless: „API-Token prüfen“ | Token in Paperless neu erzeugen, `PAPERLESS_TOKEN` setzen, Stack aktualisieren. |
+| Scanner „nicht erreichbar“ | In der App **Suchen** oder Adresse mit `https://` versuchen; `curl -sk https://IP/eSCL/ScannerCapabilities` vom ThinkCentre. |
+| Scan endet mit HTTP 503/409 | Gerät noch belegt – wird automatisch abgeräumt und wiederholt; sonst Drucker kurz aus/an. |
+| A4-Ausschnitt sitzt 1–2 mm daneben | *Einstellungen → Netzwerk-Scanner → A4-Bereich → Einrichten* mit Testscan. |
+| Paperless: „lehnt den API-Token ab“ | Token in Paperless neu erzeugen und in der App eintragen. |
+| Paperless: „nicht erreichbar“ | Adresse aus Sicht des Servers prüfen (IP statt `localhost`, Port 8000). |
 | EACCES beim Speichern | Ordnerrechte; `user: "0:0"` steht bereits in der Compose. |
 | CIFS-Mount „invalid argument“ | NAS-Passwort enthält ein Komma – ändern. |
 | Unterschriften nach Update weg | Stack-Name geändert oder Volume `pdfpresser_data` gelöscht. |

@@ -35,8 +35,8 @@ test('Oberfläche lädt fehlerfrei: Icons statt Emojis, kein rohes Markup', asyn
   const text = await page.locator('body').innerText();
   expect(text).not.toMatch(/[\u{1F300}-\u{1FAFF}☀-➿]/u);
   await assertNoRawMarkup(expect, page, 'body');
-  // Ohne Scanner im Test: keine Scanner-Knöpfe
-  await expect(page.locator('#docsToolbar [data-add="scanner"]')).toBeHidden();
+  // Test-Scanner ist eingerichtet: Scanner-Knopf sichtbar
+  await expect(page.locator('#docsToolbar [data-add="scanner"]')).toBeVisible();
   // Paperless (Ordner) ist im Test eingerichtet
   await expect(page.locator('#statusPaperless')).toBeVisible();
   expect(errors).toEqual([]);
@@ -266,4 +266,79 @@ test('Handy: Tab-Leiste, Hinzufügen-Blatt mit Kamera, Inspektor als Blatt', asy
   await page.click('#inspector [data-act="closeInspector"]');
   await expect(page.locator('#inspector')).not.toHaveClass(/open/);
   await ctx.close();
+});
+
+test('Dokumente bleiben nach Schließen/Neuladen erhalten – samt Ergebnis', async ({ page }) => {
+  await ready(page);
+  await addTestPdf(page, { name: 'Bleibt da.pdf', pages: 1 });
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 60000 });
+  const size = await page.evaluate(() => window.__pdfpresser.state.docs[0].result.length);
+  await page.evaluate(() => window.__pdfpresser.saveDocsNow());
+  await page.reload();
+  await page.waitForFunction(() => window.__pdfpresser);
+  await page.evaluate(() => window.__pdfpresser.booted);
+  await expect(page.locator('.doc')).toHaveCount(1);
+  await expect(page.locator('.doc .doc-title')).toHaveText('Bleibt da.pdf');
+  const after = await page.evaluate(() => {
+    const d = window.__pdfpresser.state.docs[0];
+    return { status: d.status, size: d.result?.length, fresh: window.__pdfpresser.hasFresh(d) };
+  });
+  expect(after).toEqual({ status: 'done', size, fresh: true });
+  // Entfernen wirkt ebenfalls dauerhaft
+  await page.click('#inspector [data-act="remove"]');
+  if (await page.locator('.dlg').isVisible()) await page.click('.dlg .btn-danger');
+  await expect(page.locator('.doc')).toHaveCount(0);
+  await page.evaluate(() => window.__pdfpresser.saveDocsNow());
+  await page.reload();
+  await page.waitForFunction(() => window.__pdfpresser);
+  await page.evaluate(() => window.__pdfpresser.booted);
+  await expect(page.locator('.doc')).toHaveCount(0);
+});
+
+test('Vorschau zeigt Dateigröße vorher → nachher in Prozent', async ({ page }) => {
+  await ready(page);
+  await addTestPdf(page, { pages: 2 });
+  await page.click('#inspector [data-act="preview"]');
+  await expect(page.locator('#viewer')).toBeVisible();
+  await expect(page.locator('#viewerSize')).toContainText('Dokument');
+  await expect(page.locator('#viewerSize .vs-pct')).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('#viewerSize .vs-pct')).toHaveText(/[−+-]?\d+\s?%/);
+  await page.click('#viewerClose');
+  await page.click('#inspector .insp-foot [data-act="compress"]');
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 60000 });
+  await page.click('#inspector [data-act="preview"]');
+  await expect(page.locator('#viewerSize .vs-to')).not.toContainText('≈');
+  await expect(page.locator('#viewerSize .vs-from')).toBeVisible();
+});
+
+test('Einstellungen: Paperless-API in der App hinterlegen und testen', async ({ page, request }) => {
+  const http = await import('node:http');
+  const mock = http.createServer((req, res) => {
+    const ok = req.headers.authorization === 'Token abc123';
+    res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json', 'X-Version': '2.15' });
+    res.end(JSON.stringify({ count: 7 }));
+  });
+  await new Promise((r) => mock.listen(8859, r));
+  try {
+    await ready(page);
+    await page.click('.nav-item[data-view="settings"]');
+    await expect(page.locator('#paperlessCard')).toBeVisible();
+    await expect(page.locator('#paperlessPill')).toContainText('Ordner');
+    await page.fill('#setPaperlessUrl', 'http://127.0.0.1:8859');
+    await page.fill('#setPaperlessToken', 'falsch');
+    await page.click('#paperlessTestBtn');
+    await expect(page.locator('#paperlessTestInfo')).toContainText('Token');
+    await page.fill('#setPaperlessToken', 'abc123');
+    await page.click('#paperlessTestBtn');
+    await expect(page.locator('#paperlessTestInfo')).toContainText('Verbunden mit Paperless 2.15');
+    await page.click('#paperlessSaveBtn');
+    await expect(page.locator('#paperlessPill')).toContainText('API');
+    await expect(page.locator('#setPaperlessToken')).toHaveValue('');
+    await expect(page.locator('#setPaperlessToken')).toHaveAttribute('placeholder', /gespeichert/);
+    await expect(page.locator('#statusPaperless')).toContainText('API');
+  } finally {
+    await request.put('/api/settings', { data: { paperlessUrl: null, paperlessToken: null } });
+    mock.close();
+  }
 });

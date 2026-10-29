@@ -13,6 +13,8 @@ const P = {
   minus: '<path d="M5 12h14"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.75v.01"/>',
   lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="3"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/>',
+  move: '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>',
   offline: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
   spinner: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>',
 

@@ -20,16 +20,25 @@ export default defineConfig({
       ],
     },
   },
-  webServer: {
-    // Der echte App-Server (statische Auslieferung + /api). CONSUME_DIR/DATA_DIR
-    // zeigen auf Wegwerf-Ordner, damit auch Speichern & Profil getestet werden.
-    command: 'node server/index.mjs',
-    port: 8823,
-    reuseExistingServer: true,
-    env: {
-      CONSUME_DIR: './test-results/consume',
-      DATA_DIR: './test-results/appdata',
-      RAW_DIR: './test-results/raw',
+  webServer: [
+    {
+      // Nachgebauter Netzwerk-Scanner (eSCL), damit Scans Ende-zu-Ende laufen
+      command: 'node tests/escl-mock-server.mjs',
+      port: 8861,
+      reuseExistingServer: true,
     },
-  },
+    {
+      // Der echte App-Server (statische Auslieferung + /api). CONSUME_DIR/DATA_DIR
+      // zeigen auf Wegwerf-Ordner, damit auch Speichern & Profil getestet werden.
+      command: 'node server/index.mjs',
+      port: 8823,
+      reuseExistingServer: true,
+      env: {
+        CONSUME_DIR: './test-results/consume',
+        DATA_DIR: './test-results/appdata',
+        RAW_DIR: './test-results/raw',
+        SCANNER_HOST: 'http://127.0.0.1:8861',
+      },
+    },
+  ],
 });

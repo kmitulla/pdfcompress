@@ -9,19 +9,24 @@ Paperless schickst.
 
 ![Screenshot](docs/screenshot.png)
 
+<img src="docs/screenshot-editor.png" alt="Editor: Werkzeuge links, Eigenschaften rechts" width="49%"> <img src="docs/screenshot-mobile.png" alt="Am Handy" width="22%">
+
 ## Was die App kann
 
 | Bereich | Funktion |
 | --- | --- |
 | **Hinzufügen** | PDFs, Fotos (JPG/PNG/HEIC/WebP) oder direkt **Foto aufnehmen** (Kamera-App des Handys), Ziehen & Ablegen, Einfügen aus der Zwischenablage, **Netzwerk-Scanner** (eSCL/AirScan, z. B. Epson ET-2720) |
-| **Scan-Studio** | Fotos und Scans werden automatisch zugeschnitten: Flachbett-Scans mit **festem A4-Ausschnitt ab der Anlegeecke** (in mm justierbar), Fotos mit Eckenerkennung + Perspektivkorrektur. Nachjustieren mit Lupe, Drehen, weißer Radierer, Umsortieren |
-| **Stapel-Scan** | Mehrere Seiten nacheinander ohne Tippen – mit Pause zum Vorlagenwechsel, Wachhalten des Handys, Stopp-Knopf |
+| **Scan-Studio** | Fotos und Scans werden automatisch zugeschnitten: Flachbett-Scans mit **festem A4-Ausschnitt** (eingerichteter Bereich), Fotos mit Eckenerkennung + Perspektivkorrektur. Nachjustieren mit Lupe – wahlweise mit gesperrtem Seitenverhältnis (A4 oder fest) –, Drehen, weißer Radierer, Umsortieren |
+| **Scannen über den Server** | Scan-Aufträge laufen auf dem Server: App schließen, Handy sperren – der Stapel scannt weiter, jede Seite ist sofort gesichert. Beim Öffnen wartet „Scan vom …“ zum Übernehmen. Auflösung und Farbmodus werden passend zum Gerät gewählt (kein „Scanner belegt“ mehr bei 150 dpi oder S/W) |
+| **A4-Bereich einrichten** | Testscan direkt in den Einstellungen, A4-Rahmen (Seitenverhältnis gesperrt) auf die Papierkante ziehen, Ecken-Lupe, Feinschieben in 0,1–5 mm |
+| **Scanner suchen** | AirScan/eSCL-Geräte im Netz finden und mit einem Tipp übernehmen |
 | **Profile** | Verlustfrei · Leicht · Ausgewogen · Stark · Graustufen · Scan Farbe (16 Farben) · Scan S/W (1-Bit, CCITT G4) – pro Dokument, mit Feinabstimmung (dpi, JPEG-Qualität, Helligkeit, Kontrast, dunkle Flächen) und Ausnahmen pro Seite |
-| **Vorschau & Simulation** | „Größen schätzen“ rechnet alle Profile durch (±3 % der echten Größe), die Vorschau zeigt Original, simuliertes Ergebnis und fertiges PDF Seite für Seite |
+| **Vorschau & Simulation** | „Größen schätzen“ rechnet alle Profile durch (±3 % der echten Größe), die Vorschau zeigt Original, simuliertes Ergebnis und fertiges PDF Seite für Seite – mit **Dateigröße vorher → nachher und Prozent** |
 | **DIN A4** | Jede Seite landet auf A4 (hoch/quer, nie verzerrt) – auch bei „Verlustfrei“ |
 | **Texterkennung** | Tesseract (Deutsch/Englisch) legt einen unsichtbaren Textlayer an. Läuft parallel zur Seitenverarbeitung und auf zwei Kernen – rund **doppelt so schnell** wie vorher |
 | **Weitergeben** | Herunterladen, **im Browser öffnen**, **Teilen** (System-Dialog), **an Paperless** (API oder consume-Ordner), Zielordner (Chrome/Edge) |
-| **Bearbeiten** | Unterschreiben, Text, Stift, Stempel, Schwärzen, weiß übermalen, Bilder, Seiten verwalten, Formulare |
+| **Bearbeiten** | Neuer Editor: beschriftete Werkzeuge, Eigenschaften daneben, Rückgängig. Unterschrift zeichnen oder als Bild (transparente PNGs bleiben transparent), Stempel mit Vorschau & Vorlagen (Rahmen-Stempel bleiben durchsuchbar), Text, Stift/Marker, Abdecken, Schwärzen, Bilder, Seiten, Formulare |
+| **Bleibt erhalten** | Die Dokumentliste samt Ergebnissen überlebt Schließen, Neuladen und Updates |
 | **Sammelordner** | „Paperless Prepare“: Rohscans parken, sichten, als **ein** Dokument übernehmen, nach der Übergabe aufräumen |
 | **Automatik** | Neue Dokumente sofort komprimieren und optional direkt an Paperless senden |
 
@@ -43,11 +48,11 @@ docker compose up -d      # docker-compose.yml aus diesem Repository
 
 | Variable | Zweck |
 | --- | --- |
-| `SCANNER_HOST` | IP des Scanners, ggf. mit `https://` – leer = aus |
-| `PAPERLESS_URL` + `PAPERLESS_TOKEN` | Upload direkt über die Paperless-API |
-| `CONSUME_DIR` | consume-Ordner (Standard `/data/consume`) – auch Rückfall, wenn die API nicht erreichbar ist |
+| `SCANNER_HOST` | IP des Scanners, ggf. mit `https://` – leer = aus *(auch in der App einstellbar)* |
+| `PAPERLESS_URL` + `PAPERLESS_TOKEN` | Upload direkt über die Paperless-API *(auch in der App einstellbar)* |
+| `CONSUME_DIR` | consume-Ordner (Standard `/data/consume`) – auch Rückfall, wenn die API nicht erreichbar ist *(auch in der App einstellbar)* |
 | `RAW_DIR` | Sammelordner (Standard `/data/raw`) – leer = aus |
-| `DATA_DIR` | Profilspeicher (Einstellungen, Unterschriften) |
+| `DATA_DIR` | Profilspeicher (Einstellungen, Unterschriften, Server-Einstellungen, laufende Scan-Aufträge) |
 | `PORT` | Server-Port (Standard `8823`) |
 
 ### Updates

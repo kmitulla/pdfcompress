@@ -6,13 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>PDF Presser</title>
   <meta name="description" content="PDFs, Fotos und Scans verkleinern, auf DIN A4 bringen, durchsuchbar machen und an Paperless senden – alles lokal im Browser.">
-  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#f3f4f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0c11" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#eef0f5" media="(prefers-color-scheme: light)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!-- „default“: iOS zeichnet die Statusleiste selbst (nichts läuft darunter durch) -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="PDF Presser">
   <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="css/app.css">
@@ -22,7 +24,7 @@
     <!-- ─────────────── Seitenleiste (Desktop) ─────────────── -->
     <aside class="sidebar" aria-label="Navigation">
       <div class="brand">
-        <img src="icons/favicon-32.png" alt="" width="30" height="30">
+        <img src="icons/icon.svg" alt="" width="32" height="32">
         <div>
           <strong>PDF Presser</strong>
           <span id="brandSub">Lokal &amp; privat</span>
@@ -93,6 +95,7 @@
           </div>
         </div>
 
+        <div class="job-banner hidden" id="jobBanner" aria-live="polite"></div>
         <div class="doc-list" id="docList" role="list"></div>
       </section>
 
@@ -179,28 +182,71 @@
             </div>
           </section>
 
-          <section class="card needs-scanner hidden">
+          <section class="card needs-server hidden" id="scannerCard">
             <h2><i data-icon="scanner"></i> Netzwerk-Scanner</h2>
             <div class="row">
-              <div class="row-text"><strong id="scannerModel">Scanner</strong><small id="scannerState">wird geprüft …</small></div>
+              <div class="row-text"><strong id="scannerModel">Scanner</strong><small id="scannerState">nicht eingerichtet</small></div>
               <button class="btn btn-small" id="scannerTestBtn"><i data-icon="wifi" data-icon-size="16"></i><span>Prüfen</span></button>
             </div>
-            <div class="row">
-              <div class="row-text"><span class="tile-text"><strong>Anlegeecke</strong><small>Wo die Vorlage auf der Glasfläche anliegt – der A4-Ausschnitt startet dort</small></span></div>
-              <select id="setScanCorner">
-                <option value="tl">Oben links</option>
-                <option value="tr">Oben rechts</option>
-                <option value="bl">Unten links</option>
-                <option value="br">Unten rechts</option>
-              </select>
-            </div>
-            <div class="row">
-              <div class="row-text"><span class="tile-text"><strong>Feinjustage</strong><small>Versatz des A4-Ausschnitts in mm (+ = nach rechts/unten)</small></span></div>
-              <div class="mm-pair">
-                <label>X <input type="number" id="setScanOffX" step="0.5" min="-20" max="20" value="0" inputmode="decimal"></label>
-                <label>Y <input type="number" id="setScanOffY" step="0.5" min="-20" max="20" value="0" inputmode="decimal"></label>
+            <div class="row row-stack">
+              <label class="field-label" for="setScannerHost">Adresse</label>
+              <div class="field-line">
+                <input type="text" id="setScannerHost" placeholder="z. B. https://192.168.178.69" spellcheck="false" autocomplete="off" autocapitalize="off" inputmode="url">
+                <button class="btn btn-small" id="scannerSearchBtn"><i data-icon="search" data-icon-size="16"></i><span>Suchen</span></button>
+                <button class="btn btn-small btn-primary" id="scannerSaveBtn"><span>Speichern</span></button>
               </div>
+              <small class="field-hint" id="scannerHostHint"></small>
+              <div class="found-list hidden" id="scannerFound"></div>
             </div>
+            <div class="row needs-scanner hidden">
+              <div class="row-text"><span class="tile-text"><strong>A4-Bereich auf der Glasfläche</strong><small id="a4AreaInfo">Ecke oben links · exakt 210 × 297 mm</small></span></div>
+              <button class="btn btn-small" id="calibOpenBtn"><i data-icon="a4" data-icon-size="16"></i><span>Einrichten …</span></button>
+            </div>
+          </section>
+
+          <section class="card needs-server hidden" id="paperlessCard">
+            <h2><i data-icon="send"></i> Paperless</h2>
+            <div class="row">
+              <div class="row-text"><strong>Übergabe</strong><small id="paperlessModeInfo">–</small></div>
+              <span class="pill" id="paperlessPill"><span class="dot"></span><span>–</span></span>
+            </div>
+            <div class="row row-stack">
+              <label class="field-label" for="setPaperlessUrl">API – Adresse von Paperless</label>
+              <input type="text" id="setPaperlessUrl" placeholder="z. B. http://192.168.178.20:8000" spellcheck="false" autocomplete="off" autocapitalize="off" inputmode="url">
+              <label class="field-label" for="setPaperlessToken">API-Token</label>
+              <div class="field-line">
+                <input type="password" id="setPaperlessToken" placeholder="Token einfügen" spellcheck="false" autocomplete="off" autocapitalize="off">
+                <button class="btn btn-small btn-danger-ghost hidden" id="paperlessTokenClear" title="Gespeicherten Token entfernen"><i data-icon="trash" data-icon-size="15"></i></button>
+              </div>
+              <small class="field-hint">Token in Paperless: oben rechts auf deinen Namen → <b>Mein Profil</b> → bei <b>API-Token</b> auf ↻ (erzeugen) → kopieren.</small>
+              <div class="row-buttons">
+                <button class="btn btn-small" id="paperlessTestBtn"><i data-icon="wifi" data-icon-size="16"></i><span>Verbindung testen</span></button>
+                <button class="btn btn-small btn-primary" id="paperlessSaveBtn"><span>Speichern</span></button>
+              </div>
+              <small class="field-hint" id="paperlessTestInfo"></small>
+            </div>
+            <div class="row row-stack">
+              <label class="field-label" for="setConsumeDir">consume-Ordner (Rückfall / ohne API)</label>
+              <div class="field-line">
+                <input type="text" id="setConsumeDir" list="mountList" placeholder="/data/consume" spellcheck="false" autocomplete="off" autocapitalize="off">
+                <button class="btn btn-small btn-primary" id="consumeSaveBtn"><span>Speichern</span></button>
+              </div>
+              <datalist id="mountList"></datalist>
+              <small class="field-hint" id="consumeHint"></small>
+            </div>
+            <details class="explain">
+              <summary>So funktioniert die Übergabe</summary>
+              <p><b>API (empfohlen):</b> Der PDF-Presser-Server schickt das fertige PDF direkt an Paperless
+                (<code>/api/documents/post_document/</code>) – mit dem Namen aus der App als Titel. Es braucht keinen
+                gemeinsamen Ordner. Die Adresse muss <i>vom Server aus</i> erreichbar sein, also z. B.
+                <code>http://IP-DES-THINKCENTRE:8000</code> (nicht <code>localhost</code>).</p>
+              <p><b>Ordner:</b> Das PDF wird in den consume-Ordner gelegt, den Paperless überwacht. Hier steht der Pfad
+                <i>im Container</i>. Damit die Datei auf dem ThinkCentre ankommt, muss der Ordner in der
+                docker-compose.yml eingebunden sein (z. B. <code>/DATA/paperless/consume:/data/consume</code>) –
+                Unterordner davon gehen ohne Änderung.</p>
+              <p>Ist die API eingerichtet, wird sie benutzt; ist sie nicht erreichbar, landet die Datei im Ordner.
+                Werte hier haben Vorrang vor der docker-compose.yml – leeres Feld + Speichern = wieder der Wert aus der Compose.</p>
+            </details>
           </section>
 
           <section class="card">
@@ -282,7 +328,7 @@
         <div class="row-text"><strong>Seiten</strong><small id="scanPagesHint">Ab 2 Seiten scannt der Stapel von selbst weiter</small></div>
         <div class="stepper">
           <button type="button" data-step="-1" aria-label="Weniger Seiten"><i data-icon="minus" data-icon-size="16"></i></button>
-          <input type="number" id="scanPages" min="1" max="99" value="1" inputmode="numeric">
+          <input type="number" id="scanPages" min="1" max="50" value="1" inputmode="numeric">
           <button type="button" data-step="1" aria-label="Mehr Seiten"><i data-icon="plus" data-icon-size="16"></i></button>
         </div>
       </div>
@@ -298,7 +344,7 @@
       <div class="row">
         <div class="row-text"><strong>Auflösung</strong></div>
         <div class="seg" id="scanDpiSeg" role="radiogroup" aria-label="Auflösung">
-          <button data-v="150">150</button><button data-v="200">200</button><button data-v="300">300</button><button data-v="600">600</button>
+          <button data-v="200">200</button><button data-v="300">300</button><button data-v="600">600</button>
         </div>
       </div>
       <div class="row">
@@ -314,6 +360,7 @@
         </div>
       </div>
     </div>
+    <p class="sheet-hint sheet-hint-ok" id="scanBgHint"><i data-icon="checkCircle" data-icon-size="15"></i> Läuft auf dem Server – du kannst die App währenddessen schließen.</p>
     <p class="sheet-hint" id="scanCornerHint">Vorlage bündig an die Ecke oben links legen – der Ausschnitt ist exakt DIN A4.</p>
     <button class="btn btn-primary btn-large" id="scanStartBtn"><i data-icon="play"></i><span>Scannen</span></button>
   </div>
@@ -341,6 +388,7 @@
       <img id="viewerImg" alt="Seitenvorschau">
       <div class="viewer-busy hidden" id="viewerBusy"><i data-icon="spinner" data-icon-size="28"></i></div>
     </div>
+    <div class="viewer-size" id="viewerSize" aria-live="polite"></div>
     <footer class="viewer-foot">
       <div class="pager">
         <button class="btn btn-icon" id="viewerPrev" aria-label="Vorherige Seite"><i data-icon="chevronLeft"></i></button>
@@ -356,6 +404,63 @@
         <button class="btn btn-icon" id="viewerZoomIn" aria-label="Vergrößern"><i data-icon="plus"></i></button>
       </div>
     </footer>
+  </div>
+
+  <!-- A4-Bereich einrichten (Testscan + Feinjustage) -->
+  <div class="calib" id="calib" role="dialog" aria-modal="true" aria-labelledby="calibTitle" hidden>
+    <header class="calib-bar">
+      <button class="btn btn-icon btn-ghost" id="calibClose" aria-label="Schließen"><i data-icon="close"></i></button>
+      <div class="calib-title"><strong id="calibTitle">A4-Bereich einrichten</strong><small id="calibSub">Testscan machen, Rahmen auf das Blatt legen</small></div>
+      <button class="btn btn-primary" id="calibSave"><i data-icon="check" data-icon-size="17"></i><span>Speichern</span></button>
+    </header>
+    <div class="calib-body">
+      <div class="calib-stage" id="calibStage">
+        <div class="calib-canvas" id="calibCanvasWrap">
+          <img id="calibImg" alt="Testscan">
+          <svg id="calibSvg" aria-label="A4-Rahmen – ziehen zum Verschieben, Ecke ziehen zum Skalieren"></svg>
+        </div>
+        <div class="calib-empty" id="calibEmpty">
+          <i data-icon="scanner" data-icon-size="34"></i>
+          <p>Lege ein A4-Blatt so auf die Glasfläche, wie du immer scannst – und starte den Testscan.</p>
+        </div>
+      </div>
+      <aside class="calib-panel">
+        <button class="btn btn-primary btn-large" id="calibScanBtn"><i data-icon="scanner"></i><span>Testscan</span></button>
+        <div class="calib-group">
+          <span class="calib-label">Anlegeecke</span>
+          <div class="corner-pad" id="calibCorners">
+            <button data-corner="tl" aria-label="Oben links">◤</button><button data-corner="tr" aria-label="Oben rechts">◥</button>
+            <button data-corner="bl" aria-label="Unten links">◣</button><button data-corner="br" aria-label="Unten rechts">◢</button>
+          </div>
+        </div>
+        <div class="calib-group">
+          <span class="calib-label">Lage &amp; Größe in mm</span>
+          <div class="calib-fields">
+            <label>X <input type="number" id="calibX" step="0.5" inputmode="decimal"></label>
+            <label>Y <input type="number" id="calibY" step="0.5" inputmode="decimal"></label>
+            <label>Höhe <input type="number" id="calibH" step="0.5" inputmode="decimal"></label>
+            <label>Breite <input type="number" id="calibW" step="0.5" inputmode="decimal"></label>
+          </div>
+          <p class="calib-lock"><i data-icon="lock" data-icon-size="14"></i> Seitenverhältnis DIN A4 (210 : 297) ist gesperrt – Breite folgt der Höhe.</p>
+        </div>
+        <div class="calib-group">
+          <span class="calib-label">Feinschieben</span>
+          <div class="nudge" id="calibNudge">
+            <button data-nudge="0,-1" aria-label="Nach oben">↑</button>
+            <button data-nudge="-1,0" aria-label="Nach links">←</button>
+            <span id="calibStepLabel">0,5 mm</span>
+            <button data-nudge="1,0" aria-label="Nach rechts">→</button>
+            <button data-nudge="0,1" aria-label="Nach unten">↓</button>
+          </div>
+        </div>
+        <div class="calib-group calib-loupes hidden" id="calibLoupes">
+          <span class="calib-label">Ecken-Lupe (je 18 mm)</span>
+          <div class="loupe-grid"><canvas width="132" height="132"></canvas><canvas width="132" height="132"></canvas><canvas width="132" height="132"></canvas><canvas width="132" height="132"></canvas></div>
+        </div>
+        <button class="btn btn-small" id="calibReset"><i data-icon="rotate" data-icon-size="15"></i><span>Auf exakt A4 zurücksetzen</span></button>
+        <p class="card-note" id="calibInfo"></p>
+      </aside>
+    </div>
   </div>
 
   <div class="drop-overlay" id="dropOverlay" hidden>

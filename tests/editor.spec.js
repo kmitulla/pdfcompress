@@ -283,6 +283,7 @@ test('UI: Bearbeiten -> Text & Unterschrift -> Kompression erfasst alles', async
   await page.locator('#edTextInput').fill('Gelesen und akzeptiert');
 
   await page.locator('[data-tool="sign"]').click();
+  await page.click('.ed-tab[data-tab="drawTab"]');
   await expect(page.locator('#sigPad')).toBeVisible();
   const pad = await page.locator('#sigPad').boundingBox();
   await page.mouse.move(pad.x + pad.width * 0.2, pad.y + pad.height * 0.6);
@@ -319,7 +320,8 @@ test('UI: Bearbeiten -> Text & Unterschrift -> Kompression erfasst alles', async
   await page.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 120000 });
   const sw = await page.evaluate(async ({ inspect }) => {
     eval(inspect);
-    return inspectRegion(window.__pdfpresser.state.docs[0].result, 1, 0.15, 0.55, 0.7, 0.35);
+    // Die Unterschrift landet in der Mitte des sichtbaren Ausschnitts
+    return inspectRegion(window.__pdfpresser.state.docs[0].result, 1, 0.25, 0.4, 0.5, 0.25);
   }, { inspect: INSPECT });
   expect(sw.numPages).toBe(1);
   expect(sw.frac).toBeGreaterThan(0.002);
@@ -435,4 +437,92 @@ test('Editor: weißer Radierer übermalt und bleibt im PDF erhalten', async ({ p
     return d[0];
   });
   expect(mid, 'Balkenmitte ist weiß übermalt').toBeGreaterThan(200);
+});
+
+test('Unterschrift aus transparentem PNG bleibt transparent (kein schwarzer Hintergrund)', async ({ page }) => {
+  await ready(page);
+  const res = await page.evaluate(() => {
+    // Freigestelltes PNG: durchsichtiger Hintergrund (RGBA 0,0,0,0), blaue Striche
+    const c = document.createElement('canvas');
+    c.width = 400; c.height = 160;
+    const x = c.getContext('2d');
+    x.strokeStyle = '#1b2a80'; x.lineWidth = 8; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(40, 120); x.bezierCurveTo(120, 10, 220, 150, 360, 40); x.stroke();
+    const ed = window.__pdfeditor;
+    const transparent = ed.hasTransparency(c);
+    const out = ed.processSignatureImage(c, { threshold: 50, color: 'original' });
+    const d = out.getContext('2d').getImageData(0, 0, out.width, out.height).data;
+    let opaque = 0, darkOpaque = 0, clear = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 200) { opaque++; if (d[i + 2] < 60) darkOpaque++; }
+      if (d[i + 3] === 0) clear++;
+    }
+    // Gleiches Bild, aber Umfärben auf Schwarz: Alpha bleibt, Farbe ändert sich
+    const black = ed.processSignatureImage(c, { color: '#111111' });
+    const bd = black.getContext('2d').getImageData(0, 0, black.width, black.height).data;
+    let blackInk = 0;
+    for (let i = 0; i < bd.length; i += 4) if (bd[i + 3] > 200 && bd[i] < 30 && bd[i + 2] < 30) blackInk++;
+    return { transparent, total: d.length / 4, opaque, darkOpaque, clear, blackInk, corner: d[3] };
+  });
+  expect(res.transparent).toBe(true);
+  expect(res.corner).toBe(0);                        // Ecke bleibt durchsichtig
+  expect(res.clear / res.total).toBeGreaterThan(0.5); // überwiegend durchsichtig – nicht schwarz
+  expect(res.darkOpaque).toBe(0);                    // Original-Blau, keine schwarzen Flächen
+  expect(res.opaque).toBeGreaterThan(500);
+  expect(res.blackInk).toBeGreaterThan(500);
+});
+
+test('UI: transparentes PNG als Unterschrift einfügen, Stempel mit Name einsetzen', async ({ page }) => {
+  await ready(page);
+  await openEditorWith(page, twoPages(1));
+  const png = Buffer.from(await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 500; c.height = 180;
+    const x = c.getContext('2d');
+    x.strokeStyle = '#0a1f7a'; x.lineWidth = 9; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(40, 130); x.bezierCurveTo(140, 10, 260, 170, 460, 50); x.stroke();
+    const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  }));
+  await page.click('[data-tool="sign"]');
+  await page.click('.ed-tab[data-tab="photoTab"]');
+  await page.setInputFiles('#edSigPhotoInput', { name: 'unterschrift.png', mimeType: 'image/png', buffer: png });
+  await expect(page.locator('#sigPhotoInfo')).toContainText('Transparentes PNG');
+  await expect(page.locator('#sigPhotoCtrls')).toBeHidden();
+  await page.uncheck('#sigPhotoSave');
+  await page.click('#sigUsePhoto');
+  await expect(page.locator('#edModal')).toBeHidden();
+  const sig = await page.evaluate(() => {
+    const st = window.__pdfeditorState();
+    const o = st.state.pages[0].objects.find((x) => x.type === 'sig-image');
+    return { has: !!o, sel: st.selected, w: o?.w };
+  });
+  expect(sig.has).toBe(true);
+  expect(sig.sel).toBe(0);                     // gleich ausgewählt, in der Mitte
+  await expect(page.locator('#edProps')).toContainText('Unterschrift');
+
+  // Stempel: Vorlage wählen, Name ergänzen, einfügen
+  await page.click('[data-tool="stamp"]');
+  await page.click('.ed-chip[data-title="ERLEDIGT"]');
+  await page.fill('#stDBrand', 'Muster GmbH');
+  await page.dispatchEvent('#stDBrand', 'input');
+  await expect(page.locator('#edStampPreview')).toContainText('ERLEDIGT');
+  await page.click('#edStampInsert');
+  await expect(page.locator('#edProps')).toContainText('Stempel');
+  await expect(page.locator('#edStTitle')).toHaveValue('ERLEDIGT');
+  // Rückgängig entfernt den Stempel, Wiederholen bringt ihn zurück
+  await page.click('#edUndoBtn');
+  expect(await page.evaluate(() => window.__pdfeditorState().state.pages[0].objects.length)).toBe(1);
+  await page.click('#edRedoBtn');
+  expect(await page.evaluate(() => window.__pdfeditorState().state.pages[0].objects.length)).toBe(2);
+
+  await page.click('#edApply');
+  await expect(page.locator('.doc .doc-status')).toContainText('Bearbeitet', { timeout: 30000 });
+  const out = await page.evaluate(async ({ inspect }) => {
+    eval(inspect);
+    return inspectRegion(window.__pdfpresser.state.docs[0].bytes, 1, 0.3, 0.3, 0.4, 0.4);
+  }, { inspect: INSPECT });
+  expect(out.text).toContain('ERLEDIGT');
+  expect(out.text).toContain('Muster GmbH');
+  expect(out.blueFrac).toBeGreaterThan(0.002);   // Unterschrift in Blau, kein schwarzer Kasten
 });

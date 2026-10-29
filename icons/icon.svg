@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f86ff"/>
+      <stop offset=".52" stop-color="#5b5cf6"/>
+      <stop offset="1" stop-color="#8f4dff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".22" cy=".12" r=".9">
+      <stop offset="0" stop-color="#fff" stop-opacity=".42"/>
+      <stop offset=".45" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="deep" cx=".85" cy="1" r=".75">
+      <stop offset="0" stop-color="#2a0f7a" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#2a0f7a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef1ff"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c9d2ff"/>
+      <stop offset="1" stop-color="#9fb0ff"/>
+    </linearGradient>
+    <linearGradient id="press" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3f73ff"/>
+      <stop offset="1" stop-color="#7b4dff"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#1b0c5c" flood-opacity=".38"/>
+    </filter>
+  </defs>
+  <!-- Hintergrund (randlos, für „maskable“ geeignet) -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#deep)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <g transform="translate(512 522) scale(1.12) translate(-509 -521)">
+  <!-- Blatt mit Eselsohr -->
+  <g filter="url(#shadow)">
+    <path d="M352 236h228l132 132v392a46 46 0 0 1-46 46H352a46 46 0 0 1-46-46V282a46 46 0 0 1 46-46z" fill="url(#paper)"/>
+    <path d="M580 236v96a36 36 0 0 0 36 36h96z" fill="url(#fold)"/>
+  </g>
+  <!-- Textzeilen -->
+  <g fill="#c7cff5">
+    <rect x="368" y="318" width="160" height="22" rx="11"/>
+    <rect x="368" y="364" width="120" height="22" rx="11"/>
+    <rect x="368" y="650" width="276" height="22" rx="11"/>
+    <rect x="368" y="696" width="196" height="22" rx="11"/>
+  </g>
+  <!-- „Pressen“: zwei Pfeile drücken die Seite zusammen -->
+  <g fill="none" stroke="url(#press)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M509 414v74M465 448l44 42 44-42"/>
+    <path d="M509 630v-74M465 596l44-42 44 42"/>
+  </g>
+  <rect x="392" y="512" width="234" height="20" rx="10" fill="url(#press)"/>
+  </g>
+</svg>

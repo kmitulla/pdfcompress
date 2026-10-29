@@ -13,7 +13,7 @@ import {
 import { openEditor, setScanProvider } from './editor.js';
 import {
   exportAllData, importAllData, loadSettings, saveSettings, requestPersistence,
-  enableServerProfile, pullServerProfile, onSyncStatus,
+  enableServerProfile, pullServerProfile, onSyncStatus, kvGet, kvSet, kvDel,
 } from './store.js';
 import { hydrateIcons, icon } from './icons.js';
 import {
@@ -21,6 +21,8 @@ import {
   downloadBytes, openInBrowser, canShareFiles, shareBytes,
 } from './ui.js';
 import { mergePdfs } from './pdfkit.js';
+
+const APP_VERSION = '2.1.0';
 
 hydrateIcons();
 
@@ -44,10 +46,11 @@ const DEFAULTS = {
   scanPages: 1,
   scanDelay: 8,
   scanTarget: 'doc',
+  scanRect: null,        // kalibrierter A4-Bereich in mm {x, y, w}
 };
 
 let settings = { ...DEFAULTS };
-const backend = { scanner: false, consume: false, paperless: null, profile: false, raw: false, version: null };
+const backend = { scanner: false, consume: false, paperless: null, profile: false, raw: false, jobs: false, settings: false, version: null, appVersion: null };
 const state = {
   docs: [],
   selectedId: null,
@@ -141,6 +144,77 @@ function newDoc(bytes, name, { kind = 'pdf', rawSources = null } = {}) {
 
 const docById = (id) => state.docs.find((d) => d.id === id);
 const selected = () => docById(state.selectedId);
+
+// ---------------------------------------------------------------- Dokumente merken
+//
+// Die Liste überlebt Schließen, Neuladen und Updates: jedes Dokument liegt mit
+// Original und Ergebnis in IndexedDB (nur auf diesem Gerät). Geschrieben wird
+// nur, was sich geändert hat.
+
+const PERSIST_FIELDS = ['id', 'name', 'kind', 'edited', 'rawSources', 'pages', 'thumb', 'profile', 'ocr', 'ocrAuto', 'a4',
+  'tune', 'pageProfiles', 'resultSig', 'sent', 'savedDir', 'delivered', 'rev', 'rawCleaned'];
+const savedSig = new Map();   // id -> Signatur des gespeicherten Stands
+let saveTimer = null;
+let docsRestored = false;
+
+const persistSig = (d) => JSON.stringify([...PERSIST_FIELDS.filter((k) => k !== 'thumb').map((k) => d[k]), d.bytes.length, d.result?.length || 0, !!d.thumb]);
+
+function scheduleSaveDocs() {
+  if (!docsRestored) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveDocsNow().catch((e) => console.warn('Dokumente nicht gespeichert:', e)), 700);
+}
+
+async function saveDocsNow() {
+  if (!docsRestored) return;
+  clearTimeout(saveTimer);
+  const ids = state.docs.map((d) => d.id);
+  for (const d of state.docs) {
+    const sig = persistSig(d);
+    if (savedSig.get(d.id) === sig) continue;
+    const rec = Object.fromEntries(PERSIST_FIELDS.map((k) => [k, d[k]]));
+    rec.bytes = d.bytes;
+    rec.result = d.result || null;
+    await kvSet(`doc:${d.id}`, rec);
+    savedSig.set(d.id, sig);
+  }
+  for (const id of [...savedSig.keys()]) {
+    if (!ids.includes(id)) {
+      await kvDel(`doc:${id}`);
+      savedSig.delete(id);
+    }
+  }
+  await kvSet('docs', { ids, seq: docSeq, selected: state.selectedId });
+}
+
+async function restoreDocs() {
+  try {
+    const list = await kvGet('docs');
+    if (!list?.ids?.length) return;
+    docSeq = Math.max(docSeq, list.seq || 0);
+    for (const id of list.ids) {
+      const rec = await kvGet(`doc:${id}`);
+      if (!rec?.bytes) continue;
+      const d = newDoc(rec.bytes, rec.name, { kind: rec.kind });
+      for (const k of PERSIST_FIELDS) if (rec[k] !== undefined) d[k] = rec[k];
+      d.tune = { ...NEUTRAL_TUNE, ...(rec.tune || {}) };
+      d.pageProfiles = rec.pageProfiles || {};
+      d.result = rec.result || null;
+      d.status = d.result ? 'done' : 'idle';
+      d.message = '';
+      d.progress = d.result ? 1 : 0;
+      state.docs.push(d);
+      savedSig.set(d.id, persistSig(d));
+      const n = parseInt(String(d.id).slice(1), 10);
+      if (n > docSeq) docSeq = n;
+    }
+    if (list.selected && docById(list.selected)) state.selectedId = list.selected;
+  } catch (e) {
+    console.warn('Gespeicherte Dokumente nicht lesbar:', e);
+  } finally {
+    docsRestored = true;
+  }
+}
 
 // ---------------------------------------------------------------- Dokumente hinzufügen
 
@@ -505,6 +579,7 @@ function renderDoc(d) {
   }
   el.innerHTML = docCardHtml(d);
   el.classList.toggle('selected', d.id === state.selectedId);
+  scheduleSaveDocs();
 }
 
 function updateProgress(d) {
@@ -526,6 +601,7 @@ function updateProgress(d) {
 }
 
 function renderList() {
+  scheduleSaveDocs();
   // Reihenfolge der Karten an die Liste anpassen, Überzählige entfernen
   const ids = new Set(state.docs.map((d) => d.id));
   docListEl.querySelectorAll('.doc').forEach((el) => { if (!ids.has(el.dataset.id)) el.remove(); });
@@ -995,6 +1071,7 @@ async function renderViewer() {
     img.src = url;
     img.style.width = viewer.zoom > 1 ? `${Math.round(width / dpr)}px` : '';
     $('#viewerInfo').textContent = info;
+    renderViewerSize(d);
   } catch (e) {
     if (token === viewer.token) $('#viewerInfo').textContent = `Vorschau nicht möglich: ${e?.message || e}`;
   } finally {
@@ -1003,6 +1080,51 @@ async function renderViewer() {
       $('#viewerBusy').classList.add('hidden');
     }
   }
+}
+
+/** Größe vorher → nachher fürs ganze Dokument (geschätzt oder echt). */
+function sizeLine(before, after, approx) {
+  const better = after < before;
+  return `<span class="vs-label">Dokument</span><span class="vs-from">${fmtSize(before)}</span><span class="vs-arrow">→</span>`
+    + `<b class="vs-to">${approx ? '≈ ' : ''}${fmtSize(after)}</b><span class="vs-pct ${better ? 'good' : 'bad'}">${fmtPct(before, after)}</span>`;
+}
+
+async function renderViewerSize(d) {
+  const el = $('#viewerSize');
+  const before = d.bytes.length;
+  if (viewer.mode === 'original') {
+    el.innerHTML = hasFresh(d) ? sizeLine(before, d.result.length, false) : `<span class="vs-label">Original</span><b class="vs-to">${fmtSize(before)}</b>`;
+    return;
+  }
+  if (viewer.mode === 'result' && hasFresh(d)) {
+    el.innerHTML = sizeLine(before, d.result.length, false);
+    return;
+  }
+  if (PRESETS[d.profile]?.mode === 'lossless' && !d.sim?.sizes?.verlustfrei) {
+    el.innerHTML = `<span class="vs-label">Dokument</span><span class="vs-from">${fmtSize(before)}</span><span class="vs-arrow">→</span><span class="faint">„Größen schätzen“ rechnet es aus</span>`;
+    return;
+  }
+  // Schätzung: aus der Simulation, sonst nur für das aktuelle Profil rechnen
+  const sig = simSigFor(d);
+  const known = d.sim && d.sim.sig === sig ? d.sim.sizes?.[d.profile] : null;
+  if (known != null) {
+    el.innerHTML = sizeLine(before, known, d.sim.estimated);
+    return;
+  }
+  if (d.estimate?.sig === sig) {
+    if (d.estimate.size != null) el.innerHTML = sizeLine(before, d.estimate.size, d.estimate.approx);
+    return;
+  }
+  el.innerHTML = `<span class="vs-label">Dokument</span><span class="vs-from">${fmtSize(before)}</span><span class="vs-arrow">→</span><span class="faint">wird geschätzt …</span>`;
+  const token = viewer.token;
+  d.estimate = { sig, size: null };
+  try {
+    const r = await simulateVariants(d.bytes, [{ key: d.profile, opts: { ...optsFor(d), ocr: false } }]);
+    d.estimate = { sig, size: r.sizes[d.profile], approx: r.estimated || true };
+  } catch {
+    d.estimate = null;
+  }
+  if (viewer.doc === d && token === viewer.token && d.estimate) el.innerHTML = sizeLine(before, d.estimate.size, true);
 }
 
 $('#viewerClose').addEventListener('click', closeViewer);
@@ -1221,8 +1343,9 @@ async function openStudio({ files = [], camera = false, rawSources = null, scanN
   m.openScanner((pdfFile) => onStudioDone(pdfFile, rawSources), {
     initialFiles: files,
     netScan: backend.scanner ? () => startStudioScan() : null,
-    onCancelBatch: () => { batch.cancel = true; },
-    geometry: () => ({ corner: settings.scanCorner, offX: +settings.scanOffX || 0, offY: +settings.scanOffY || 0 }),
+    onCancelBatch: cancelScan,
+    onDiscard: dropStudioJob,
+    geometry: scanGeometry,
     setCorner: (c) => { settings.scanCorner = c; persistSettings(); syncSettingsUi(); syncScanSheet(); },
     a4: () => !!settings.a4,
     camera,
@@ -1233,135 +1356,182 @@ async function openStudio({ files = [], camera = false, rawSources = null, scanN
 async function onStudioDone(pdfFile, rawSources) {
   showView('docs');
   const name = pdfFile.name && !/^Scan_\d/.test(pdfFile.name) ? pdfFile.name : stampName('Scan');
-  await addPdfDoc(new Uint8Array(await pdfFile.arrayBuffer()), name, { kind: 'scan', rawSources });
+  const doc = await addPdfDoc(new Uint8Array(await pdfFile.arrayBuffer()), name, { kind: 'scan', rawSources });
+  // Erst wenn das Dokument sicher gespeichert ist, den Auftrag wegräumen
+  await saveDocsNow().catch(() => {});
+  if (studioJob) dropStudioJob();
+  return doc;
+}
+
+/** A4-Lage auf der Glasfläche: kalibriertes Rechteck oder Ecke + Versatz. */
+function scanGeometry() {
+  return {
+    corner: settings.scanCorner,
+    offX: +settings.scanOffX || 0,
+    offY: +settings.scanOffY || 0,
+    rect: settings.scanRect && settings.scanRect.w > 0 ? settings.scanRect : null,
+  };
 }
 
 // ---------------------------------------------------------------- Netzwerk-Scanner
+//
+// Scans laufen als Auftrag auf dem Server: Er spricht den Scanner an, wartet
+// die Pausen ab und legt jede Seite sofort auf der Platte ab. Die App holt die
+// Seiten nur ab. Wird die App geschlossen oder das Handy gesperrt, läuft der
+// Auftrag weiter – beim nächsten Öffnen liegen die Seiten bereit. Gelöscht
+// wird ein Auftrag erst, wenn daraus ein Dokument geworden ist.
 
-const batch = { running: false, cancel: false };
+const batch = { running: false, cancel: false, jobId: null };
+const scanCaps = { resolutions: null, gray: true };
 
-/** Genau eine Seite vom Netzwerk-Scanner holen. Wirft bei Fehlern. */
-async function fetchScannedPage() {
-  const dpi = parseInt(settings.scanDpi, 10) || 300;
-  const color = settings.scanColor || 'color';
-  const res = await fetch(`/api/scanner/scan?color=${encodeURIComponent(color)}&dpi=${dpi}`, { method: 'POST' });
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(path, {
+    method,
+    cache: 'no-store',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
-    throw new Error(msg);
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
-  const blob = await res.blob();
-  const type = blob.type || 'image/jpeg';
-  const ext = type.includes('png') ? 'png' : 'jpg';
-  const scanDpi = parseInt(res.headers.get('X-Scan-Dpi'), 10) || dpi;
-  const file = new File([blob], `Scan_${Date.now()}_${scanDpi}dpi.${ext}`, { type });
+  return data;
+}
+
+/** Farbscan in Graustufen umrechnen (falls das Gerät kein Grau liefert). */
+async function toGrayJpeg(blob) {
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width;
+  c.height = bmp.height;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+    d[i] = d[i + 1] = d[i + 2] = y;
+  }
+  ctx.putImageData(img, 0, 0);
+  const out = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+  c.width = 1;
+  return out || blob;
+}
+
+/** Seite eines Auftrags als Datei holen (mit Auflösung für den A4-Ausschnitt). */
+async function fetchJobPage(jobId, page) {
+  const res = await fetch(`/api/scan-jobs/${jobId}/pages/${page.n}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Seite ${page.n} nicht abrufbar (HTTP ${res.status})`);
+  let blob = await res.blob();
+  const dpi = parseInt(res.headers.get('X-Scan-Dpi'), 10) || page.dpi || 300;
+  const got = res.headers.get('X-Scan-Color') || page.colorMode;
+  const wanted = res.headers.get('X-Scan-Wanted') || page.wanted;
+  if (wanted && wanted !== 'color' && /RGB/i.test(got || '')) blob = await toGrayJpeg(blob);
+  const file = new File([blob], `Scan_${Date.now()}_S${String(page.n).padStart(2, '0')}_${dpi}dpi.jpg`, { type: 'image/jpeg' });
   // Auflösung merken – daraus ergibt sich die echte Größe der Glasfläche in mm
-  // und damit der feste A4-Ausschnitt ab der Anlegeecke.
-  file.scanDpi = scanDpi;
+  // und damit der feste A4-Ausschnitt.
+  file.scanDpi = dpi;
+  file.scanWanted = wanted;
   return file;
 }
 
-// Wachhalten beim Stapel-Scan: Wake Lock (nur HTTPS) + stille Tonspur (iOS).
-let wakeLock = null;
-let silentAudio = null;
-function silentWavUrl() {
-  const rate = 8000;
-  const buf = new ArrayBuffer(44 + rate * 2);
-  const v = new DataView(buf);
-  const str = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + rate * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, rate * 2, true);
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+function jobStatusText(job) {
+  const n = job.pages.length;
+  if (job.status === 'waiting' && job.nextAt) {
+    const left = Math.max(0, Math.ceil((job.nextAt - Date.now()) / 1000));
+    return `Seite ${n}/${job.total} fertig – nächste in ${left} s · Vorlage wechseln`;
+  }
+  if (job.status === 'running' || job.status === 'queued') return job.total > 1 ? `Seite ${n + 1}/${job.total} wird gescannt …` : 'Seite wird gescannt …';
+  return job.message || '';
 }
-async function keepAwakeStart() {
-  try {
-    if (navigator.wakeLock?.request) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener?.('release', () => { wakeLock = null; });
-    }
-  } catch { wakeLock = null; }
-  try {
-    if (!silentAudio) {
-      silentAudio = new Audio(silentWavUrl());
-      silentAudio.loop = true;
-      silentAudio.volume = 0;
-      silentAudio.setAttribute('playsinline', '');
-    }
-    await silentAudio.play();
-  } catch { /* Tonspur nicht erlaubt: dann greift nur der Wake Lock */ }
-}
-function keepAwakeStop() {
-  try { wakeLock?.release?.(); } catch { /* egal */ }
-  wakeLock = null;
-  try { silentAudio?.pause(); } catch { /* egal */ }
-}
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || !batch.running) return;
-  try { if (navigator.wakeLock?.request && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch { /* egal */ }
-});
 
 /**
- * Stapel-Scan: `total` Seiten nacheinander, dazwischen `delay` Sekunden Pause.
- * Die Pause läuft gegen die Uhr – nach einem Ruhezustand geht es sofort weiter.
- * Fehlversuche (Gerät belegt, Aufwachen) werden zweimal wiederholt.
+ * Auftrag verfolgen, bis er fertig ist. Neue Seiten gehen an onPage (einmal
+ * je Seite), der Zustand an onStatus. Verträgt Ruhezustand/Netzwerkaussetzer.
  */
-async function runScanBatch({ total, delay, onPage, onStatus }) {
+async function followJob(jobId, { onPage, onStatus, seen = new Set() } = {}) {
   batch.running = true;
   batch.cancel = false;
-  let done = 0;
-  if (total > 1) await keepAwakeStart();
+  batch.jobId = jobId;
+  let job = null;
+  let misses = 0;
   try {
-    for (let n = 1; n <= total && !batch.cancel; n++) {
-      if (n > 1 && delay > 0) {
-        const until = Date.now() + delay * 1000;
-        while (!batch.cancel) {
-          const left = Math.ceil((until - Date.now()) / 1000);
-          if (left <= 0) break;
-          onStatus(`Seite ${n - 1}/${total} fertig – nächste in ${left} s · Vorlage wechseln`);
-          await sleep(Math.min(1000, Math.max(120, until - Date.now())));
-        }
-        if (batch.cancel) break;
+    for (;;) {
+      try {
+        job = await api(`/api/scan-jobs/${jobId}`);
+        misses = 0;
+      } catch (e) {
+        if (e.status === 404) throw new Error('Scan-Auftrag ist auf dem Server nicht mehr vorhanden.');
+        if (++misses > 20) throw e;
+        await sleep(1500);
+        continue;
       }
-      onStatus(total > 1 ? `Seite ${n}/${total} wird gescannt …` : 'Seite wird gescannt …');
-      let file = null;
-      for (let attempt = 1; attempt <= 3 && !file && !batch.cancel; attempt++) {
-        try {
-          file = await fetchScannedPage();
-        } catch (e) {
-          if (attempt === 3) throw new Error(`Seite ${n}: ${e?.message || e}`);
-          onStatus(`Seite ${n}/${total} – neuer Versuch (${attempt + 1}/3) …`);
-          await sleep(2500);
-        }
+      for (const p of job.pages) {
+        if (seen.has(p.n)) continue;
+        seen.add(p.n);
+        if (p.file && onPage) await onPage(await fetchJobPage(jobId, p), p, job);
+        else if (onPage && p.raw) await onPage(null, p, job);
       }
-      if (!file) break;
-      await onPage(file, n);
-      done++;
+      if (!job.live) break;
+      onStatus?.(jobStatusText(job), job);
+      await sleep(job.status === 'waiting' ? 400 : 800);
     }
   } finally {
-    keepAwakeStop();
     batch.running = false;
+    batch.jobId = null;
   }
-  return { done, cancelled: batch.cancel };
+  return job;
 }
 
-async function startStudioScan() {
-  if (batch.running) return;
-  const m = await studio();
-  const total = clampInt(settings.scanPages, 1, 99, 1);
-  const delay = clampInt(settings.scanDelay, 0, 120, 8);
-  m.setScanStatus(total > 1 ? `Stapel: ${total} Seiten` : 'Scanne …', true);
+async function createScanJob({ pages, delay, target = 'doc', dpi }) {
   try {
-    const { done, cancelled } = await runScanBatch({
-      total,
-      delay,
-      onPage: (file) => m.addPageDirect(file),
+    return await api('/api/scan-jobs', {
+      method: 'POST',
+      body: { pages, delay, dpi: dpi || settings.scanDpi, color: settings.scanColor, target },
+    });
+  } catch (e) {
+    if (e.status === 409 && e.data?.job) throw new Error('Es läuft bereits ein Scan (evtl. von einem anderen Gerät).');
+    throw e;
+  }
+}
+
+/** Genau eine Seite vom Netzwerk-Scanner holen (z. B. für den Editor). */
+async function fetchScannedPage({ dpi } = {}) {
+  const job = await createScanJob({ pages: 1, delay: 0, dpi });
+  let file = null;
+  try {
+    const end = await followJob(job.id, { onPage: async (f) => { file = f; } });
+    if (!file) throw new Error(end?.error || end?.message || 'Keine Seite erhalten');
+  } finally {
+    api(`/api/scan-jobs/${job.id}`, { method: 'DELETE' }).catch(() => {});
+  }
+  return file;
+}
+
+// Auftrag, der zum offenen Studio gehört (wird gelöscht, sobald das Dokument steht)
+let studioJob = null;
+
+/** Auftrag ins Studio holen: vorhandene Seiten sofort, weitere live. */
+async function attachJobToStudio(jobId, { seen = new Set() } = {}) {
+  const m = await studio();
+  studioJob = { id: jobId, seen };
+  m.setScanStatus('Verbinde mit Scan-Auftrag …', true);
+  try {
+    const end = await followJob(jobId, {
+      seen,
+      onPage: (file) => (file ? m.addPageDirect(file) : null),
       onStatus: (s) => m.setScanStatus(s, true),
     });
     m.setScanStatus('');
     m.showPages();
-    if (total > 1 || cancelled) toast(cancelled ? `Gestoppt – ${plural(done, 'Seite', 'Seiten')} eingelesen` : `${plural(done, 'Seite', 'Seiten')} eingelesen – prüfen und „Fertig“`, 'ok', 4000);
+    const n = end.pages.length;
+    if (end.status === 'error') toast(`Scan fehlgeschlagen: ${end.error}${n ? ` – ${plural(n, 'Seite bleibt', 'Seiten bleiben')} erhalten` : ''}`, 'err', 8000);
+    else if (end.status === 'cancelled') toast(`Gestoppt – ${plural(n, 'Seite', 'Seiten')} eingelesen`, 'ok', 4000);
+    else if (end.total > 1) toast(`${plural(n, 'Seite', 'Seiten')} eingelesen – prüfen und „Fertig“`, 'ok', 4000);
   } catch (e) {
     m.setScanStatus('');
     m.showPages();
@@ -1369,35 +1539,120 @@ async function startStudioScan() {
   }
 }
 
+async function startStudioScan() {
+  if (batch.running) return;
+  const m = await studio();
+  const total = clampInt(settings.scanPages, 1, 50, 1);
+  const delay = clampInt(settings.scanDelay, 0, 120, 8);
+  m.setScanStatus(total > 1 ? `Stapel: ${total} Seiten` : 'Scanne …', true);
+  try {
+    // Gehört schon ein Auftrag zum Studio, wird er verlängert – so liegen alle
+    // Seiten des Dokuments gemeinsam sicher auf dem Server.
+    if (studioJob) {
+      try {
+        await api(`/api/scan-jobs/${studioJob.id}/resume`, { method: 'POST', body: { more: total } });
+        await attachJobToStudio(studioJob.id, { seen: studioJob.seen });
+        return;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        studioJob = null;
+      }
+    }
+    const job = await createScanJob({ pages: total, delay });
+    await attachJobToStudio(job.id);
+  } catch (e) {
+    m.setScanStatus('');
+    m.showPages();
+    toast(`Scan fehlgeschlagen: ${e?.message || e}`, 'err', 7000);
+  }
+}
+
+function cancelScan() {
+  batch.cancel = true;
+  if (batch.jobId) api(`/api/scan-jobs/${batch.jobId}/cancel`, { method: 'POST' }).catch(() => {});
+}
+
+function dropStudioJob() {
+  if (!studioJob) return;
+  const id = studioJob.id;
+  studioJob = null;
+  api(`/api/scan-jobs/${id}`, { method: 'DELETE' }).catch(() => {});
+  refreshJobBanner();
+}
+
 /** Direkt in den Sammelordner scannen – die Rohbilder bleiben unverändert. */
 async function scanIntoRaw() {
   if (batch.running) return;
   const prep = await import('./prepare.js');
   showView('inbox');
-  const total = clampInt(settings.scanPages, 1, 99, 1);
+  const total = clampInt(settings.scanPages, 1, 50, 1);
   const delay = clampInt(settings.scanDelay, 0, 120, 8);
-  const t = toast('Scanne in den Sammelordner …', 'busy', 0);
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const t = toast('Scanne in den Sammelordner …', 'busy', 0, { onClick: null });
   try {
-    const { done, cancelled } = await runScanBatch({
-      total,
-      delay,
-      onStatus: (s) => { t.update(s, 'busy', 0); prep.setStatus(s); },
-      onPage: async (file, n) => {
-        const dpi = file.scanDpi || 300;
-        const ext = (file.type || '').includes('png') ? 'png' : 'jpg';
-        await prep.uploadFiles([new File([file], `Scan_${stamp}_S${String(n).padStart(2, '0')}_${dpi}dpi.${ext}`, { type: file.type })], { quiet: true });
-      },
+    const job = await createScanJob({ pages: total, delay, target: 'raw' });
+    const end = await followJob(job.id, {
+      onStatus: (s) => { t.update(`${s} · läuft auch ohne App weiter`, 'busy', 0); prep.setStatus(s); },
+      onPage: () => prep.refresh(),
     });
-    const msg = cancelled ? `Gestoppt – ${plural(done, 'Seite', 'Seiten')} abgelegt` : `${plural(done, 'Seite', 'Seiten')} im Sammelordner abgelegt`;
-    t.update(msg, 'ok', 4000);
-    prep.setStatus(msg, 'ok');
+    const n = end.pages.length;
+    const msg = end.status === 'error'
+      ? `Scan fehlgeschlagen: ${end.error}`
+      : end.status === 'cancelled' ? `Gestoppt – ${plural(n, 'Seite', 'Seiten')} abgelegt` : `${plural(n, 'Seite', 'Seiten')} im Sammelordner abgelegt`;
+    t.update(msg, end.status === 'error' ? 'err' : 'ok', end.status === 'error' ? 8000 : 4000);
+    prep.setStatus(msg, end.status === 'error' ? 'err' : 'ok');
   } catch (e) {
     t.update(`Scan fehlgeschlagen: ${e?.message || e}`, 'err', 7000);
     prep.setStatus(`Scan fehlgeschlagen: ${e?.message || e}`, 'err');
   }
   await prep.refresh();
 }
+
+// Offene Aufträge (App war zu, anderes Gerät, Server-Neustart) als Hinweis zeigen
+let bannerJobs = [];
+async function refreshJobBanner() {
+  const el = $('#jobBanner');
+  if (!backend.jobs || !el) return;
+  let jobs = [];
+  try { jobs = (await api('/api/scan-jobs')).jobs || []; } catch { return; }
+  bannerJobs = jobs.filter((j) => j.target === 'doc' && j.id !== studioJob?.id && j.id !== batch.jobId && (j.pages.length || j.live));
+  el.classList.toggle('hidden', !bannerJobs.length);
+  el.innerHTML = bannerJobs.map((j) => {
+    const when = new Date(j.created).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const state = j.live ? 'läuft gerade' : { done: 'fertig', cancelled: 'gestoppt', error: 'mit Fehler beendet', interrupted: 'unterbrochen' }[j.status] || j.status;
+    return `<div class="job-card" data-job="${j.id}">
+      <span class="job-icon">${icon(j.live ? 'spinner' : 'scanner', { size: 22 })}</span>
+      <span class="job-text"><strong>Scan vom ${when} · ${plural(j.pages.length, 'Seite', 'Seiten')}</strong><small>${escapeHtml(state)}${j.error ? ` – ${escapeHtml(j.error)}` : ''} · liegt sicher auf dem Server</small></span>
+      <span class="job-actions">
+        <button class="btn btn-small btn-danger-ghost" data-job-act="drop">${icon('trash', { size: 15 })}<span>Verwerfen</span></button>
+        <button class="btn btn-small btn-primary" data-job-act="open">${icon('scanFrame', { size: 15 })}<span>Öffnen</span></button>
+      </span>
+    </div>`;
+  }).join('');
+}
+
+$('#jobBanner')?.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-job-act]');
+  if (!b) return;
+  const id = b.closest('[data-job]').dataset.job;
+  const job = bannerJobs.find((j) => j.id === id);
+  if (!job) return;
+  if (b.dataset.jobAct === 'drop') {
+    const ok = await confirmDialog('Scan verwerfen?', `${plural(job.pages.length, 'eingelesene Seite wird', 'eingelesene Seiten werden')} gelöscht.`, 'Verwerfen', 'danger');
+    if (!ok) return;
+    if (job.live) await api(`/api/scan-jobs/${id}/cancel`, { method: 'POST' }).catch(() => {});
+    await api(`/api/scan-jobs/${id}`, { method: 'DELETE' }).catch(() => {});
+    refreshJobBanner();
+    return;
+  }
+  if (studioMod?.isOpen()) { toast('Das Scan-Studio ist schon offen', 'info'); return; }
+  await openStudio({});
+  attachJobToStudio(id);
+  $('#jobBanner').classList.add('hidden');
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshJobBanner();
+});
 
 const clampInt = (v, lo, hi, def) => {
   const n = parseInt(v, 10);
@@ -1406,25 +1661,63 @@ const clampInt = (v, lo, hi, def) => {
 
 const CORNER_TEXT = { tl: 'oben links', tr: 'oben rechts', bl: 'unten links', br: 'unten rechts' };
 
+/** Auflösungen, die das Gerät kann (Auswahl für das Scan-Blatt). */
+function dpiChoices() {
+  const fromCaps = (scanCaps.resolutions || []).filter((d) => d >= 100 && d <= 600);
+  const list = fromCaps.length ? fromCaps : [200, 300, 600];
+  // höchstens vier Knöpfe: die üblichen bevorzugen
+  const pref = [150, 200, 300, 600, 100, 400];
+  return list.length <= 4 ? list : pref.filter((d) => list.includes(d)).slice(0, 4).sort((a, b) => a - b);
+}
+
+function nearestDpi(v, list) {
+  const n = parseInt(v, 10) || 300;
+  return list.reduce((b, d) => (Math.abs(d - n) < Math.abs(b - n) ? d : b), list[0]);
+}
+
+function a4AreaText() {
+  const r = settings.scanRect;
+  if (r?.w) {
+    const h = r.w * 297 / 210;
+    const exact = Math.abs(r.w - 210) < 0.05;
+    return `Eingerichtet: X ${fmtMm(r.x)} · Y ${fmtMm(r.y)} mm · ${fmtMm(r.w)} × ${fmtMm(h)} mm${exact ? ' (exakt A4)' : ''}`;
+  }
+  const off = (+settings.scanOffX || +settings.scanOffY) ? ` · Versatz ${fmtMm(+settings.scanOffX || 0)}/${fmtMm(+settings.scanOffY || 0)} mm` : '';
+  return `Ecke ${CORNER_TEXT[settings.scanCorner] || 'oben links'} · exakt 210 × 297 mm${off}`;
+}
+const fmtMm = (v) => String(Math.round((Number(v) || 0) * 10) / 10).replace('.', ',');
+
 function syncScanSheet() {
   $('#scanPages').value = settings.scanPages;
   $('#scanDelay').value = settings.scanDelay;
-  const n = clampInt(settings.scanPages, 1, 99, 1);
+  const n = clampInt(settings.scanPages, 1, 50, 1);
   $('#scanDelayRow').classList.toggle('hidden', n < 2);
   $('#scanPagesHint').textContent = n > 1 ? `${n} Seiten nacheinander – ohne weiteres Tippen` : 'Ab 2 Seiten scannt der Stapel von selbst weiter';
+  // Auflösungen nach den Fähigkeiten des Geräts
+  const dpis = dpiChoices();
+  const seg = $('#scanDpiSeg');
+  const want = String(nearestDpi(settings.scanDpi, dpis));
+  if (seg.dataset.list !== dpis.join(',')) {
+    seg.innerHTML = dpis.map((d) => `<button data-v="${d}" role="radio">${d}</button>`).join('');
+    seg.dataset.list = dpis.join(',');
+  }
   const setSeg = (id, v) => $$(`${id} button`).forEach((b) => {
     b.classList.toggle('active', b.dataset.v === String(v));
     b.setAttribute('aria-checked', String(b.dataset.v === String(v)));
   });
-  setSeg('#scanDpiSeg', settings.scanDpi);
+  setSeg('#scanDpiSeg', want);
   setSeg('#scanColorSeg', settings.scanColor);
   setSeg('#scanTargetSeg', backend.raw ? settings.scanTarget : 'doc');
   $('#scanTargetRow').classList.toggle('hidden', !backend.raw);
   const toRaw = backend.raw && settings.scanTarget === 'raw';
   $('#scanCornerHint').textContent = toRaw
     ? 'Die Rohbilder landen unverändert im Sammelordner – Zuschnitt und A4 passieren beim Übernehmen.'
-    : `Vorlage bündig an die Ecke ${CORNER_TEXT[settings.scanCorner] || 'oben links'} legen – der Ausschnitt ist exakt DIN A4.`;
+    : settings.scanRect?.w
+      ? 'Vorlage wie beim Einrichten auflegen – der Ausschnitt ist der eingerichtete A4-Bereich.'
+      : `Vorlage bündig an die Ecke ${CORNER_TEXT[settings.scanCorner] || 'oben links'} legen – der Ausschnitt ist exakt DIN A4.`;
   $('#scanStartBtn span').textContent = n > 1 ? `${n} Seiten scannen` : 'Scannen';
+  const info = $('#a4AreaInfo');
+  if (info) info.textContent = a4AreaText();
 }
 
 async function openScanSheet(target = null) {
@@ -1434,27 +1727,38 @@ async function openScanSheet(target = null) {
   checkScanner();
 }
 
-async function checkScanner() {
+function setScannerPills(cls, text, detail = text) {
   const pill = $('#scanSheetState');
-  const setPill = (cls, text) => {
-    pill.querySelector('.dot').className = `dot ${cls}`;
-    pill.querySelector('span:last-child').textContent = text;
-    $('#scannerState').textContent = text;
-    const side = $('#statusScanner');
-    side.querySelector('.dot').className = `dot ${cls}`;
-    side.querySelector('span:last-child').textContent = cls === 'on' ? (backend.scannerModel || 'Scanner bereit') : 'Scanner nicht erreichbar';
-  };
-  setPill('busy', 'wird geprüft …');
+  pill.querySelector('.dot').className = `dot ${cls}`;
+  pill.querySelector('span:last-child').textContent = text;
+  $('#scannerState').textContent = detail;
+  const side = $('#statusScanner');
+  side.querySelector('.dot').className = `dot ${cls}`;
+  side.querySelector('span:last-child').textContent = cls === 'on' ? (backend.scannerModel || 'Scanner bereit') : 'Scanner nicht erreichbar';
+}
+
+async function checkScanner() {
+  if (!backend.scanner) {
+    setScannerPills('off', 'nicht eingerichtet', 'Keine Adresse – unten eintragen oder suchen');
+    $('#scannerModel').textContent = 'Scanner';
+    return false;
+  }
+  setScannerPills('busy', 'wird geprüft …');
   try {
-    const res = await fetch('/api/scanner/status', { cache: 'no-store' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await api('/api/scanner/status');
+    if (!data.ok) throw new Error(data.error || 'nicht erreichbar');
     backend.scannerModel = data.model;
+    scanCaps.resolutions = data.resolutions || null;
+    scanCaps.gray = data.gray !== false;
+    scanCaps.bed = data.bed || null;
     $('#scannerModel').textContent = data.model || 'Scanner';
-    setPill('on', `${data.model || 'Scanner'} · bereit`);
+    const dpis = data.resolutions?.length ? ` · ${data.resolutions.filter((d) => d <= 1200).join('/')} dpi` : '';
+    setScannerPills('on', `${data.model || 'Scanner'} · ${data.busy ? 'scannt gerade' : 'bereit'}`, `${data.busy ? 'scannt gerade' : 'bereit'}${dpis}${data.gray ? ' · Farbe/Grau' : ' · Farbe (Grau per App)'}`);
+    syncScanSheet();
+    return true;
   } catch (e) {
-    setPill('off', 'nicht erreichbar');
-    $('#scannerState').textContent = `nicht erreichbar – ${String(e?.message || e).slice(0, 90)}`;
+    setScannerPills('off', 'nicht erreichbar', `nicht erreichbar – ${String(e?.message || e).slice(0, 90)}`);
+    return false;
   }
 }
 
@@ -1463,8 +1767,8 @@ $('#scanSheet').addEventListener('click', (e) => {
   if (step) {
     const input = step.parentElement.querySelector('input');
     const isPages = input.id === 'scanPages';
-    const v = clampInt(input.value, isPages ? 1 : 0, isPages ? 99 : 120, isPages ? 1 : 8) + parseInt(step.dataset.step, 10);
-    settings[isPages ? 'scanPages' : 'scanDelay'] = clampInt(v, isPages ? 1 : 0, isPages ? 99 : 120, 1);
+    const v = clampInt(input.value, isPages ? 1 : 0, isPages ? 50 : 120, isPages ? 1 : 8) + parseInt(step.dataset.step, 10);
+    settings[isPages ? 'scanPages' : 'scanDelay'] = clampInt(v, isPages ? 1 : 0, isPages ? 50 : 120, 1);
     persistSettings();
     syncScanSheet();
     return;
@@ -1482,7 +1786,7 @@ $('#scanSheet').addEventListener('click', (e) => {
 });
 ['#scanPages', '#scanDelay'].forEach((id) => $(id).addEventListener('change', (e) => {
   const isPages = id === '#scanPages';
-  settings[isPages ? 'scanPages' : 'scanDelay'] = clampInt(e.target.value, isPages ? 1 : 0, isPages ? 99 : 120, isPages ? 1 : 8);
+  settings[isPages ? 'scanPages' : 'scanDelay'] = clampInt(e.target.value, isPages ? 1 : 0, isPages ? 50 : 120, isPages ? 1 : 8);
   persistSettings();
   syncScanSheet();
 }));
@@ -1528,9 +1832,6 @@ const SETTING_FIELDS = {
   setA4: 'a4',
   setAutoCompress: 'autoCompress',
   setAutoPaperless: 'autoPaperless',
-  setScanCorner: 'scanCorner',
-  setScanOffX: 'scanOffX',
-  setScanOffY: 'scanOffY',
 };
 
 function syncSettingsUi() {
@@ -1551,7 +1852,6 @@ for (const [id, key] of Object.entries(SETTING_FIELDS)) {
     if (el.type === 'number') el.value = v;
     persistSettings();
     if (key === 'ocrLang') state.docs.forEach((d) => { if (d.ocr) afterDocChange(d, false); });
-    if (key === 'scanCorner') syncScanSheet();
   });
 }
 
@@ -1570,7 +1870,7 @@ function migrate(s) {
   if (s.prepOcr != null) m.scanOcr = !!s.prepOcr;
   if (s.ocr != null) m.pdfOcr = !!s.ocr;
   for (const k of ['ocrLang', 'scanDpi', 'scanColor', 'scanPages', 'scanDelay', 'autoPaperless']) if (s[k] != null) m[k] = s[k];
-  if (m.scanDpi && !['150', '200', '300', '600'].includes(String(m.scanDpi))) m.scanDpi = '300';
+  if (m.scanDpi && !['100', '150', '200', '300', '600'].includes(String(m.scanDpi))) m.scanDpi = '300';
   return m;
 }
 
@@ -1627,43 +1927,64 @@ onSyncStatus((st, text) => {
 
 // ---------------------------------------------------------------- Backend
 
-async function detectBackend() {
+let backendInit = { profile: false, raw: false };
+
+async function fetchConfig() {
   try {
     const res = await fetch('/api/config', { cache: 'no-store' });
-    if (res.ok) {
-      const cfg = await res.json();
-      Object.assign(backend, {
-        scanner: !!cfg.scanner,
-        consume: !!cfg.consume,
-        paperless: cfg.paperless || (cfg.consume ? 'folder' : null),
-        profile: !!cfg.profile,
-        raw: !!cfg.raw,
-        version: cfg.version || null,
-      });
-    }
-  } catch { /* kein Backend (z. B. GitHub Pages) – Funktionen bleiben aus */ }
+    if (!res.ok) return false;
+    const cfg = await res.json();
+    Object.assign(backend, {
+      scanner: !!cfg.scanner,
+      consume: !!cfg.consume,
+      paperless: cfg.paperless || (cfg.consume ? 'folder' : null),
+      profile: !!cfg.profile,
+      raw: !!cfg.raw,
+      jobs: !!cfg.jobs,
+      settings: !!cfg.settings,
+      version: cfg.version || null,
+      appVersion: cfg.appVersion || null,
+      server: true,
+    });
+    return true;
+  } catch {
+    return false;   // kein Backend (z. B. GitHub Pages) – Funktionen bleiben aus
+  }
+}
 
-  $('#versionInfo').textContent = backend.version ? `${backend.version} · selbst gehostet` : 'Web-Version (ohne Server-Funktionen)';
-  if (backend.scanner) {
-    $$('[data-add="scanner"]').forEach((b) => b.classList.remove('hidden'));
-    $$('.needs-scanner').forEach((el) => el.classList.remove('hidden'));
-    $('#statusScanner').classList.remove('hidden');
-    $('#rawScanBtn').classList.toggle('hidden', !backend.raw);
-    setScanProvider(fetchScannedPage);
-    checkScanner();
-  }
-  if (backend.consume) {
-    $$('.needs-paperless').forEach((el) => el.classList.remove('hidden'));
-    $('#statusPaperless').classList.remove('hidden');
-    $('#statusPaperless span:last-child').textContent = backend.paperless === 'api' ? 'Paperless (API)' : 'Paperless (Ordner)';
-  }
-  if (backend.profile) {
+/** Sichtbarkeit aller Server-Funktionen an den aktuellen Stand anpassen. */
+function applyBackendUi() {
+  const ver = backend.appVersion || APP_VERSION;
+  $('#versionInfo').textContent = backend.server
+    ? `${ver} (${backend.version}) · selbst gehostet`
+    : `${APP_VERSION} · Web-Version (ohne Server-Funktionen)`;
+  $$('.needs-server').forEach((el) => el.classList.toggle('hidden', !backend.settings));
+  $$('[data-add="scanner"]').forEach((b) => b.classList.toggle('hidden', !backend.scanner));
+  $$('.needs-scanner').forEach((el) => el.classList.toggle('hidden', !backend.scanner));
+  $('#statusScanner').classList.toggle('hidden', !backend.scanner);
+  $('#rawScanBtn').classList.toggle('hidden', !(backend.raw && backend.scanner));
+  $$('.needs-paperless').forEach((el) => el.classList.toggle('hidden', !backend.consume));
+  $('#statusPaperless').classList.toggle('hidden', !backend.consume);
+  $('#statusPaperless span:last-child').textContent = backend.paperless === 'api' ? 'Paperless (API)' : 'Paperless (Ordner)';
+  setScanProvider(backend.scanner ? () => fetchScannedPage() : null);
+  syncScanSheet();
+  renderAll();
+}
+
+async function detectBackend() {
+  await fetchConfig();
+  applyBackendUi();
+  if (backend.scanner) checkScanner();
+  if (backend.settings) loadServerSettings();
+  if (backend.profile && !backendInit.profile) {
+    backendInit.profile = true;
     $('#syncRow').classList.remove('hidden');
     enableServerProfile(true);
     await pullServerProfile();
     await applyStoredSettings();
   }
-  if (backend.raw) {
+  if (backend.raw && !backendInit.raw) {
+    backendInit.raw = true;
     $('#navInbox').classList.remove('hidden');
     $('#tabInbox').classList.remove('hidden');
     const prep = await import('./prepare.js');
@@ -1672,13 +1993,169 @@ async function detectBackend() {
       addPdfDoc,
       showView,
       scanIntoRaw: () => openScanSheet('raw'),
-      scannerAvailable: backend.scanner,
+      scannerAvailable: () => backend.scanner,
       onCount: (n) => { $('#navRawCount').textContent = n || ''; },
     });
   }
   syncScanSheet();
   renderAll();
 }
+
+// ---------------------------------------------------------------- Server-Einstellungen (Scanner, Paperless)
+
+let serverCfg = null;
+
+async function loadServerSettings() {
+  try {
+    serverCfg = await api('/api/settings');
+  } catch {
+    return;
+  }
+  fillServerSettings();
+}
+
+function fillServerSettings() {
+  const c = serverCfg;
+  if (!c) return;
+  const setVal = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v || ''; };
+  setVal('#setScannerHost', c.scannerHost);
+  $('#scannerHostHint').textContent = c.env.scannerHost
+    ? `Aus der docker-compose.yml: ${c.env.scannerHost}${c.overridden.includes('scannerHost') ? ' – hier überschrieben' : ''}`
+    : 'Leer lassen = kein Scanner. „Suchen“ findet AirScan/eSCL-Geräte im Netz.';
+  setVal('#setPaperlessUrl', c.paperlessUrl);
+  const tok = $('#setPaperlessToken');
+  tok.value = '';
+  tok.placeholder = c.tokenSet ? `gespeichert (${c.tokenFrom === 'env' ? 'aus der Compose' : 'in der App'}) – leer lassen zum Behalten` : 'Token einfügen';
+  $('#paperlessTokenClear').classList.toggle('hidden', c.tokenFrom !== 'app');
+  setVal('#setConsumeDir', c.consumeDir);
+  $('#mountList').innerHTML = (c.mounts || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+  const mounts = (c.mounts || []).filter((m) => m !== c.rawDir);
+  $('#consumeHint').innerHTML = mounts.length
+    ? `Eingebundene Ordner im Container: ${mounts.map((m) => `<code>${escapeHtml(m)}</code>`).join(', ')} – nur diese (und Unterordner) kommen auf dem ThinkCentre an.`
+    : 'Pfad im Container. Er muss in der docker-compose.yml als Volume eingebunden sein.';
+  const mode = c.paperless;
+  $('#paperlessModeInfo').textContent = mode === 'api'
+    ? `per API an ${c.paperlessUrl}${c.consumeDir ? ` · Rückfall: ${c.consumeDir}` : ''}`
+    : mode === 'folder' ? `in den Ordner ${c.consumeDir}` : 'nicht eingerichtet';
+  const pill = $('#paperlessPill');
+  pill.querySelector('.dot').className = `dot ${mode ? 'on' : 'off'}`;
+  pill.querySelector('span:last-child').textContent = mode === 'api' ? 'API' : mode === 'folder' ? 'Ordner' : 'aus';
+}
+
+async function saveServerSettings(patch, okText) {
+  try {
+    serverCfg = await api('/api/settings', { method: 'PUT', body: patch });
+    fillServerSettings();
+    await fetchConfig();
+    applyBackendUi();
+    if (backend.scanner) checkScanner();
+    toast(okText, 'ok');
+    return true;
+  } catch (e) {
+    toast(`Nicht gespeichert: ${e?.message || e}`, 'err', 6000);
+    return false;
+  }
+}
+
+$('#scannerSaveBtn').addEventListener('click', async () => {
+  const host = $('#setScannerHost').value.trim();
+  scanCaps.resolutions = null;
+  await saveServerSettings({ scannerHost: host }, host ? 'Scanner-Adresse gespeichert' : 'Scanner-Adresse zurückgesetzt');
+});
+
+$('#scannerSearchBtn').addEventListener('click', async () => {
+  const btn = $('#scannerSearchBtn');
+  const box = $('#scannerFound');
+  btn.disabled = true;
+  btn.classList.add('busy');
+  box.classList.remove('hidden');
+  box.innerHTML = '<p class="faint">Suche im Netzwerk … (bis zu 20 s)</p>';
+  try {
+    // Das Netz, in dem das Handy/der Rechner die App geöffnet hat, ist meist auch das des Scanners
+    const near = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
+    const r = await api(`/api/scanner/discover?near=${encodeURIComponent(near)}`);
+    if (!r.found?.length) {
+      box.innerHTML = `<p class="faint">Kein Scanner gefunden${r.nets?.length ? ` (gesucht in ${r.nets.map((n) => `${n}.x`).join(', ')})` : ''}. ${r.hint || 'Ist das Gerät an und im selben Netz? Adresse sonst von Hand eintragen.'}</p>`;
+      return;
+    }
+    box.innerHTML = r.found.map((f) => `
+      <div class="found-item">
+        <span class="found-text"><strong>${escapeHtml(f.model)}</strong><small>${escapeHtml(f.host)}${f.resolutions?.length ? ` · ${f.resolutions.join('/')} dpi` : ''}</small></span>
+        <button class="btn btn-small btn-primary" data-use-host="${escapeHtml(f.host)}">Übernehmen</button>
+      </div>`).join('');
+  } catch (e) {
+    box.innerHTML = `<p class="err">Suche fehlgeschlagen: ${escapeHtml(e?.message || String(e))}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('busy');
+  }
+});
+
+$('#scannerFound').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-use-host]');
+  if (!b) return;
+  $('#setScannerHost').value = b.dataset.useHost;
+  if (await saveServerSettings({ scannerHost: b.dataset.useHost }, 'Scanner übernommen')) $('#scannerFound').classList.add('hidden');
+});
+
+function paperlessPatch() {
+  const patch = { paperlessUrl: $('#setPaperlessUrl').value.trim() };
+  const tok = $('#setPaperlessToken').value.trim();
+  if (tok) patch.paperlessToken = tok;
+  return patch;
+}
+
+$('#paperlessSaveBtn').addEventListener('click', () => saveServerSettings(paperlessPatch(), 'Paperless-Zugang gespeichert'));
+$('#paperlessTokenClear').addEventListener('click', async () => {
+  if (!(await confirmDialog('Token entfernen?', 'Der in der App gespeicherte API-Token wird gelöscht.', 'Entfernen', 'danger'))) return;
+  saveServerSettings({ paperlessToken: null }, 'Token entfernt');
+});
+$('#paperlessTestBtn').addEventListener('click', async () => {
+  const info = $('#paperlessTestInfo');
+  const btn = $('#paperlessTestBtn');
+  btn.classList.add('busy');
+  btn.disabled = true;
+  info.className = 'field-hint';
+  info.textContent = 'Teste …';
+  try {
+    const p = paperlessPatch();
+    const r = await api('/api/paperless/test', { method: 'POST', body: { url: p.paperlessUrl, token: p.paperlessToken } });
+    if (!r.ok) throw new Error(r.error);
+    info.className = 'field-hint ok';
+    info.textContent = `Verbunden${r.version ? ` mit Paperless ${r.version}` : ''}${r.documents != null ? ` · ${r.documents} Dokumente` : ''}. Jetzt „Speichern“.`;
+  } catch (e) {
+    info.className = 'field-hint err';
+    info.textContent = e?.message || String(e);
+  } finally {
+    btn.classList.remove('busy');
+    btn.disabled = false;
+  }
+});
+$('#consumeSaveBtn').addEventListener('click', () => {
+  const v = $('#setConsumeDir').value.trim();
+  saveServerSettings({ consumeDir: v }, v ? `consume-Ordner: ${v}` : 'consume-Ordner aus der Compose');
+});
+
+// A4-Bereich einrichten
+$('#calibOpenBtn').addEventListener('click', async () => {
+  const { openCalibration } = await import('./calibrate.js');
+  openCalibration({
+    rect: settings.scanRect,
+    corner: settings.scanCorner,
+    offX: settings.scanOffX,
+    offY: settings.scanOffY,
+    bed: scanCaps.bed,
+    // Testscan in mittlerer Auflösung – geht schnell und reicht zum Ausrichten
+    scan: () => fetchScannedPage({ dpi: '150' }),
+    save: (rect, corner) => {
+      settings.scanRect = rect;
+      settings.scanCorner = corner;
+      persistSettings();
+      syncScanSheet();
+      toast('A4-Bereich gespeichert – gilt für alle neuen Scans', 'ok');
+    },
+  });
+});
 
 // ---------------------------------------------------------------- PWA
 
@@ -1694,7 +2171,7 @@ async function registerSw() {
   }
 }
 
-const busyForReload = () => !!working || batch.running || state.docs.length > 0
+const busyForReload = () => !!working || batch.running
   || !!document.getElementById('scannerRoot') || ($('#editorRoot') && !$('#editorRoot').classList.contains('hidden'));
 
 if ('serviceWorker' in navigator) {
@@ -1708,7 +2185,8 @@ if ('serviceWorker' in navigator) {
     if (window.__reloadedForUpdate) return;
     if (!busyForReload()) {
       window.__reloadedForUpdate = true;
-      location.reload();
+      // Dokumente sind gespeichert – vorher noch ausstehende Änderungen sichern
+      saveDocsNow().catch(() => {}).finally(() => location.reload());
     } else if (!state.updateReady) {
       state.updateReady = true;
       toast('Neue Version bereit – zum Neuladen hier tippen', 'info', 0, {
@@ -1718,8 +2196,10 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Dokumente sind gespeichert – warnen nur, solange gerade gerechnet wird.
+window.addEventListener('pagehide', () => { saveDocsNow().catch(() => {}); });
 window.addEventListener('beforeunload', (e) => {
-  if (working || state.docs.some((d) => hasFresh(d) && !d.delivered)) {
+  if (working) {
     e.preventDefault();
     e.returnValue = '';
   }
@@ -1727,17 +2207,23 @@ window.addEventListener('beforeunload', (e) => {
 
 // ---------------------------------------------------------------- Start
 
-const booted = applyStoredSettings().then(() => detectBackend()).catch((e) => console.warn(e));
+const booted = applyStoredSettings()
+  .then(() => restoreDocs())
+  .then(() => { renderAll(); return detectBackend(); })
+  .then(() => refreshJobBanner())
+  .catch((e) => console.warn(e));
 requestPersistence();
 renderAll();
 window.addEventListener('resize', renderToolbar);
+// Trennlinie unter dem klebenden Kopf (Handy), sobald gescrollt wird
+$('#main').addEventListener('scroll', (e) => e.currentTarget.classList.toggle('scrolled', e.currentTarget.scrollTop > 4), { passive: true });
 
 // Für die automatisierten Tests
 window.__pdfpresser = {
   state, backend, get settings() { return settings; },
   compressPdf, previewPage, simulateVariants, simulatePdf, PRESETS, PRESET_INFO,
   addFiles, addPdfDoc, enqueue, optsFor, hasFresh, sendToPaperless, openViewer, selectDoc,
-  fetchScannedPage, runScanBatch, openStudio, toast, exportAllData, importAllData, persistSettings,
+  fetchScannedPage, followJob, refreshJobBanner, saveDocsNow, openStudio, toast, exportAllData, importAllData, persistSettings,
   applyStoredSettings, detectBackend, batch, booted,
   /** Für Tests: alle Einstellungen auf Werkszustand (auch im Serverprofil). */
   resetSettings(over = {}) {

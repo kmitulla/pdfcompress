@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
-import { ready, bedScanJpeg, photoJpeg, fakeConfig } from './helpers.js';
+import { ready, bedScanJpeg, photoJpeg, mockScanner, clearScanJobs } from './helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -100,10 +100,9 @@ test('Gemischte Auswahl (PDF + Bild) wird direkt ein Dokument; Ablehnen lässt D
 
 test('Direkt in den Sammelordner scannen (Ziel im Scanner-Blatt)', async ({ page }) => {
   clearRaw();
-  await fakeConfig(page);
-  await ready(page, { scanPages: 2, scanDelay: 0 });
-  const jpeg = await bedScanJpeg(page, { w: 1275, h: 1754 });
-  await page.route('**/api/scanner/scan*', (route) => route.fulfill({ status: 200, headers: { 'Content-Type': 'image/jpeg', 'X-Scan-Dpi': '150' }, body: jpeg }));
+  await clearScanJobs();
+  await ready(page, { scanPages: 2, scanDelay: 0, scanDpi: '200' });
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 200 }), dpi: 200 });
   await page.click('.nav-item[data-view="inbox"]');
   await page.click('#rawScanBtn');
   await expect(page.locator('#scanSheet')).toHaveClass(/open/);
@@ -111,8 +110,8 @@ test('Direkt in den Sammelordner scannen (Ziel im Scanner-Blatt)', async ({ page
   await page.click('#scanStartBtn');
   await expect(page.locator('.raw-item')).toHaveCount(2, { timeout: 30000 });
   const names = fs.readdirSync(RAW).sort();
-  expect(names[0]).toMatch(/^Scan_.*_S01_150dpi\.jpg$/);
-  expect(names[1]).toMatch(/_S02_150dpi\.jpg$/);
+  expect(names[0]).toMatch(/^Scan_.*_S01_200dpi\.jpg$/);
+  expect(names[1]).toMatch(/_S02_200dpi\.jpg$/);
   await page.evaluate(() => window.__pdfpresser.resetSettings());
   clearRaw();
 });

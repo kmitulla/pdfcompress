@@ -24,14 +24,16 @@ const APP = [
   './js/icons.js',
   './js/prepare.js',
   './js/pdfkit.js',
-];
-
-const VENDOR = [
+  './js/calibrate.js',
+  './icons/icon.svg',
   './icons/favicon-32.png',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
+];
+
+const VENDOR = [
   './vendor/pdfjs/pdf.min.mjs',
   './vendor/pdfjs/pdf.worker.min.mjs',
   './vendor/pdflib/pdf-lib.min.js',

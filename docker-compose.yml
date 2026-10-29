@@ -21,6 +21,8 @@ services:
     ports:
       - "8823:8823"
     environment:
+      # Scanner-Adresse, Paperless-API und consume-Ordner lassen sich auch in
+      # der App unter „Einstellungen“ eintragen – das hat dann Vorrang.
       # ── Scanner ───────────────────────────────────────────────────────────
       # IP des Netzwerk-Scanners. Viele Epson-Geräte (z. B. ET-2720) sprechen
       # eSCL nur über HTTPS – dann "https://" voranstellen. Leer = aus.
