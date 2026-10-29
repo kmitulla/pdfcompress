@@ -2,7 +2,8 @@
 // A4-Ausschnitt auf der Glasfläche, Stapel-Scan, Zuschnitt- und Radierer-UI.
 import { test, expect, devices } from '@playwright/test';
 import {
-  ready, MAKE_PHOTO, PHOTO_CORNERS, photoJpeg, bedScanJpeg, fakeConfig, RENDER_HELPER, assertNoRawMarkup,
+  ready, MAKE_PHOTO, PHOTO_CORNERS, photoJpeg, bedScanJpeg, RENDER_HELPER, assertNoRawMarkup,
+  mockScanner, mockState, clearScanJobs,
 } from './helpers.js';
 
 test.describe.configure({ mode: 'serial' });
@@ -116,19 +117,17 @@ test('Scannerauflösung aus dem JPEG-Kopf erkennt Flachbett-Dateien (Sammelordne
   expect(r.png).toBeNull();
 });
 
-test('Netzwerk-Stapel-Scan: Seiten exakt A4, Überstand der Glasfläche abgeschnitten', async ({ page }) => {
+test('Netzwerk-Stapel-Scan: läuft als Server-Auftrag, Seiten exakt A4, Graustufen-Wunsch erreicht das Gerät', async ({ page }) => {
   test.setTimeout(180000);
-  await fakeConfig(page);
+  await clearScanJobs();
   await ready(page, { scanDelay: 0 });
-  const jpeg = await bedScanJpeg(page);
-  const calls = [];
-  await page.route('**/api/scanner/scan*', async (route) => {
-    calls.push(route.request().url());
-    await route.fulfill({ status: 200, headers: { 'Content-Type': 'image/jpeg', 'X-Scan-Dpi': '300' }, body: jpeg });
-  });
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 300 }), dpi: 300 });
   await page.click('#docsToolbar [data-add="scanner"]');
   await expect(page.locator('#scanSheet')).toHaveClass(/open/);
   await expect(page.locator('#scanSheetState')).toContainText('bereit');
+  // Auflösungen kommen vom Gerät (Test-Scanner: 100/200/300/600)
+  await expect(page.locator('#scanDpiSeg button')).toHaveText(['100', '200', '300', '600']);
+  await expect(page.locator('#scanBgHint')).toContainText('App währenddessen schließen');
   await page.click('#scanSheet [data-step="1"]');            // 2 Seiten
   await expect(page.locator('#scanPages')).toHaveValue('2');
   await page.click('#scanDpiSeg button[data-v="300"]');
@@ -138,14 +137,17 @@ test('Netzwerk-Stapel-Scan: Seiten exakt A4, Überstand der Glasfläche abgeschn
   await page.click('#scanStartBtn');
   await expect(page.locator('#scannerRoot .sc-overlay')).toBeVisible();
   await expect(page.locator('.sc-pagecell .sc-thumb')).toHaveCount(2, { timeout: 60000 });
-  expect(calls.length).toBe(2);
-  expect(calls[0]).toContain('dpi=300');
-  expect(calls[0]).toContain('color=gray');
+  const st = await mockState();
+  expect(st.posts.map((p) => [p.dpi, p.color, p.format])).toEqual([[300, 'Grayscale8', 'image/jpeg'], [300, 'Grayscale8', 'image/jpeg']]);
   await expect(page.locator('.sc-pagelabel').first()).toContainText('Glasfläche');
+  // Der Auftrag liegt bis zum Fertigstellen sicher auf dem Server
+  expect((await (await fetch('http://127.0.0.1:8823/api/scan-jobs')).json()).jobs.length).toBe(1);
 
   await page.click('#scDoneBtn');
   await expect(page.locator('.doc')).toHaveCount(1);
   await page.waitForFunction(() => window.__pdfpresser.state.docs[0].pages === 2);
+  // … und wird danach weggeräumt
+  await expect.poll(async () => (await (await fetch('http://127.0.0.1:8823/api/scan-jobs')).json()).jobs.length).toBe(0);
   const info = await page.evaluate(async ({ renderSrc }) => {
     eval(renderSrc);
     return inspectPdf(window.__pdfpresser.state.docs[0].bytes, 0.5);
@@ -156,26 +158,48 @@ test('Netzwerk-Stapel-Scan: Seiten exakt A4, Überstand der Glasfläche abgeschn
   expect(info.leftLum).toBeGreaterThan(235);
 });
 
-test('Stapel-Scan lässt sich stoppen und hält das Gerät wach', async ({ page }) => {
-  await fakeConfig(page);
-  await page.addInitScript(() => {
-    window.__wake = 0;
-    Object.defineProperty(navigator, 'wakeLock', {
-      configurable: true,
-      value: { request: async () => { window.__wake++; return { release() {}, addEventListener() {} }; } },
-    });
-  });
-  await ready(page, { scanPages: 5, scanDelay: 30 });
-  const jpeg = await bedScanJpeg(page, { w: 1275, h: 1754 });
-  await page.route('**/api/scanner/scan*', (route) => route.fulfill({ status: 200, headers: { 'Content-Type': 'image/jpeg', 'X-Scan-Dpi': '150' }, body: jpeg }));
+test('Scan läuft ohne App weiter: neu laden, Hinweis „Scan wartet“, Seiten übernehmen, stoppen', async ({ page }) => {
+  test.setTimeout(120000);
+  await clearScanJobs();
+  await ready(page, { scanPages: 4, scanDelay: 30, scanDpi: '200' });
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 200 }), dpi: 200 });
   await page.click('#docsToolbar [data-add="scanner"]');
-  await expect(page.locator('#scanStartBtn')).toContainText('5 Seiten');
+  await expect(page.locator('#scanStartBtn')).toContainText('4 Seiten');
   await page.click('#scanStartBtn');
   await expect(page.locator('#scPageCount')).toContainText('nächste in', { timeout: 30000 });
-  expect(await page.evaluate(() => window.__wake)).toBeGreaterThan(0);
+
+  // App „schließen“: neu laden – der Auftrag läuft auf dem Server weiter
+  await page.reload();
+  await page.waitForFunction(() => window.__pdfpresser);
+  await page.evaluate(() => window.__pdfpresser.booted);
+  await expect(page.locator('#jobBanner .job-card')).toHaveCount(1);
+  await expect(page.locator('#jobBanner')).toContainText('1 Seite');
+  await expect(page.locator('#jobBanner')).toContainText('läuft gerade');
+  await page.click('#jobBanner [data-job-act="open"]');
+  await expect(page.locator('.sc-pagecell .sc-thumb')).toHaveCount(1, { timeout: 20000 });
+  await expect(page.locator('#scPageCount')).toContainText('nächste in');
   await page.click('#scBatchStopBtn');
   await expect(page.locator('.toast')).toContainText('Gestoppt', { timeout: 10000 });
   await expect(page.locator('.sc-pagecell .sc-thumb')).toHaveCount(1);
+  await page.click('#scDoneBtn');
+  await expect(page.locator('.doc')).toHaveCount(1);
+  await expect.poll(async () => (await (await fetch('http://127.0.0.1:8823/api/scan-jobs')).json()).jobs.length).toBe(0);
+});
+
+test('Gerät meldet „belegt“ (409) wegen hängendem Auftrag: wird abgeräumt, Scan klappt trotzdem', async ({ page }) => {
+  await clearScanJobs();
+  await ready(page, { scanDpi: '200', scanColor: 'bw' });
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 200 }), dpi: 200, config: { hangingJob: true } });
+  const file = await page.evaluate(async () => {
+    const f = await window.__pdfpresser.fetchScannedPage();
+    return { name: f.name, dpi: f.scanDpi, size: f.size };
+  });
+  expect(file.dpi).toBe(200);
+  expect(file.name).toMatch(/_200dpi\.jpg$/);
+  const st = await mockState();
+  // S/W wird als Graustufen-JPEG gescannt (1-Bit-JPEG lehnt das Gerät ab)
+  expect(st.posts.at(-1)).toMatchObject({ dpi: 200, color: 'Grayscale8' });
+  expect(st.jobs).not.toContain('stale');
 });
 
 test('Studio: Zuschnitt mit Lupe am Handy, Format, Drehen, Radierer mit Zoom', async ({ browser }) => {
@@ -242,10 +266,9 @@ test('Studio: Zuschnitt mit Lupe am Handy, Format, Drehen, Radierer mit Zoom', a
 });
 
 test('Studio: A4-Werkzeuge nur für Flachbett-Scans, Anlegeecke wird gemerkt', async ({ page }) => {
-  await fakeConfig(page);
+  await clearScanJobs();
   await ready(page, { scanDelay: 0 });
-  const jpeg = await bedScanJpeg(page);
-  await page.route('**/api/scanner/scan*', (route) => route.fulfill({ status: 200, headers: { 'Content-Type': 'image/jpeg', 'X-Scan-Dpi': '300' }, body: jpeg }));
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 300 }), dpi: 300 });
   await page.click('#docsToolbar [data-add="scanner"]');
   await page.click('#scanStartBtn');
   await expect(page.locator('.sc-pagecell .sc-thumb')).toHaveCount(1, { timeout: 30000 });
@@ -256,6 +279,67 @@ test('Studio: A4-Werkzeuge nur für Flachbett-Scans, Anlegeecke wird gemerkt', a
   const x0 = await page.evaluate(() => window.__pdfscanner.state.editing.corners[0].x);
   expect(x0).toBeGreaterThan(0.02);
   expect(await page.evaluate(() => window.__pdfpresser.settings.scanCorner)).toBe('tr');
+
+  // Seitenverhältnis sperren: Ecke ziehen ändert Breite und Höhe gemeinsam (A4)
+  await page.click('.sc-lock-btn[data-lock="a4"]');
+  const h = page.locator('.sc-handle-corner circle:nth-child(2)').nth(2);
+  const hb = await h.boundingBox();
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(hb.x - 60, hb.y - 15, { steps: 6 });
+  await page.mouse.up();
+  const ratio = await page.evaluate(() => {
+    const ed = window.__pdfscanner.state.editing;
+    const xs = ed.corners.map((p) => p.x); const ys = ed.corners.map((p) => p.y);
+    return ((Math.max(...xs) - Math.min(...xs)) * ed.src.width) / ((Math.max(...ys) - Math.min(...ys)) * ed.src.height);
+  });
+  expect(ratio).toBeCloseTo(210 / 297, 2);
+  await page.click('.sc-lock-btn[data-lock="free"]');
   await page.click('#scCropCancelBtn');
+  await page.click('#scCloseBtn');
+  await page.click('.dlg .btn-danger');
+  await expect.poll(async () => (await (await fetch('http://127.0.0.1:8823/api/scan-jobs')).json()).jobs.length).toBe(0);
+  await page.evaluate(() => window.__pdfpresser.resetSettings());
+});
+
+test('A4-Bereich einrichten: Testscan, Höhe ändert Breite mit, Ergebnis gilt für Scans', async ({ page }) => {
+  await clearScanJobs();
+  await ready(page);
+  // Blatt liegt 3 mm von links und 2 mm von oben
+  await mockScanner({ image: await bedScanJpeg(page, { dpi: 200, offX: 3, offY: 2 }), dpi: 200 });
+  await page.click('.nav-item[data-view="settings"]');
+  await expect(page.locator('#scannerCard')).toBeVisible();
+  await expect(page.locator('#scannerState')).toContainText('100/200/300/600');
+  await page.click('#calibOpenBtn');
+  await expect(page.locator('#calib')).toBeVisible();
+  await page.click('#calibScanBtn');
+  await expect(page.locator('#calibLoupes')).toBeVisible({ timeout: 20000 });
+  expect(await page.evaluate(() => window.__calib.st.bed.w)).toBeCloseTo(215.9, 0);
+  // Erst die Höhe (Breite folgt), dann die Lage
+  await page.fill('#calibH', '294');
+  await page.dispatchEvent('#calibH', 'change');
+  await page.fill('#calibX', '3');
+  await page.dispatchEvent('#calibX', 'change');
+  await page.fill('#calibY', '2');
+  await page.dispatchEvent('#calibY', 'change');
+  // Seitenverhältnis gesperrt: Breite folgt
+  await expect(page.locator('#calibW')).toHaveValue(String(Math.round((294 * 210 / 297) * 10) / 10));
+  await page.click('#calibNudge [data-nudge="1,0"]');
+  expect(await page.evaluate(() => window.__calib.st.rect.x)).toBeCloseTo(3.5, 5);
+  await page.click('#calibSave');
+  await expect(page.locator('#calib')).toBeHidden();
+  const rect = await page.evaluate(() => window.__pdfpresser.settings.scanRect);
+  expect(rect).toMatchObject({ x: 3.5, y: 2 });
+  expect(rect.w).toBeCloseTo(207.9, 1);
+  await expect(page.locator('#a4AreaInfo')).toContainText('Eingerichtet');
+  // Der Ausschnitt eines Scans folgt dem eingerichteten Bereich
+  const c = await page.evaluate(async () => {
+    const { a4CornersForScan } = await import('./js/scanner.js');
+    const cv = document.createElement('canvas');
+    cv.width = 1700; cv.height = 2339; cv.scanDpi = 200;
+    return a4CornersForScan(cv, { rect: { x: 3.5, y: 2, w: 207.9 } });
+  });
+  expect(c[0].x).toBeCloseTo(3.5 / 215.9, 3);
+  expect(c[2].y - c[0].y).toBeCloseTo((207.9 * 297 / 210) / 297.1, 2);
   await page.evaluate(() => window.__pdfpresser.resetSettings());
 });

@@ -411,15 +411,27 @@ const clamp01 = (v) => Math.min(1, Math.max(0, v));
  * @param canvas  Bild mit `scanDpi` (und optional `sourcePx` = Originalpixel)
  * @param corner  'tl' | 'tr' | 'bl' | 'br' – wo die Vorlage anliegt
  * @param offX/offY Versatz in mm (+ = nach rechts/unten)
+ * @param rect    kalibrierter Ausschnitt in mm auf der Glasfläche {x, y, w}
+ *                (Höhe immer w · 297/210) – hat Vorrang vor Ecke/Versatz
  * @returns normierte Ecken (TL, TR, BR, BL) oder null ohne bekannte Maße
  */
-export function a4CornersForScan(canvas, { corner = 'tl', offX = 0, offY = 0 } = {}) {
+export function a4CornersForScan(canvas, { corner = 'tl', offX = 0, offY = 0, rect = null } = {}) {
   const dpi = canvas?.scanDpi;
   const px = canvas?.sourcePx || (canvas ? { w: canvas.width, h: canvas.height } : null);
   if (!dpi || !px?.w || !px?.h) return null;
   const bedW = (px.w / dpi) * 25.4;
   const bedH = (px.h / dpi) * 25.4;
   const landscape = bedW > bedH * 1.05;
+  if (rect && rect.w > 0 && !landscape) {
+    const fw = Math.min(1, rect.w / bedW);
+    const fh = Math.min(1, (rect.w * 297 / 210) / bedH);
+    const x0 = clamp((Number(rect.x) || 0) / bedW, 0, 1 - fw);
+    const y0 = clamp((Number(rect.y) || 0) / bedH, 0, 1 - fh);
+    return [
+      { x: x0, y: y0 }, { x: x0 + fw, y: y0 },
+      { x: x0 + fw, y: y0 + fh }, { x: x0, y: y0 + fh },
+    ];
+  }
   const [aw, ah] = landscape ? [297, 210] : [210, 297];
   const fw = Math.min(1, aw / bedW);
   const fh = Math.min(1, ah / bedH);
@@ -596,6 +608,15 @@ const TEMPLATE = `
         </label>
       </span>
       <span class="sc-sep"></span>
+      <span class="sc-tgroup">
+        <span class="sc-tlabel">Seitenverhältnis</span>
+        <span class="sc-seg" role="radiogroup" aria-label="Seitenverhältnis beim Ziehen">
+          <button class="sc-lock-btn" data-lock="free" title="Ecken frei ziehen (Perspektive)">Frei</button>
+          <button class="sc-lock-btn" data-lock="a4" title="Rechteck im DIN-A4-Verhältnis">A4</button>
+          <button class="sc-lock-btn" data-lock="keep" title="Aktuelles Verhältnis beibehalten">Fest</button>
+        </span>
+      </span>
+      <span class="sc-sep"></span>
       <button class="btn btn-small" id="scRotateBtn" title="Um 90° drehen"><i data-icon="rotate" data-icon-size="15"></i><span>Drehen</span></button>
     </div>
     <div class="sc-crop-stage" id="scCropStage">
@@ -603,7 +624,7 @@ const TEMPLATE = `
       <svg id="scCropSvg" tabindex="0" aria-label="Ecken anpassen (Pfeiltasten bewegen die zuletzt gewählte Ecke)"></svg>
       <div class="sc-loupe hidden" id="scLoupe"><canvas width="150" height="150"></canvas></div>
     </div>
-    <p class="sc-hint">Ecken (groß) oder Kanten (klein) ziehen – die Lupe zeigt die Ecke vergrößert. <span class="sc-hint-long">Pfeiltasten justieren fein nach.</span></p>
+    <p class="sc-hint" id="scCropHint">Ecken (groß) oder Kanten (klein) ziehen – die Lupe zeigt die Ecke vergrößert. <span class="sc-hint-long">Pfeiltasten justieren fein nach.</span></p>
     <div class="sc-bottombar">
       <button class="btn" id="scCropCancelBtn">Abbrechen</button>
       <button class="btn btn-primary" id="scCropOkBtn"><i data-icon="check" data-icon-size="16"></i><span>Übernehmen</span></button>
@@ -889,6 +910,88 @@ function cropDisplayMetrics() {
 
 const CORNER_LABEL = { tl: 'oben links', tr: 'oben rechts', br: 'unten rechts', bl: 'unten links' };
 
+// Seitenverhältnis-Sperre beim Zuschnitt: 'free' | 'a4' | 'keep' (gemerkt)
+let cropLock = (() => { try { return localStorage.getItem('pp.cropLock') || 'free'; } catch { return 'free'; } })();
+function setCropLock(v) {
+  cropLock = ['free', 'a4', 'keep'].includes(v) ? v : 'free';
+  try { localStorage.setItem('pp.cropLock', cropLock); } catch { /* egal */ }
+  const ed = state.editing;
+  if (ed && cropLock !== 'free') {
+    ed.lockRatio = cropLock === 'a4' ? a4RatioFor(ed) : currentRatio(ed);
+    squareUp(ed);
+  }
+  renderCrop();
+}
+
+/** Breite/Höhe der Auswahl in Bildpixeln (umschließendes Rechteck). */
+function selBox(ed) {
+  const xs = ed.corners.map((p) => p.x);
+  const ys = ed.corners.map((p) => p.y);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+function currentRatio(ed) {
+  const b = selBox(ed);
+  return Math.max(0.05, ((b.x1 - b.x0) * ed.src.width) / Math.max(1e-6, (b.y1 - b.y0) * ed.src.height));
+}
+function a4RatioFor(ed) {
+  const portrait = ed.format === 'a4l' ? false : ed.format === 'a4p' ? true : currentRatio(ed) <= 1;
+  return portrait ? 210 / 297 : 297 / 210;
+}
+
+/** Auswahl als achsenparalleles Rechteck mit dem gesperrten Verhältnis (zentriert). */
+function squareUp(ed) {
+  const b = selBox(ed);
+  const W = ed.src.width;
+  const H = ed.src.height;
+  const r = ed.lockRatio;
+  let w = (b.x1 - b.x0) * W;
+  let h = (b.y1 - b.y0) * H;
+  if (w / h > r) w = h * r; else h = w / r;
+  if (w > W) { w = W; h = w / r; }
+  if (h > H) { h = H; w = h * r; }
+  const cx = clamp(((b.x0 + b.x1) / 2) * W, w / 2, W - w / 2);
+  const cy = clamp(((b.y0 + b.y1) / 2) * H, h / 2, H - h / 2);
+  setRect(ed, (cx - w / 2) / W, (cy - h / 2) / H, (cx + w / 2) / W, (cy + h / 2) / H);
+}
+function setRect(ed, x0, y0, x1, y1) {
+  ed.corners = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+}
+
+/** Ecke ziehen mit gesperrtem Verhältnis: gegenüberliegende Ecke bleibt stehen. */
+function dragLockedCorner(ed, idx, p) {
+  const W = ed.src.width;
+  const H = ed.src.height;
+  const r = ed.lockRatio;
+  const a = ed.corners[(idx + 2) % 4];
+  const sx = p.x >= a.x ? 1 : -1;
+  const sy = p.y >= a.y ? 1 : -1;
+  let w = Math.abs(p.x - a.x) * W;
+  let h = Math.abs(p.y - a.y) * H;
+  // dem Finger folgen: die größere Ausdehnung bestimmt
+  if (w / r > h) h = w / r; else w = h * r;
+  const maxW = (sx > 0 ? 1 - a.x : a.x) * W;
+  const maxH = (sy > 0 ? 1 - a.y : a.y) * H;
+  if (w > maxW) { w = maxW; h = w / r; }
+  if (h > maxH) { h = maxH; w = h * r; }
+  const minPx = Math.max(24, Math.min(W, H) * 0.04);
+  if (w < minPx || h < minPx) return;
+  const bx = a.x + (sx * w) / W;
+  const by = a.y + (sy * h) / H;
+  setRect(ed, Math.min(a.x, bx), Math.min(a.y, by), Math.max(a.x, bx), Math.max(a.y, by));
+  // gezogene Ecke bleibt die aktive (Reihenfolge TL, TR, BR, BL)
+  const right = bx > a.x;
+  const bottom = by > a.y;
+  return bottom ? (right ? 2 : 3) : (right ? 1 : 0);
+}
+
+/** Ganze Auswahl verschieben (innerhalb des Bildes). */
+function moveSelection(ed, dx, dy) {
+  const b = selBox(ed);
+  const mx = clamp(dx, -b.x0, 1 - b.x1);
+  const my = clamp(dy, -b.y0, 1 - b.y1);
+  ed.corners = ed.corners.map((q) => ({ x: q.x + mx, y: q.y + my }));
+}
+
 function renderCrop() {
   const ed = state.editing;
   if (!ed) return;
@@ -914,8 +1017,15 @@ function renderCrop() {
   // A4-Werkzeuge nur bei Flachbett-Scans
   const bed = ed.isBedScan;
   $('#scA4BedBtn', state.root).classList.toggle('hidden', !bed);
-  $('#scA4CornerBtn', state.root).classList.toggle('hidden', !bed);
+  $('#scA4CornerBtn', state.root).classList.toggle('hidden', !bed || !!geometry().rect);
   $('#scCornerLabel', state.root).textContent = `Ecke: ${CORNER_LABEL[geometry().corner] || 'oben links'}`;
+  state.root.querySelectorAll('.sc-lock-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.lock === cropLock);
+    b.setAttribute('aria-pressed', String(b.dataset.lock === cropLock));
+  });
+  $('#scCropHint', state.root).innerHTML = cropLock === 'free'
+    ? 'Ecken (groß) oder Kanten (klein) ziehen, innen verschieben – die Lupe zeigt die Ecke vergrößert. <span class="sc-hint-long">Pfeiltasten justieren fein nach.</span>'
+    : `Seitenverhältnis gesperrt (${cropLock === 'a4' ? 'DIN A4' : 'fest'}): Ecke ziehen ändert Breite und Höhe gemeinsam, innen ziehen verschiebt.`;
 }
 
 function drawCropOverlay() {
@@ -929,10 +1039,11 @@ function drawCropOverlay() {
     return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
   });
   const c = '#4f7bff';
+  const locked = cropLock !== 'free';
   svg.innerHTML = `
     <path d="M0,0 H${dw} V${dh} H0 Z ${quadPath}" fill="rgba(6,10,20,0.55)" fill-rule="evenodd"></path>
-    <path d="${quadPath}" fill="none" stroke="${c}" stroke-width="2.5"></path>
-    ${mids.map((m, i) => `
+    <path class="sc-handle sc-handle-move" d="${quadPath}" fill="transparent" stroke="${c}" stroke-width="2.5"></path>
+    ${locked ? '' : mids.map((m, i) => `
       <g class="sc-handle sc-handle-edge" data-edge="${i}">
         <circle cx="${m.x}" cy="${m.y}" r="26" fill="transparent"></circle>
         <circle cx="${m.x}" cy="${m.y}" r="8" fill="${c}" stroke="#fff" stroke-width="2"></circle>
@@ -1018,7 +1129,14 @@ function onCropPointerDown(e) {
     const idx = Number(handle.dataset.corner);
     state.drag = { type: 'corner', idx };
     state.activeHandle = idx;
+    if (cropLock !== 'free') {
+      if (!state.editing.lockRatio) state.editing.lockRatio = cropLock === 'a4' ? a4RatioFor(state.editing) : currentRatio(state.editing);
+      squareUp(state.editing);
+      drawCropOverlay();
+    }
     updateLoupe(idx, e.clientX);
+  } else if (handle.classList.contains('sc-handle-move')) {
+    state.drag = { type: 'move', last: svgPoint(e) };
   } else {
     state.drag = { type: 'edge', idx: Number(handle.dataset.edge), last: svgPoint(e) };
   }
@@ -1030,9 +1148,18 @@ function onCropPointerMove(e) {
   const ed = state.editing;
   const p = svgPoint(e);
   if (state.drag.type === 'corner') {
-    ed.corners[state.drag.idx] = { x: p.x, y: p.y };
+    if (cropLock !== 'free') {
+      const idx = dragLockedCorner(ed, state.drag.idx, p);
+      if (idx != null) state.drag.idx = state.activeHandle = idx;
+    } else {
+      ed.corners[state.drag.idx] = { x: p.x, y: p.y };
+    }
     drawCropOverlay();
     updateLoupe(state.drag.idx, e.clientX);
+  } else if (state.drag.type === 'move') {
+    moveSelection(ed, p.x - state.drag.last.x, p.y - state.drag.last.y);
+    state.drag.last = p;
+    drawCropOverlay();
   } else {
     const dx = p.x - state.drag.last.x;
     const dy = p.y - state.drag.last.y;
@@ -1074,6 +1201,7 @@ function rotateEditing() {
   ed.corners = orderCorners(ed.corners.map((p) => ({ x: 1 - p.y, y: p.x })));
   if (ed.format === 'a4p') ed.format = 'a4l';
   else if (ed.format === 'a4l') ed.format = 'a4p';
+  if (ed.lockRatio) ed.lockRatio = 1 / ed.lockRatio;
   renderCrop();
 }
 
@@ -1435,12 +1563,18 @@ function closeScanner() {
 }
 
 async function requestClose() {
-  if (state.batchStatus) state.opts.onCancelBatch?.();
-  if (state.pages.length > 0) {
-    const ok = await confirmDialog('Studio schließen?', `${state.pages.length} Seite${state.pages.length === 1 ? '' : 'n'} gehen verloren.`, 'Verwerfen', 'danger');
+  const n = state.pages.length;
+  if (n > 0 || state.batchStatus) {
+    const parts = [];
+    if (state.batchStatus) parts.push('Der laufende Scan wird gestoppt.');
+    if (n > 0) parts.push(`${n} Seite${n === 1 ? '' : 'n'} gehen verloren.`);
+    const ok = await confirmDialog('Studio schließen?', parts.join(' '), 'Verwerfen', 'danger');
     if (!ok) return;
   }
+  if (state.batchStatus) state.opts.onCancelBatch?.();
+  const discard = state.opts.onDiscard;
   closeScanner();
+  discard?.();
 }
 
 function onGlobalKeydown(e) {
@@ -1464,6 +1598,7 @@ function onResize() {
  *   onCancelBatch () => void – Stapel abbrechen
  *   geometry      () => {corner, offX, offY} – A4-Lage auf der Glasfläche
  *   a4            () => boolean – Fotos standardmäßig auf A4 setzen
+ *   onDiscard     () => void – Studio wurde ohne Ergebnis geschlossen
  */
 export function openScanner(onDone, opts = {}) {
   if (state.root) closeScanner();
@@ -1516,6 +1651,7 @@ export function openScanner(onDone, opts = {}) {
     ed.format = a4FormatFor(ed.src, c);
     ed.stretch = true;
     ed.how = 'bed';
+    ed.lockRatio = null;
     renderCrop();
   });
   // Liegt die Vorlage an einer anderen Ecke an? Durch alle vier durchschalten
@@ -1542,19 +1678,26 @@ export function openScanner(onDone, opts = {}) {
     if (!det) toast('Keine Dokumentränder erkannt – Ecken bitte von Hand setzen', 'info');
     ed.corners = det || defaultCorners(0.04);
     ed.how = det ? 'photo' : 'manual';
+    ed.lockRatio = null;
     renderCrop();
   });
   $('#scFullBtn', root).addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.corners = defaultCorners(0);
     state.editing.how = 'full';
+    state.editing.lockRatio = null;
     renderCrop();
   });
   root.querySelectorAll('.sc-seg-btn').forEach((b) => b.addEventListener('click', () => {
     if (!state.editing) return;
     state.editing.format = b.dataset.format;
+    if (cropLock === 'a4') {
+      state.editing.lockRatio = a4RatioFor(state.editing);
+      squareUp(state.editing);
+    }
     renderCrop();
   }));
+  root.querySelectorAll('.sc-lock-btn').forEach((b) => b.addEventListener('click', () => setCropLock(b.dataset.lock)));
   $('#scStretch', root).addEventListener('change', (e) => {
     if (state.editing) state.editing.stretch = e.target.checked;
   });

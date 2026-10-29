@@ -4,10 +4,33 @@
 
 // ---------------------------------------------------------------- Foto -> freigestellt
 
+/**
+ * Hat das Bild echte Transparenz (freigestelltes PNG)? Dann zählt der
+ * Alphakanal – sonst würden durchsichtige Pixel (oft RGB 0/0/0) als dunkle
+ * „Tinte“ gewertet und die Unterschrift bekäme einen schwarzen Hintergrund.
+ */
+export function hasTransparency(source) {
+  const s = Math.min(1, 400 / Math.max(source.width, source.height));
+  const w = Math.max(1, Math.round(source.width * s));
+  const h = Math.max(1, Math.round(source.height * s));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let clear = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] < 250) clear++;
+  return clear / (w * h) > 0.02;
+}
+
 // opts: { threshold: 0..100, brightness: -100..100, contrast: -100..100,
-//         color: '#rrggbb' | 'original' }
+//         color: '#rrggbb' | 'original', transparent?: boolean }
 // Liefert Canvas mit transparentem Hintergrund, auf Inhalt beschnitten.
-export function processSignatureImage(source, opts) {
+//  - Foto/Scan: Helligkeit entscheidet, was Tinte ist (Schwellwert)
+//  - transparentes PNG: der Alphakanal bleibt, wie er ist; nur die Farbe
+//    kann geändert werden
+export function processSignatureImage(source, opts = {}) {
   const maxDim = 1600;
   const s = Math.min(1, maxDim / Math.max(source.width, source.height));
   const w = Math.max(1, Math.round(source.width * s));
@@ -19,6 +42,7 @@ export function processSignatureImage(source, opts) {
   ctx.drawImage(source, 0, 0, w, h);
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
+  const transparent = opts.transparent ?? hasTransparency(canvas);
 
   const bright = (opts.brightness || 0) * 1.27;
   const c = (opts.contrast || 0) / 100;
@@ -41,10 +65,15 @@ export function processSignatureImage(source, opts) {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
-      let lum = (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
-      lum = Math.max(0, Math.min(255, cf * (lum - 128) + 128 + bright));
-      // dunkler als Schwellwert -> Tinte; weiche Übergangszone
-      const alpha = Math.max(0, Math.min(1, (thr - lum) / soft + 0.5));
+      let alpha;
+      if (transparent) {
+        alpha = d[p + 3] / 255;
+      } else {
+        let lum = (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
+        lum = Math.max(0, Math.min(255, cf * (lum - 128) + 128 + bright));
+        // dunkler als Schwellwert -> Tinte; weiche Übergangszone
+        alpha = Math.max(0, Math.min(1, (thr - lum) / soft + 0.5));
+      }
       if (alpha > 0.02) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -60,6 +89,7 @@ export function processSignatureImage(source, opts) {
     }
   }
   ctx.putImageData(img, 0, 0);
+  canvas.transparentSource = transparent;
 
   if (maxX < 0) return canvas; // nichts erkannt -> unbeschnitten zurück
   const pad = 8;
@@ -71,6 +101,7 @@ export function processSignatureImage(source, opts) {
   out.width = cw;
   out.height = ch;
   out.getContext('2d').drawImage(canvas, cx, cy, cw, ch, 0, 0, cw, ch);
+  out.transparentSource = transparent;
   return out;
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "pdf-presser",
-  "version": "1.0.0",
-  "description": "Lokaler PDF-Kompressor als offline-fähige Web-App",
+  "version": "2.1.0",
+  "description": "PDFs, Fotos und Scans verkleinern, auf DIN A4 bringen und an Paperless senden – Web-App mit kleinem Server für Netzwerk-Scanner",
   "scripts": {
     "serve": "node scripts/serve.mjs",
     "start": "node server/index.mjs",

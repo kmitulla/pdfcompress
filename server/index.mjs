@@ -12,6 +12,10 @@
 //   RAW_DIR         Sammelordner für „Paperless Prepare“ (leer = aus)
 //   DATA_DIR        Profilspeicher (Einstellungen, Unterschriften)
 //   APP_VERSION     Versionskennung (sonst aus dem Inhalt der App berechnet)
+//
+// Scanner-Adresse, consume-Ordner und Paperless-API lassen sich zusätzlich in
+// der App unter Einstellungen ändern (gespeichert in DATA_DIR/config.json,
+// hat Vorrang vor den Variablen).
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -20,15 +24,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { getCapabilities, scanPage } from './escl.mjs';
+import * as cfg from './config.mjs';
+import * as scanJobs from './jobs.mjs';
+import { discover, subnets } from './discover.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..'); // Repo-Wurzel = statische Web-App
 const port = parseInt(process.env.PORT, 10) || 8823;
 const env = (k) => (process.env[k] || '').trim();
-const SCANNER_HOST = env('SCANNER_HOST');
-const CONSUME_DIR = env('CONSUME_DIR');
-const PAPERLESS_URL = env('PAPERLESS_URL').replace(/\/+$/, '');
-const PAPERLESS_TOKEN = env('PAPERLESS_TOKEN');
 const MAX_UPLOAD = 200 * 1024 * 1024; // 200 MB Obergrenze fürs Speichern
 
 // Serverseitiger Speicher für Einstellungen & Unterschriften. Nur in der
@@ -36,6 +39,8 @@ const MAX_UPLOAD = 200 * 1024 * 1024; // 200 MB Obergrenze fürs Speichern
 // kein Backend und bleibt damit automatisch rein lokal.
 const DATA_DIR = env('DATA_DIR') || '/data/app';
 const PROFILE_FILE = path.join(DATA_DIR, 'profile.json');
+cfg.loadConfig(DATA_DIR);
+const scannerHost = () => cfg.get('scannerHost');
 const MAX_PROFILE = 8 * 1024 * 1024; // Unterschriften sind Bilder – etwas Luft
 
 // Sammelordner der Vorstufe („Paperless Prepare“)
@@ -72,6 +77,10 @@ const MIME = {
 
 // Ändert sich mit jedem Inhalt der App. Darüber erkennt der Service Worker im
 // Browser ein Update – ohne dass beim Deployment jemand eine Nummer pflegt.
+const PKG_VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version; } catch { return '0'; }
+})();
+
 function computeVersion() {
   if (env('APP_VERSION')) return env('APP_VERSION').slice(0, 12);
   const h = crypto.createHash('sha1');
@@ -86,7 +95,7 @@ function computeVersion() {
       h.update(fs.readFileSync(full));
     }
   };
-  ['index.html', 'sw.js', 'manifest.webmanifest', 'css', 'js'].forEach(walk);
+  ['index.html', 'sw.js', 'manifest.webmanifest', 'css', 'js', 'icons'].forEach(walk);
   return h.digest('hex').slice(0, 10);
 }
 const VERSION = computeVersion();
@@ -170,10 +179,10 @@ async function writeAtomic(dir, name, data) {
 
 // -------------------------------------------------------------------- Paperless
 
-const paperlessMode = PAPERLESS_URL && PAPERLESS_TOKEN ? 'api' : (CONSUME_DIR ? 'folder' : null);
-
 /** PDF über die REST-API an Paperless übergeben. Liefert die Task-ID. */
 async function uploadToPaperless(data, name, title) {
+  const PAPERLESS_URL = cfg.get('paperlessUrl');
+  const PAPERLESS_TOKEN = cfg.get('paperlessToken');
   const form = new FormData();
   form.append('document', new Blob([data], { type: 'application/pdf' }), name);
   if (title) form.append('title', title);
@@ -191,19 +200,89 @@ async function uploadToPaperless(data, name, title) {
   try { return JSON.parse(text); } catch { return text.trim(); }
 }
 
+/** Verbindung zu Paperless prüfen (für den Knopf „Testen“ in der App). */
+async function testPaperless(url, token) {
+  if (!url) throw new Error('Keine Paperless-Adresse angegeben.');
+  if (!token) throw new Error('Kein API-Token angegeben.');
+  let res;
+  try {
+    res = await fetch(`${url}/api/documents/?page_size=1&fields=id`, {
+      headers: { Authorization: `Token ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (e) {
+    throw new Error(`Paperless nicht erreichbar (${e.cause?.code || e.message}). Adresse aus Sicht des Servers prüfen.`);
+  }
+  if (res.status === 401 || res.status === 403) throw new Error('Paperless lehnt den API-Token ab.');
+  if (!res.ok) throw new Error(`Paperless antwortet mit HTTP ${res.status}.`);
+  let count = null;
+  try { count = (await res.json()).count; } catch { /* egal */ }
+  return { ok: true, version: res.headers.get('x-version') || null, documents: count };
+}
+
+// Seiten-Scan mit der aktuell eingestellten Scanner-Adresse
+const scanWithCurrent = (opts) => scanPage(scannerHost(), opts);
+
+async function writeRaw(name, data) {
+  await fsp.mkdir(RAW_DIR, { recursive: true });
+  const finalName = await freeName(RAW_DIR, safeRawName(name, '.jpg'));
+  await writeAtomic(RAW_DIR, finalName, data);
+  return finalName;
+}
+
+function readJson(req, limit = 64 * 1024) {
+  return readBody(req, limit).then((b) => (b.length ? JSON.parse(b.toString('utf8')) : {}));
+}
+
 // -------------------------------------------------------------------- API
 
 async function handleApi(req, res, url) {
   // Funktions-Status für die Web-App: welche Backend-Features sind aktiv?
   if (url.pathname === '/api/config' && req.method === 'GET') {
+    const mode = cfg.paperlessMode();
     return sendJson(res, 200, {
-      scanner: !!SCANNER_HOST,
-      consume: !!paperlessMode,
-      paperless: paperlessMode,
+      scanner: !!scannerHost(),
+      consume: !!mode,
+      paperless: mode,
       profile: profileEnabled,
       raw: !!RAW_DIR,
+      jobs: profileEnabled,
+      settings: profileEnabled,
       version: VERSION,
+      appVersion: PKG_VERSION,
     });
+  }
+
+  // ---- Server-Einstellungen (Scanner, Paperless) ----
+
+  if (url.pathname === '/api/settings' && req.method === 'GET') {
+    return sendJson(res, 200, { ...cfg.publicView(), mounts: cfg.mountedFolders(), rawDir: RAW_DIR || null });
+  }
+
+  if (url.pathname === '/api/settings' && req.method === 'PUT') {
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar (DATA_DIR).' });
+    try {
+      const patch = await readJson(req);
+      const view = await cfg.update(patch);
+      return sendJson(res, 200, { ...view, mounts: cfg.mountedFolders(), rawDir: RAW_DIR || null });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.code === 'EACCES' ? 'Ordner ist nicht beschreibbar.' : e.message });
+    }
+  }
+
+  // Paperless-Verbindung testen – mit den übergebenen oder gespeicherten Daten
+  if (url.pathname === '/api/paperless/test' && req.method === 'POST') {
+    try {
+      const body = await readJson(req);
+      let u = String(body.url ?? cfg.get('paperlessUrl') ?? '').trim().replace(/\/+$/, '').replace(/\/api$/i, '');
+      if (u && !/^https?:\/\//i.test(u)) u = `http://${u}`;
+      // Gespeicherter Token nur für die gespeicherte Adresse – nie an eine andere
+      const t = String(body.token || (u === cfg.get('paperlessUrl') ? cfg.get('paperlessToken') : '') || '').trim();
+      const r = await testPaperless(u, t);
+      return sendJson(res, 200, r);
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e.message });
+    }
   }
 
   // Profil (Einstellungen + Unterschriften + Stempel) vom Server lesen.
@@ -235,32 +314,118 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // Scanner erreichbar? Modell zurückgeben.
+  // Scanner erreichbar? Modell und unterstützte Einstellungen zurückgeben.
   if (url.pathname === '/api/scanner/status' && req.method === 'GET') {
-    if (!SCANNER_HOST) return sendJson(res, 501, { ok: false, error: 'Kein Scanner konfiguriert (SCANNER_HOST fehlt).' });
+    const host = scannerHost();
+    if (!host) return sendJson(res, 501, { ok: false, error: 'Kein Scanner konfiguriert (SCANNER_HOST fehlt).' });
     try {
-      const caps = await getCapabilities(SCANNER_HOST);
-      return sendJson(res, 200, { ok: true, model: caps.model, host: SCANNER_HOST });
+      const caps = await getCapabilities(host, { fresh: url.searchParams.has('fresh') });
+      const mm = (v) => (v ? Math.round((v / 300) * 25.4 * 10) / 10 : null);
+      return sendJson(res, 200, {
+        ok: true, model: caps.model, host,
+        resolutions: caps.resolutions,
+        colorModes: caps.colorModes,
+        // Grau/S-W gehen, wenn das Gerät Graustufen liefert; sonst wird in der
+        // App aus dem Farbscan umgerechnet.
+        gray: caps.colorModes.includes('Grayscale8'),
+        bed: { w: mm(caps.maxWidth), h: mm(caps.maxHeight) },
+        busy: !!scanJobs.activeJob(),
+      });
     } catch (e) {
-      return sendJson(res, 502, { ok: false, error: e.message, host: SCANNER_HOST });
+      return sendJson(res, 502, { ok: false, error: e.message, host });
+    }
+  }
+
+  // Scanner im Netzwerk suchen
+  if (url.pathname === '/api/scanner/discover' && req.method === 'GET') {
+    const nets = subnets([url.searchParams.get('near'), scannerHost(), ...(url.searchParams.getAll('subnet'))]);
+    if (!nets.length) return sendJson(res, 200, { nets, found: [], hint: 'Kein lokales Netz erkennbar – Adresse von Hand eintragen.' });
+    try {
+      const found = await discover(nets);
+      return sendJson(res, 200, { nets, found });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message, nets });
+    }
+  }
+
+  // ---- Scan-Aufträge (laufen auf dem Server weiter, auch ohne App) ----
+
+  if (url.pathname === '/api/scan-jobs' && req.method === 'GET') {
+    return sendJson(res, 200, { jobs: scanJobs.listJobs(), active: scanJobs.activeJob()?.id || null });
+  }
+
+  if (url.pathname === '/api/scan-jobs' && req.method === 'POST') {
+    if (!scannerHost()) return sendJson(res, 501, { error: 'Kein Scanner konfiguriert (SCANNER_HOST fehlt).' });
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar (DATA_DIR).' });
+    try {
+      const body = await readJson(req);
+      if (body.target === 'raw' && !RAW_DIR) return sendJson(res, 400, { error: 'Kein Sammelordner konfiguriert (RAW_DIR fehlt).' });
+      return sendJson(res, 201, await scanJobs.createJob(body));
+    } catch (e) {
+      return sendJson(res, e.status || 400, { error: e.message, job: e.job });
+    }
+  }
+
+  const jm = /^\/api\/scan-jobs\/([\w-]+)(?:\/(cancel|next|resume|pages\/(\d+)))?$/.exec(url.pathname);
+  if (jm) {
+    const [, id, action, pageNo] = jm;
+    if (!action && req.method === 'GET') {
+      const job = scanJobs.getJob(id);
+      return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'Auftrag nicht gefunden.' });
+    }
+    if (!action && req.method === 'DELETE') {
+      await scanJobs.deleteJob(id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (pageNo && req.method === 'GET') {
+      const f = await scanJobs.pageFile(id, parseInt(pageNo, 10));
+      if (!f) return sendJson(res, 404, { error: 'Seite nicht gefunden.' });
+      res.writeHead(200, {
+        'Content-Type': f.page.type || 'image/jpeg',
+        'Content-Length': f.data.length,
+        'Cache-Control': 'no-store',
+        'X-Scan-Dpi': String(f.page.dpi),
+        'X-Scan-Color': f.page.colorMode,
+        'X-Scan-Wanted': f.page.wanted,
+      });
+      return res.end(f.data);
+    }
+    if (action === 'cancel' && req.method === 'POST') {
+      const job = await scanJobs.cancelJob(id);
+      return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'Auftrag nicht gefunden.' });
+    }
+    if (action === 'next' && req.method === 'POST') {
+      return sendJson(res, 200, { ok: scanJobs.skipWait(id) });
+    }
+    if (action === 'resume' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        const job = await scanJobs.resumeJob(id, { more: parseInt(body.more, 10) || 0 });
+        return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'Auftrag nicht gefunden.' });
+      } catch (e) {
+        return sendJson(res, e.status || 400, { error: e.message });
+      }
     }
   }
 
   // Eine Seite scannen → Bild (JPEG) direkt zurückliefern.
   if (url.pathname === '/api/scanner/scan' && req.method === 'POST') {
-    if (!SCANNER_HOST) return sendJson(res, 501, { error: 'Kein Scanner konfiguriert (SCANNER_HOST fehlt).' });
+    if (!scannerHost()) return sendJson(res, 501, { error: 'Kein Scanner konfiguriert (SCANNER_HOST fehlt).' });
+    if (scanJobs.activeJob()) return sendJson(res, 409, { error: 'Es läuft bereits ein Scan-Auftrag.' });
     const colorMode = url.searchParams.get('color') || 'color';
     const resolution = url.searchParams.get('dpi') || '300';
     const source = url.searchParams.get('source') || 'platen';
     try {
-      const { buffer, contentType } = await scanPage(SCANNER_HOST, { colorMode, resolution, source });
+      const { buffer, contentType, dpi, colorMode: got, wanted } = await scanPage(scannerHost(), { colorMode, resolution, source });
       res.writeHead(200, {
         'Content-Type': contentType,
         'Content-Length': buffer.length,
         'Cache-Control': 'no-store',
         // Auflösung mitgeben: damit kann die App aus der Pixelgröße die echten
         // Millimeter der Glasfläche berechnen und den A4-Ausschnitt exakt setzen.
-        'X-Scan-Dpi': String(parseInt(resolution, 10) || 300),
+        'X-Scan-Dpi': String(dpi),
+        'X-Scan-Color': got,
+        'X-Scan-Wanted': wanted,
       });
       return res.end(buffer);
     } catch (e) {
@@ -341,6 +506,8 @@ async function handleApi(req, res, url) {
 
   // Fertiges PDF an Paperless übergeben – per API oder über den consume-Ordner.
   if (url.pathname === '/api/save' && req.method === 'POST') {
+    const paperlessMode = cfg.paperlessMode();
+    const CONSUME_DIR = cfg.get('consumeDir');
     if (!paperlessMode) return sendJson(res, 501, { error: 'Paperless ist nicht eingerichtet (CONSUME_DIR oder PAPERLESS_URL/PAPERLESS_TOKEN fehlen).' });
     const name = safePdfName(url.searchParams.get('name') || req.headers['x-filename']);
     const title = (url.searchParams.get('title') || '').trim().slice(0, 200);
@@ -433,6 +600,7 @@ try {
 } catch {
   profileEnabled = false;
 }
+if (profileEnabled) scanJobs.initJobs({ dataDir: DATA_DIR, scan: scanWithCurrent, writeRaw: RAW_DIR ? writeRaw : null });
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -451,17 +619,20 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`PDF Presser ${VERSION} läuft auf http://0.0.0.0:${port}`);
-  console.log(`  Scanner:        ${SCANNER_HOST || '— (nicht konfiguriert)'}`);
-  console.log(`  Paperless:      ${paperlessMode === 'api' ? `API ${PAPERLESS_URL}` : paperlessMode === 'folder' ? `Ordner ${CONSUME_DIR}` : '— (nicht konfiguriert)'}`);
-  if (paperlessMode === 'api' && CONSUME_DIR) console.log(`                  Rückfall-Ordner: ${CONSUME_DIR}`);
+  const mode = cfg.paperlessMode();
+  const c = cfg.current();
+  console.log(`PDF Presser ${PKG_VERSION} (${VERSION}) läuft auf http://0.0.0.0:${port}`);
+  console.log(`  Scanner:        ${c.scannerHost || '— (nicht konfiguriert)'}`);
+  console.log(`  Paperless:      ${mode === 'api' ? `API ${c.paperlessUrl}` : mode === 'folder' ? `Ordner ${c.consumeDir}` : '— (nicht konfiguriert)'}`);
+  if (mode === 'api' && c.consumeDir) console.log(`                  Rückfall-Ordner: ${c.consumeDir}`);
   console.log(`  Profilspeicher: ${profileEnabled ? DATA_DIR : '— (nicht beschreibbar)'}`);
   console.log(`  Sammelordner:   ${RAW_DIR || '— (nicht konfiguriert)'}`);
 });
 
 // Sauber beenden (docker stop), damit laufende Schreibvorgänge fertig werden
 for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => {
+  process.on(sig, async () => {
+    await scanJobs.shutdownJobs();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   });

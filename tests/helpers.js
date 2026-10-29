@@ -150,20 +150,43 @@ export async function fakeConfig(page, over = {}) {
  * JPEG wie vom Epson ET-2720 bei 300 dpi: Glasfläche 215,9 × 297 mm
  * (2550 × 3508 px), Blatt liegt oben links, rechts 6 mm grauer Überstand.
  */
-export async function bedScanJpeg(page, { w = 2550, h = 3508, overhang = '#9a9a9a', label = 'SEITE' } = {}) {
-  const arr = await page.evaluate(async ({ w, h, overhang, label }) => {
+export async function bedScanJpeg(page, { dpi = 300, w, h, overhang = '#9a9a9a', label = 'SEITE', offX = 0, offY = 0 } = {}) {
+  const arr = await page.evaluate(async ({ dpi, w, h, overhang, label, offX, offY }) => {
+    const mm = dpi / 25.4;
     const c = document.createElement('canvas');
-    c.width = w; c.height = h;
+    c.width = w || Math.round(215.9 * mm);
+    c.height = h || Math.round(297 * mm);
     const x = c.getContext('2d');
-    x.fillStyle = overhang; x.fillRect(0, 0, w, h);
-    const a4w = Math.round(210 / 25.4 * 300);
-    x.fillStyle = '#ffffff'; x.fillRect(0, 0, a4w, Math.round(297 / 25.4 * 300));
-    x.fillStyle = '#111'; x.font = '700 120px Arial'; x.fillText(label, 200, 400);
-    for (let i = 0; i < 20; i++) x.fillRect(200, 600 + i * 120, 1600, 22);
+    x.fillStyle = overhang; x.fillRect(0, 0, c.width, c.height);
+    // Blatt (A4) liegt an der Ecke oben links, optional um offX/offY mm versetzt
+    x.fillStyle = '#ffffff'; x.fillRect(Math.round(offX * mm), Math.round(offY * mm), Math.round(210 * mm), Math.round(297 * mm));
+    x.fillStyle = '#111'; x.font = `700 ${Math.round(10 * mm)}px Arial`; x.fillText(label, 17 * mm, 34 * mm);
+    for (let i = 0; i < 20; i++) x.fillRect(17 * mm, (50 + i * 10) * mm, 135 * mm, 2 * mm);
     const b = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
     return Array.from(new Uint8Array(await b.arrayBuffer()));
-  }, { w, h, overhang, label });
+  }, { dpi, w, h, overhang, label, offX, offY });
   return Buffer.from(arr);
+}
+
+// ---- Test-Scanner (tests/escl-mock-server.mjs, Port 8861) ----
+export const MOCK = 'http://127.0.0.1:8861';
+
+/** Test-Scanner zurücksetzen und optional ein Bild für eine Auflösung hinterlegen. */
+export async function mockScanner({ image, dpi = 'any', config, reset = true } = {}) {
+  if (reset) await fetch(`${MOCK}/__mock/reset`, { method: 'POST' });
+  if (image) await fetch(`${MOCK}/__mock/image?dpi=${dpi}`, { method: 'POST', body: image });
+  if (config) await fetch(`${MOCK}/__mock/config`, { method: 'POST', body: JSON.stringify(config) });
+  return mockState();
+}
+export const mockState = async () => (await fetch(`${MOCK}/__mock/state`)).json();
+
+/** Alle Scan-Aufträge des Test-Servers wegräumen. */
+export async function clearScanJobs(base = 'http://127.0.0.1:8823') {
+  const { jobs } = await (await fetch(`${base}/api/scan-jobs`)).json();
+  for (const j of jobs) {
+    if (j.live) await fetch(`${base}/api/scan-jobs/${j.id}/cancel`, { method: 'POST' });
+    await fetch(`${base}/api/scan-jobs/${j.id}`, { method: 'DELETE' });
+  }
 }
 
 // Synthetisches „Foto“: helles, schräg liegendes Dokument auf dunklem Grund
