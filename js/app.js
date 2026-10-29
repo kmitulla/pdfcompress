@@ -21,8 +21,9 @@ import {
   downloadBytes, openInBrowser, canShareFiles, shareBytes,
 } from './ui.js';
 import { mergePdfs } from './pdfkit.js';
+import { setServerOcr } from './ocr.js';
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 
 hydrateIcons();
 
@@ -47,6 +48,7 @@ const DEFAULTS = {
   scanDelay: 8,
   scanTarget: 'doc',
   scanRect: null,        // kalibrierter A4-Bereich in mm {x, y, w}
+  serverOcr: true,       // Texterkennung auf dem Server, wenn verfügbar
 };
 
 let settings = { ...DEFAULTS };
@@ -1832,6 +1834,7 @@ const SETTING_FIELDS = {
   setA4: 'a4',
   setAutoCompress: 'autoCompress',
   setAutoPaperless: 'autoPaperless',
+  setServerOcr: 'serverOcr',
 };
 
 function syncSettingsUi() {
@@ -1852,6 +1855,7 @@ for (const [id, key] of Object.entries(SETTING_FIELDS)) {
     if (el.type === 'number') el.value = v;
     persistSettings();
     if (key === 'ocrLang') state.docs.forEach((d) => { if (d.ocr) afterDocChange(d, false); });
+    if (key === 'serverOcr') applyOcrMode();
   });
 }
 
@@ -1883,6 +1887,7 @@ async function applyStoredSettings() {
   } catch { /* Erststart */ }
   settingsReady = true;
   syncSettingsUi();
+  applyOcrMode();
   syncScanSheet();
 }
 
@@ -1941,6 +1946,7 @@ async function fetchConfig() {
       profile: !!cfg.profile,
       raw: !!cfg.raw,
       jobs: !!cfg.jobs,
+      ocr: cfg.ocr || false,
       settings: !!cfg.settings,
       version: cfg.version || null,
       appVersion: cfg.appVersion || null,
@@ -1967,8 +1973,16 @@ function applyBackendUi() {
   $('#statusPaperless').classList.toggle('hidden', !backend.consume);
   $('#statusPaperless span:last-child').textContent = backend.paperless === 'api' ? 'Paperless (API)' : 'Paperless (Ordner)';
   setScanProvider(backend.scanner ? () => fetchScannedPage() : null);
+  applyOcrMode();
   syncScanSheet();
   renderAll();
+}
+
+/** Texterkennung auf dem Server nutzen, wenn er sie kann und es gewünscht ist. */
+function applyOcrMode() {
+  const can = !!backend.ocr;
+  setServerOcr(can && settings.serverOcr !== false ? backend.ocr : null);
+  $$('.needs-server-ocr').forEach((el) => el.classList.toggle('hidden', !can));
 }
 
 async function detectBackend() {

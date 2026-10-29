@@ -23,7 +23,7 @@ Paperless schickst.
 | **Profile** | Verlustfrei · Leicht · Ausgewogen · Stark · Graustufen · Scan Farbe (16 Farben) · Scan S/W (1-Bit, CCITT G4) – pro Dokument, mit Feinabstimmung (dpi, JPEG-Qualität, Helligkeit, Kontrast, dunkle Flächen) und Ausnahmen pro Seite |
 | **Vorschau & Simulation** | „Größen schätzen“ rechnet alle Profile durch (±3 % der echten Größe), die Vorschau zeigt Original, simuliertes Ergebnis und fertiges PDF Seite für Seite – mit **Dateigröße vorher → nachher und Prozent** |
 | **DIN A4** | Jede Seite landet auf A4 (hoch/quer, nie verzerrt) – auch bei „Verlustfrei“ |
-| **Texterkennung** | Tesseract (Deutsch/Englisch) legt einen unsichtbaren Textlayer an. Läuft parallel zur Seitenverarbeitung und auf zwei Kernen – rund **doppelt so schnell** wie vorher |
+| **Texterkennung** | Tesseract (Deutsch/Englisch) legt einen unsichtbaren Textlayer an. Selbst gehostet erkennt der **Server** die Seiten (nativ, parallel – am Handy um ein Vielfaches schneller), sonst rechnet der Browser |
 | **Weitergeben** | Herunterladen, **im Browser öffnen**, **Teilen** (System-Dialog), **an Paperless** (API oder consume-Ordner), Zielordner (Chrome/Edge) |
 | **Bearbeiten** | Neuer Editor: beschriftete Werkzeuge, Eigenschaften daneben, Rückgängig. Unterschrift zeichnen oder als Bild (transparente PNGs bleiben transparent), Stempel mit Vorschau & Vorlagen (Rahmen-Stempel bleiben durchsuchbar), Text, Stift/Marker, Abdecken, Schwärzen, Bilder, Seiten, Formulare |
 | **Bleibt erhalten** | Die Dokumentliste samt Ergebnissen überlebt Schließen, Neuladen und Updates |

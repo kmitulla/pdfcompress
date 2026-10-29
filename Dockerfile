@@ -4,6 +4,10 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# Texterkennung auf dem Server: am Handy ist Tesseract im Browser sehr langsam,
+# der native Tesseract schafft eine Seite in wenigen Sekunden.
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-deu tesseract-ocr-data-eng
+
 # Nur die für den Betrieb nötigen Dateien (siehe .dockerignore)
 COPY index.html manifest.webmanifest sw.js package.json ./
 COPY css ./css

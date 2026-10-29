@@ -14,6 +14,14 @@ const base = (p) => new URL(p, import.meta.url).href;
 
 const IDLE_MS = 120000;   // so lange bleiben die Worker nach dem letzten Auftrag geladen
 
+// Texterkennung auf dem eigenen Server (nativer Tesseract) – am Handy um ein
+// Vielfaches schneller als WebAssembly. Die App schaltet das ein, wenn der
+// Server es anbietet; fällt er aus, wird lokal weitergerechnet.
+let server = null;   // { langs: [] } oder null
+export function setServerOcr(info) { server = info && info.langs?.length ? info : null; }
+const serverCan = (langs) => !!server && langs.split('+').every((l) => server.langs.includes(l));
+export const usesServerOcr = (langs = 'deu') => serverCan(langs);
+
 let pool = null;          // { langs, scheduler, size, ready: Promise }
 let idleTimer = null;
 
@@ -35,10 +43,12 @@ function hasWasmSimd() {
  * zwei Worker halbieren die OCR-Zeit fast. Am Handy entscheidet der Speicher –
  * dort nur mit nachweislich viel RAM (Safari verrät ihn nicht -> ein Worker).
  */
+export const isMobileDevice = () => /iPhone|iPad|Android/i.test(navigator.userAgent) || matchMedia('(pointer: coarse)').matches;
+
 export function ocrWorkerCount() {
   const cores = navigator.hardwareConcurrency || 2;
   const mem = navigator.deviceMemory || 4;
-  const mobile = /iPhone|iPad|Android/i.test(navigator.userAgent) || matchMedia('(pointer: coarse)').matches;
+  const mobile = isMobileDevice();
   if (mobile) return cores >= 6 && mem >= 6 ? 2 : 1;
   if (cores >= 12 && mem >= 8) return 3;
   return cores >= 4 ? 2 : 1;
@@ -83,8 +93,17 @@ function getPool(langs) {
   return mine.ready;
 }
 
+/**
+ * Wie viele Seiten gleichzeitig erkannt werden: der Server arbeitet mehrere
+ * Seiten parallel ab, im Browser entscheidet die Zahl der Worker.
+ */
+export function ocrParallel(langs = 'deu') {
+  return serverCan(langs) ? 3 : ocrWorkerCount();
+}
+
 /** Worker schon einmal hochfahren, während z. B. die erste Seite gerendert wird. */
 export function warmOcr(langs = 'deu') {
+  if (serverCan(langs)) return;
   getPool(langs).catch(() => { /* Fehler zeigt sich beim echten Auftrag */ });
 }
 
@@ -98,8 +117,25 @@ export function releaseOcrSoon() {
  * Erkennt eine Seite. `image` ist ein Blob (JPEG/PNG) oder Canvas.
  * Liefert eine flache Wortliste [{text, confidence, bbox:{x0,y0,x1,y1}}].
  */
-export async function recognizePage(image, langs = 'deu') {
-  const p = await getPool(langs || 'deu');
+export async function recognizePage(image, langs = 'deu', { dpi = 300 } = {}) {
+  langs = langs || 'deu';
+  if (serverCan(langs) && image instanceof Blob) {
+    try {
+      const res = await fetch(`/api/ocr?lang=${encodeURIComponent(langs)}&dpi=${Math.round(dpi)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': image.type || 'image/jpeg' },
+        body: image,
+      });
+      if (res.ok) {
+        const { words } = await res.json();
+        return words.filter((w) => (w.confidence ?? 0) >= 25 && w.bbox);
+      }
+      if (res.status === 501) server = null;   // Server kann es (nicht mehr) – lokal weiter
+    } catch {
+      // Netz weg (z. B. offline unterwegs): lokal weiterrechnen
+    }
+  }
+  const p = await getPool(langs);
   const { data } = await p.scheduler.addJob('recognize', image, {}, { blocks: true, text: false });
   const words = [];
   for (const block of data.blocks || []) {
