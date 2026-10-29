@@ -207,11 +207,15 @@ Rohscans erst parken, dann gesammelt übernehmen:
 
 | Aufgabe | läuft auf |
 | --- | --- |
-| Zuschnitt, Kompression, Texterkennung, Vorschau | **Handy/Laptop** (Browser) |
+| Zuschnitt, Kompression, Vorschau | **Handy/Laptop** (Browser) |
+| Texterkennung (OCR) | **ThinkCentre** (nativer Tesseract, mehrere Seiten parallel) – fällt er aus, rechnet der Browser |
 | Scanner ansprechen (Scan-Aufträge), Dateien ablegen, Paperless-Upload, Profil & Einstellungen speichern | ThinkCentre |
 
-Das ThinkCentre bleibt dadurch praktisch unbelastet. Die Texterkennung nutzt am
-Rechner zwei Worker parallel, am Handy einen.
+Die Texterkennung lief früher im Browser – am iPhone dauert das pro Seite
+leicht eine Minute und länger. Jetzt schickt die App jede Seite kurz an deinen
+Server, der sie in wenigen Sekunden erkennt (nur an deinen eigenen Server,
+nirgendwo sonst hin). Abschalten: *Einstellungen → Texterkennung auf dem
+Server*.
 
 ---
 

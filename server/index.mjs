@@ -27,6 +27,7 @@ import { getCapabilities, scanPage } from './escl.mjs';
 import * as cfg from './config.mjs';
 import * as scanJobs from './jobs.mjs';
 import { discover, subnets } from './discover.mjs';
+import { detectOcr, ocrInfo, recognize } from './ocr.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..'); // Repo-Wurzel = statische Web-App
@@ -248,9 +249,27 @@ async function handleApi(req, res, url) {
       raw: !!RAW_DIR,
       jobs: profileEnabled,
       settings: profileEnabled,
+      ocr: ocrInfo() ? { langs: ocrInfo().langs, version: ocrInfo().version } : false,
       version: VERSION,
       appVersion: PKG_VERSION,
     });
+  }
+
+  // ---- Texterkennung auf dem Server ----
+  if (url.pathname === '/api/ocr' && req.method === 'POST') {
+    if (!ocrInfo()) return sendJson(res, 501, { error: 'Tesseract ist auf dem Server nicht installiert.' });
+    try {
+      const data = await readBody(req, 40 * 1024 * 1024);
+      if (!data.length) return sendJson(res, 400, { error: 'Leeres Bild.' });
+      const t0 = Date.now();
+      const words = await recognize(data, {
+        lang: url.searchParams.get('lang') || 'deu',
+        dpi: parseFloat(url.searchParams.get('dpi')) || 300,
+      });
+      return sendJson(res, 200, { words, ms: Date.now() - t0 });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
   }
 
   // ---- Server-Einstellungen (Scanner, Paperless) ----
@@ -618,6 +637,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+await detectOcr();
+
 server.listen(port, () => {
   const mode = cfg.paperlessMode();
   const c = cfg.current();
@@ -627,6 +648,8 @@ server.listen(port, () => {
   if (mode === 'api' && c.consumeDir) console.log(`                  Rückfall-Ordner: ${c.consumeDir}`);
   console.log(`  Profilspeicher: ${profileEnabled ? DATA_DIR : '— (nicht beschreibbar)'}`);
   console.log(`  Sammelordner:   ${RAW_DIR || '— (nicht konfiguriert)'}`);
+  const o = ocrInfo();
+  console.log(`  Texterkennung:  ${o ? `Tesseract ${o.version} (${o.langs.join(', ')}), ${o.parallel} parallel` : '— (im Browser)'}`);
 });
 
 // Sauber beenden (docker stop), damit laufende Schreibvorgänge fertig werden

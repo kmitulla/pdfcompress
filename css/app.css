@@ -1115,7 +1115,7 @@ input[type="checkbox"] { accent-color: var(--accent); width: 18px; height: 18px;
   .empty-actions .tile { flex-direction: row; align-items: center; gap: 14px; }
   .empty-actions .tile-icon { margin: 0; }
   .doc { grid-template-columns: 54px minmax(0, 1fr); grid-template-areas: 'thumb body' 'thumb act'; gap: 4px 12px; padding: 11px; align-items: start; }
-  .doc-thumb { grid-area: thumb; width: 54px; height: 72px; }
+  .doc .doc-thumb { grid-area: thumb; width: 54px; height: 72px; }
   .doc-body { grid-area: body; }
   .doc-actions { grid-area: act; justify-content: flex-start; margin-top: 4px; }
   .doc-actions:empty { display: none; }

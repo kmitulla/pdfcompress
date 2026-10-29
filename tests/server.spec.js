@@ -290,3 +290,32 @@ test('Einstellungen in der App: Paperless-API, Token geheim, Ordner, Scanner-Adr
     mock.close();
   }
 });
+
+test('Texterkennung auf dem Server: Wörter mit Position (wenn Tesseract installiert ist)', async ({ page, request }) => {
+  const cfg = await (await request.get(`${BASE}/api/config`)).json();
+  test.skip(!cfg.ocr, 'Tesseract nicht installiert');
+  expect(cfg.ocr.langs).toContain('deu');
+  await page.goto(BASE);
+  const jpeg = Buffer.from(await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 1200; c.height = 400;
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 1200, 400);
+    x.fillStyle = '#000'; x.font = '700 64px Arial';
+    x.fillText('Größenänderung 2026', 60, 160);
+    x.font = '400 48px Arial'; x.fillText('Musterstraße 12', 60, 280);
+    const b = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+    return Array.from(new Uint8Array(await b.arrayBuffer()));
+  }));
+  const r = await request.post(`${BASE}/api/ocr?lang=deu&dpi=300`, { data: jpeg, headers: { 'Content-Type': 'image/jpeg' } });
+  expect(r.status()).toBe(200);
+  const { words } = await r.json();
+  const text = words.map((w) => w.text).join(' ');
+  expect(text).toContain('Größenänderung');
+  expect(text).toContain('Musterstraße');
+  const w = words.find((x) => x.text.startsWith('Größen'));
+  expect(w.bbox.x0).toBeGreaterThan(40);
+  expect(w.bbox.x0).toBeLessThan(90);
+  expect(w.bbox.y1).toBeGreaterThan(w.bbox.y0);
+  expect((await request.post(`${BASE}/api/ocr?lang=xyz`, { data: jpeg })).status()).toBe(500);
+});

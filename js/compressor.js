@@ -2,7 +2,7 @@
 // Alles läuft lokal im Browser, es werden keine Daten hochgeladen.
 
 import { encodeG4 } from './ccitt-g4.js';
-import { recognizePage, warmOcr, releaseOcrSoon, ocrWorkerCount } from './ocr.js';
+import { recognizePage, warmOcr, releaseOcrSoon, ocrParallel, usesServerOcr, isMobileDevice } from './ocr.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -654,10 +654,12 @@ async function rasterCompress(srcBytes, opts, onProgress, signal) {
       onProgress?.({ phase, page, pages: total, rendered, recognized, frac: Math.min(0.99, (rendered + recognized) / steps) });
     };
 
-    // OCR läuft im Worker parallel zum Rendern der nächsten Seiten. Damit der
-    // Speicher nicht vollläuft, rendern wir höchstens ein paar Seiten voraus.
+    // OCR läuft (auf dem Server oder im Worker) parallel zum Rendern der
+    // nächsten Seiten. Damit der Speicher nicht vollläuft, rendern wir höchstens
+    // ein paar Seiten voraus. Am Handy ohne Server-OCR streng nacheinander:
+    // Rendern und WebAssembly-Tesseract gleichzeitig bremsen sich dort aus.
     const pending = new Set();
-    const ahead = ocrWorkerCount() + 1;
+    const ahead = !usesServerOcr(lang) && isMobileDevice() ? 1 : ocrParallel(lang) + 1;
     let ocrError = null;
 
     for (const p of pageNumbers) {
@@ -699,7 +701,7 @@ async function rasterCompress(srcBytes, opts, onProgress, signal) {
       report('render', p);
 
       if (ocrIn) {
-        const job = recognizePage(ocrIn.image, lang)
+        const job = recognizePage(ocrIn.image, lang, { dpi: ocrIn.dpi })
           .then((words) => {
             drawOcrWords(outPage, font, words, ocrIn.dpi, r.hPt);
             recognized++;

@@ -305,18 +305,30 @@ test('OCR: durchsuchbarer Textlayer auf jeder Seite, parallel zur Seitenverarbei
     }
     const src = await doc.save();
     const before = await inspectPdf(src, 0.3);
-    const { compressPdf } = window.__pdfpresser;
-    const phases = [];
-    const out = await compressPdf(src.slice(), { mode: 'raster', colorMode: 'bw', dpi: 300, ocr: true, ocrLang: 'deu' }, (p) => phases.push(`${p.phase}:${p.rendered ?? ''}:${p.recognized ?? ''}`));
-    const after = await inspectPdf(out, 0.3);
-    // Mitschnitt: Wurde schon gerendert, während die Texterkennung noch lief?
-    const overlap = phases.some((s) => { const [ph, r, o] = s.split(':'); return ph === 'render' && +r >= 2 && +o < +r; });
-    return { srcSize: src.length, outSize: out.length, textBefore: before.text.trim(), textAfter: after.text.replace(/\s+/g, ' '), overlap };
+    const { compressPdf, backend } = window.__pdfpresser;
+    const ocr = await import('./js/ocr.js');
+    const run = async () => {
+      const phases = [];
+      const t0 = performance.now();
+      const out = await compressPdf(src.slice(), { mode: 'raster', colorMode: 'bw', dpi: 300, ocr: true, ocrLang: 'deu' }, (p) => phases.push(`${p.phase}:${p.rendered ?? ''}:${p.recognized ?? ''}`));
+      const after = await inspectPdf(out, 0.3);
+      // Mitschnitt: Wurde schon gerendert, während die Texterkennung noch lief?
+      const overlap = phases.some((s) => { const [ph, r, o] = s.split(':'); return ph === 'render' && +r >= 2 && +o < +r; });
+      return { outSize: out.length, text: after.text.replace(/\s+/g, ' '), overlap, ms: Math.round(performance.now() - t0) };
+    };
+    // 1) auf dem Server (nativer Tesseract), 2) im Browser (WebAssembly)
+    const server = backend.ocr ? await run() : null;
+    ocr.setServerOcr(null);
+    const local = await run();
+    ocr.setServerOcr(backend.ocr || null);
+    return { srcSize: src.length, textBefore: before.text.trim(), server, local, hasServer: !!backend.ocr };
   }, { renderSrc: RENDER_HELPER });
-  console.log('OCR:', res.srcSize, '→', res.outSize, JSON.stringify(res.textAfter.slice(0, 160)));
+  console.log('OCR:', res.srcSize, 'Server', res.server?.ms, 'ms', JSON.stringify(res.server?.text.slice(0, 80)), '| Browser', res.local.ms, 'ms');
   expect(res.textBefore).toBe('');
-  for (const n of [4711, 4712, 4713]) expect(res.textAfter).toContain(`RECHNUNG ${n}`);
-  expect(res.textAfter).toContain('Musterfirma');
-  expect(res.outSize).toBeLessThan(res.srcSize);
-  expect(res.overlap, 'Rendern läuft weiter, während OCR arbeitet').toBe(true);
+  for (const r of [res.server, res.local].filter(Boolean)) {
+    for (const n of [4711, 4712, 4713]) expect(r.text).toContain(`RECHNUNG ${n}`);
+    expect(r.text).toContain('Musterfirma');
+    expect(r.outSize).toBeLessThan(res.srcSize);
+    expect(r.overlap, 'Rendern läuft weiter, während OCR arbeitet').toBe(true);
+  }
 });
