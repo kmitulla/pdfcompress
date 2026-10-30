@@ -25,8 +25,8 @@ Paperless schickst.
 | **DIN A4** | Jede Seite landet auf A4 (hoch/quer, nie verzerrt) – auch bei „Verlustfrei“ |
 | **Texterkennung** | Tesseract (Deutsch/Englisch) legt einen unsichtbaren Textlayer an. Selbst gehostet erkennt der **Server** die Seiten (nativ, parallel – am Handy um ein Vielfaches schneller), sonst rechnet der Browser |
 | **Weitergeben** | Herunterladen, **im Browser öffnen**, **Teilen** (System-Dialog), **an Paperless** (API oder consume-Ordner), Zielordner (Chrome/Edge) |
-| **Bearbeiten** | Neuer Editor: beschriftete Werkzeuge, Eigenschaften daneben, Rückgängig. Unterschrift zeichnen oder als Bild (transparente PNGs bleiben transparent), Stempel mit Vorschau & Vorlagen (Rahmen-Stempel bleiben durchsuchbar), Text, Stift/Marker, Abdecken, Schwärzen, Bilder, Seiten, Formulare |
-| **Bleibt erhalten** | Die Dokumentliste samt Ergebnissen überlebt Schließen, Neuladen und Updates |
+| **Bearbeiten** | Editor mit beschrifteten Werkzeugen, Eigenschaften daneben, Rückgängig. Schwärzen entfernt den Inhalt wirklich (Seite wird dafür zum Bild). Unterschrift zeichnen oder als Bild (transparente PNGs bleiben transparent), Stempel mit Vorschau & Vorlagen (Rahmen-Stempel bleiben durchsuchbar), Text, Stift/Marker, Abdecken, Schwärzen, Bilder, Seiten, Formulare |
+| **Auf allen Geräten** | Selbst gehostet liegen alle Dokumente (Original, Ergebnis, Einstellungen je Dokument) auch auf dem Server: am iPhone scannen, am Laptop weitermachen. Offline wird lokal weitergearbeitet und später abgeglichen |
 | **Sammelordner** | „Paperless Prepare“: Rohscans parken, sichten, als **ein** Dokument übernehmen, nach der Übergabe aufräumen |
 | **Automatik** | Neue Dokumente sofort komprimieren und optional direkt an Paperless senden |
 
@@ -52,7 +52,7 @@ docker compose up -d      # docker-compose.yml aus diesem Repository
 | `PAPERLESS_URL` + `PAPERLESS_TOKEN` | Upload direkt über die Paperless-API *(auch in der App einstellbar)* |
 | `CONSUME_DIR` | consume-Ordner (Standard `/data/consume`) – auch Rückfall, wenn die API nicht erreichbar ist *(auch in der App einstellbar)* |
 | `RAW_DIR` | Sammelordner (Standard `/data/raw`) – leer = aus |
-| `DATA_DIR` | Profilspeicher (Einstellungen, Unterschriften, Server-Einstellungen, laufende Scan-Aufträge) |
+| `DATA_DIR` | Profilspeicher (Einstellungen, Unterschriften, Server-Einstellungen, Scan-Aufträge **und alle Dokumente**) |
 | `PORT` | Server-Port (Standard `8823`) |
 
 ### Updates

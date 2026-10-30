@@ -23,7 +23,7 @@ import {
 import { mergePdfs } from './pdfkit.js';
 import { setServerOcr } from './ocr.js';
 
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 
 hydrateIcons();
 
@@ -52,7 +52,7 @@ const DEFAULTS = {
 };
 
 let settings = { ...DEFAULTS };
-const backend = { scanner: false, consume: false, paperless: null, profile: false, raw: false, jobs: false, settings: false, version: null, appVersion: null };
+const backend = { scanner: false, consume: false, paperless: null, profile: false, raw: false, jobs: false, docs: false, settings: false, version: null, appVersion: null };
 const state = {
   docs: [],
   selectedId: null,
@@ -64,7 +64,7 @@ const isNarrow = () => matchMedia('(max-width: 1180px)').matches;
 const isFinePointer = () => matchMedia('(hover: hover) and (pointer: fine)').matches;
 const hasFsAccess = typeof window.showDirectoryPicker === 'function';
 
-let docSeq = 0;
+const newDocId = () => `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const NEUTRAL_TUNE = { dpi: '', quality: '', bias: 0, contrast: 0, darkAreas: 'auto' };
 
 // ---------------------------------------------------------------- Optionen je Dokument
@@ -118,7 +118,10 @@ function stampName(prefix = 'Scan') {
 function newDoc(bytes, name, { kind = 'pdf', rawSources = null } = {}) {
   const isScan = kind === 'scan';
   return {
-    id: `d${++docSeq}`,
+    // Eindeutig über alle Geräte hinweg (Dokumente liegen auch auf dem Server)
+    id: newDocId(),
+    created: Date.now(),
+    updatedAt: Date.now(),
     name: cleanName(name),
     bytes,
     rev: 1,
@@ -147,15 +150,19 @@ function newDoc(bytes, name, { kind = 'pdf', rawSources = null } = {}) {
 const docById = (id) => state.docs.find((d) => d.id === id);
 const selected = () => docById(state.selectedId);
 
-// ---------------------------------------------------------------- Dokumente merken
+// ---------------------------------------------------------------- Dokumente merken & abgleichen
 //
 // Die Liste überlebt Schließen, Neuladen und Updates: jedes Dokument liegt mit
-// Original und Ergebnis in IndexedDB (nur auf diesem Gerät). Geschrieben wird
-// nur, was sich geändert hat.
+// Original und Ergebnis in IndexedDB. Mit eigenem Server liegt zusätzlich alles
+// dort – so taucht ein am iPhone gescanntes Dokument auch am Laptop auf, samt
+// Profil, Ergebnis und „an Paperless gesendet“. Geschrieben wird nur, was sich
+// geändert hat; bei Konflikten gewinnt die jüngere Änderung.
 
 const PERSIST_FIELDS = ['id', 'name', 'kind', 'edited', 'rawSources', 'pages', 'thumb', 'profile', 'ocr', 'ocrAuto', 'a4',
-  'tune', 'pageProfiles', 'resultSig', 'sent', 'savedDir', 'delivered', 'rev', 'rawCleaned'];
+  'tune', 'pageProfiles', 'resultSig', 'sent', 'savedDir', 'delivered', 'rev', 'rawCleaned', 'created'];
+const SYNC_STATE = ['updatedAt', 'synced', 'srvRev', 'srvResultSig'];
 const savedSig = new Map();   // id -> Signatur des gespeicherten Stands
+const pendingDeletes = new Set();   // auf dem Server noch zu löschen
 let saveTimer = null;
 let docsRestored = false;
 
@@ -167,6 +174,17 @@ function scheduleSaveDocs() {
   saveTimer = setTimeout(() => saveDocsNow().catch((e) => console.warn('Dokumente nicht gespeichert:', e)), 700);
 }
 
+async function storeLocal(d) {
+  const rec = Object.fromEntries([...PERSIST_FIELDS, ...SYNC_STATE].map((k) => [k, d[k]]));
+  rec.bytes = d.bytes;
+  rec.result = d.result || null;
+  await kvSet(`doc:${d.id}`, rec);
+}
+
+async function storeIndex() {
+  await kvSet('docs', { ids: state.docs.map((d) => d.id), selected: state.selectedId, deleted: [...pendingDeletes] });
+}
+
 async function saveDocsNow() {
   if (!docsRestored) return;
   clearTimeout(saveTimer);
@@ -174,41 +192,48 @@ async function saveDocsNow() {
   for (const d of state.docs) {
     const sig = persistSig(d);
     if (savedSig.get(d.id) === sig) continue;
-    const rec = Object.fromEntries(PERSIST_FIELDS.map((k) => [k, d[k]]));
-    rec.bytes = d.bytes;
-    rec.result = d.result || null;
-    await kvSet(`doc:${d.id}`, rec);
+    d.updatedAt = Date.now();
+    d.dirty = true;
+    await storeLocal(d);
     savedSig.set(d.id, sig);
   }
   for (const id of [...savedSig.keys()]) {
     if (!ids.includes(id)) {
       await kvDel(`doc:${id}`);
       savedSig.delete(id);
+      pendingDeletes.add(id);
     }
   }
-  await kvSet('docs', { ids, seq: docSeq, selected: state.selectedId });
+  await storeIndex();
+  pushDocs();
 }
 
 async function restoreDocs() {
   try {
     const list = await kvGet('docs');
+    for (const id of list?.deleted || []) pendingDeletes.add(id);
     if (!list?.ids?.length) return;
-    docSeq = Math.max(docSeq, list.seq || 0);
     for (const id of list.ids) {
       const rec = await kvGet(`doc:${id}`);
       if (!rec?.bytes) continue;
       const d = newDoc(rec.bytes, rec.name, { kind: rec.kind });
-      for (const k of PERSIST_FIELDS) if (rec[k] !== undefined) d[k] = rec[k];
+      for (const k of [...PERSIST_FIELDS, ...SYNC_STATE]) if (rec[k] !== undefined) d[k] = rec[k];
+      // Ältere Fassungen zählten die IDs je Gerät hoch – die würden zwischen
+      // Geräten kollidieren. Noch nie abgeglichene Dokumente bekommen eine neue.
+      if (/^d\d+$/.test(d.id) && !d.synced) {
+        await kvDel(`doc:${d.id}`);
+        d.id = newDocId();
+      }
+      d.created = d.created || Date.now();
       d.tune = { ...NEUTRAL_TUNE, ...(rec.tune || {}) };
       d.pageProfiles = rec.pageProfiles || {};
       d.result = rec.result || null;
       d.status = d.result ? 'done' : 'idle';
       d.message = '';
       d.progress = d.result ? 1 : 0;
+      d.dirty = !d.synced;
       state.docs.push(d);
       savedSig.set(d.id, persistSig(d));
-      const n = parseInt(String(d.id).slice(1), 10);
-      if (n > docSeq) docSeq = n;
     }
     if (list.selected && docById(list.selected)) state.selectedId = list.selected;
   } catch (e) {
@@ -216,6 +241,155 @@ async function restoreDocs() {
   } finally {
     docsRestored = true;
   }
+}
+
+// ---- Abgleich mit dem Server
+
+const sync = { pushing: null, pulling: null, timer: null, lastError: null };
+const busyDoc = (d) => d.status === 'working' || d.status === 'queued' || d.sending;
+
+async function sendBytes(url, bytes) {
+  const res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/pdf' }, body: bytes });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+function metaFor(d) {
+  const m = Object.fromEntries(PERSIST_FIELDS.map((k) => [k, d[k]]));
+  m.updatedAt = d.updatedAt;
+  m.hasResult = !!d.result && d.srvResultSig === d.resultSig;
+  m.resultLen = d.result?.length || 0;
+  return m;
+}
+
+async function pushDoc(d) {
+  if (d.srvRev !== d.rev) {
+    await sendBytes(`/api/docs/${d.id}/original`, d.bytes);
+    d.srvRev = d.rev;
+  }
+  if (d.result && d.srvResultSig !== d.resultSig) {
+    await sendBytes(`/api/docs/${d.id}/result`, d.result);
+    d.srvResultSig = d.resultSig;
+  }
+  if (!d.result) d.srvResultSig = null;
+  await api(`/api/docs/${d.id}`, { method: 'PUT', body: metaFor(d) });
+  d.synced = true;
+  d.dirty = false;
+  await storeLocal(d);
+}
+
+/** Geänderte Dokumente hochladen, Löschungen weitergeben (gebündelt, nacheinander). */
+function pushDocs() {
+  if (!backend.docs) return null;
+  if (sync.pushing) { sync.again = true; return sync.pushing; }
+  sync.pushing = (async () => {
+    try {
+      do {
+        sync.again = false;
+        for (const id of [...pendingDeletes]) {
+          await api(`/api/docs/${id}`, { method: 'DELETE' });
+          pendingDeletes.delete(id);
+          await storeIndex();
+        }
+        for (const d of [...state.docs]) {
+          if ((d.dirty || !d.synced) && !busyDoc(d) && state.docs.includes(d)) await pushDoc(d);
+        }
+      } while (sync.again);
+      sync.lastError = null;
+    } catch (e) {
+      sync.lastError = e;   // offline o. Ä. – beim nächsten Mal weiter
+    } finally {
+      sync.pushing = null;
+    }
+  })();
+  return sync.pushing;
+}
+
+async function fetchBytes(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+function applyMeta(d, r) {
+  for (const k of PERSIST_FIELDS) if (k !== 'id' && r[k] !== undefined) d[k] = r[k];
+  d.tune = { ...NEUTRAL_TUNE, ...(r.tune || {}) };
+  d.pageProfiles = r.pageProfiles || {};
+  d.updatedAt = r.updatedAt;
+  d.synced = true;
+  d.dirty = false;
+}
+
+/** Stand vom Server holen: neue Dokumente anlegen, geänderte übernehmen, gelöschte entfernen. */
+async function pullDocs() {
+  if (!backend.docs || !docsRestored) return;
+  if (sync.pulling) return sync.pulling;
+  sync.pulling = (async () => {
+    try {
+      if (sync.pushing) await sync.pushing;
+      const { docs: remote } = await api('/api/docs');
+      const remoteIds = new Set(remote.map((r) => r.id));
+      let changed = false;
+      for (const r of remote) {
+        if (pendingDeletes.has(r.id)) continue;
+        let d = docById(r.id);
+        if (d && (busyDoc(d) || d.dirty || (d.updatedAt || 0) >= (r.updatedAt || 0))) continue;
+        const bytes = !d || d.rev !== r.rev || d.bytes.length !== r.bytesLen ? await fetchBytes(`/api/docs/${r.id}/original`) : d.bytes;
+        const result = r.hasResult
+          ? (d && d.result && d.resultSig === r.resultSig ? d.result : await fetchBytes(`/api/docs/${r.id}/result`))
+          : null;
+        if (!d) {
+          d = newDoc(bytes, r.name, { kind: r.kind });
+          d.id = r.id;
+          state.docs.push(d);
+        }
+        d.bytes = bytes;
+        applyMeta(d, r);
+        d.result = result;
+        d.srvRev = r.rev;
+        d.srvResultSig = result ? r.resultSig : null;
+        if (!result) d.resultSig = null;
+        d.status = result ? 'done' : 'idle';
+        d.progress = result ? 1 : 0;
+        d.message = '';
+        d.sim = null;
+        savedSig.set(d.id, persistSig(d));
+        await storeLocal(d);
+        changed = true;
+      }
+      // Auf einem anderen Gerät gelöscht
+      for (const d of [...state.docs]) {
+        if (d.synced && !remoteIds.has(d.id) && !busyDoc(d) && !d.dirty) {
+          state.docs.splice(state.docs.indexOf(d), 1);
+          savedSig.delete(d.id);
+          await kvDel(`doc:${d.id}`);
+          if (state.selectedId === d.id) { state.selectedId = state.docs[state.docs.length - 1]?.id || null; closeInspectorDrawer(); }
+          changed = true;
+        }
+      }
+      if (changed) {
+        if (viewer.doc && !state.docs.includes(viewer.doc)) closeViewer();
+        state.docs.sort((a, b) => (a.created || 0) - (b.created || 0));
+        await storeIndex();
+        renderAll();
+      }
+      // Was hier neu ist, nach oben schieben
+      if (state.docs.some((d) => d.dirty || !d.synced) || pendingDeletes.size) pushDocs();
+      sync.lastError = null;
+    } catch (e) {
+      sync.lastError = e;
+    } finally {
+      sync.pulling = null;
+    }
+  })();
+  return sync.pulling;
+}
+
+function startDocSync() {
+  if (!backend.docs || sync.timer) return;
+  pullDocs();
+  // Solange die App sichtbar ist, regelmäßig nachsehen
+  sync.timer = setInterval(() => { if (document.visibilityState === 'visible') pullDocs(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullDocs(); });
 }
 
 // ---------------------------------------------------------------- Dokumente hinzufügen
@@ -1946,6 +2120,7 @@ async function fetchConfig() {
       profile: !!cfg.profile,
       raw: !!cfg.raw,
       jobs: !!cfg.jobs,
+      docs: !!cfg.docs,
       ocr: cfg.ocr || false,
       settings: !!cfg.settings,
       version: cfg.version || null,
@@ -2224,7 +2399,7 @@ window.addEventListener('beforeunload', (e) => {
 const booted = applyStoredSettings()
   .then(() => restoreDocs())
   .then(() => { renderAll(); return detectBackend(); })
-  .then(() => refreshJobBanner())
+  .then(() => { startDocSync(); return refreshJobBanner(); })
   .catch((e) => console.warn(e));
 requestPersistence();
 renderAll();
@@ -2237,7 +2412,7 @@ window.__pdfpresser = {
   state, backend, get settings() { return settings; },
   compressPdf, previewPage, simulateVariants, simulatePdf, PRESETS, PRESET_INFO,
   addFiles, addPdfDoc, enqueue, optsFor, hasFresh, sendToPaperless, openViewer, selectDoc,
-  fetchScannedPage, followJob, refreshJobBanner, saveDocsNow, openStudio, toast, exportAllData, importAllData, persistSettings,
+  fetchScannedPage, followJob, refreshJobBanner, saveDocsNow, pullDocs, pushDocs, openStudio, toast, exportAllData, importAllData, persistSettings,
   applyStoredSettings, detectBackend, batch, booted,
   /** Für Tests: alle Einstellungen auf Werkszustand (auch im Serverprofil). */
   resetSettings(over = {}) {

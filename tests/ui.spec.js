@@ -342,3 +342,45 @@ test('Einstellungen: Paperless-API in der App hinterlegen und testen', async ({ 
     mock.close();
   }
 });
+
+test('Dokumente auf dem Server: am zweiten Gerät sichtbar, Änderungen und Löschen kommen an', async ({ browser }) => {
+  test.setTimeout(120000);
+  const a = await (await browser.newContext()).newPage();
+  const b = await (await browser.newContext({ ...devices['iPhone 13'] })).newPage();
+  await ready(a);
+  await addTestPdf(a, { name: 'Gerätewechsel.pdf', pages: 1 });
+  await a.click('#inspector .insp-foot [data-act="compress"]');
+  await a.waitForFunction(() => window.__pdfpresser.state.docs[0].status === 'done', null, { timeout: 60000 });
+  const resultLen = await a.evaluate(async () => {
+    await window.__pdfpresser.saveDocsNow();
+    await window.__pdfpresser.pushDocs();
+    return window.__pdfpresser.state.docs[0].result.length;
+  });
+
+  // Zweites Gerät (iPhone): Dokument samt fertigem Ergebnis ist da
+  await ready(b, {}, { keepDocs: true });
+  await b.evaluate(() => window.__pdfpresser.pullDocs());
+  await expect(b.locator('.doc .doc-title')).toHaveText('Gerätewechsel.pdf');
+  const onB = await b.evaluate(() => {
+    const d = window.__pdfpresser.state.docs[0];
+    return { len: d.result?.length, fresh: window.__pdfpresser.hasFresh(d), status: d.status };
+  });
+  expect(onB).toEqual({ len: resultLen, fresh: true, status: 'done' });
+
+  // Am iPhone umbenennen → kommt am Rechner an
+  await b.click('.doc');
+  await b.fill('#inspName', 'Umbenannt am Handy');
+  await b.dispatchEvent('#inspName', 'change');
+  await b.evaluate(async () => { await window.__pdfpresser.saveDocsNow(); await window.__pdfpresser.pushDocs(); });
+  await a.evaluate(() => window.__pdfpresser.pullDocs());
+  await expect(a.locator('.doc .doc-title')).toHaveText('Umbenannt am Handy.pdf');
+
+  // Am Rechner löschen → am iPhone weg
+  await a.click('#inspector [data-act="remove"]');
+  if (await a.locator('.dlg').isVisible()) await a.click('.dlg .btn-danger');
+  await a.evaluate(async () => { await window.__pdfpresser.saveDocsNow(); await window.__pdfpresser.pushDocs(); });
+  await b.evaluate(() => window.__pdfpresser.pullDocs());
+  await expect(b.locator('.doc')).toHaveCount(0);
+  await a.context().close();
+  await b.context().close();
+});

@@ -14,6 +14,9 @@ if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
 }
 
 const A4 = [595.28, 841.89];
+// Abstand Oberkante → Grundlinie der ersten Zeile (Anteil der Schriftgröße);
+// gilt für Vorschau und PDF gleichermaßen, damit Text dort landet, wo er stand.
+const TEXT_ASCENT = 0.8;
 const $ = (sel, root = document) => root.querySelector(sel);
 
 function hexToRgb(hex) {
@@ -50,11 +53,11 @@ async function drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, ass
     const col = hexToRgb(o.color || '#000000');
     const color = PDFLib.rgb(col.r, col.g, col.b);
     if (o.type === 'text') {
-      const font = fonts[o.font || 'helv'];
+      const font = fonts[o.font || 'helv'] || fonts.helv;
       try {
         page.drawText(o.text, {
           x: o.x,
-          y: viewH - o.y - o.size * 0.78,
+          y: viewH - o.y - o.size * TEXT_ASCENT,
           size: o.size,
           font,
           color,
@@ -62,7 +65,7 @@ async function drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, ass
         });
       } catch {
         const clean = o.text.replace(/[^\x20-ÿ€„“”‚‘’–—]/g, '?');
-        page.drawText(clean, { x: o.x, y: viewH - o.y - o.size * 0.78, size: o.size, font, color, lineHeight: o.size * 1.25 });
+        page.drawText(clean, { x: o.x, y: viewH - o.y - o.size * TEXT_ASCENT, size: o.size, font, color, lineHeight: o.size * 1.25 });
       }
     } else if (o.type === 'image' || o.type === 'sig-image') {
       const bytes = assets.bytes[o.assetId];
@@ -224,12 +227,26 @@ export async function applyEdits(srcBytes, state) {
     courier: await newDoc.embedFont(PDFLib.StandardFonts.Courier),
   };
   const assets = state.assets || { bytes: {}, kind: {} };
+  let pdfjsDoc = null;   // nur für Seiten mit Schwärzung
 
   for (const entry of state.pages) {
     let page;
     let viewW;
     let viewH;
-    if (entry.src == null) {
+    let objects = entry.objects || [];
+    const redactions = entry.src != null ? objects.filter((o) => o.type === 'rect') : [];
+    if (redactions.length) {
+      // Schwärzen heißt: der Inhalt darunter ist WEG – nicht nur abgedeckt.
+      // Die Seite wird dafür als Bild mit eingebrannten Balken neu aufgebaut;
+      // alle anderen Objekte kommen wie gewohnt darüber.
+      pdfjsDoc = pdfjsDoc || await pdfjsLib.getDocument({ data: srcBytes.slice() }).promise;
+      const r = await rasterizeWithRedactions(pdfjsDoc, entry, redactions);
+      page = newDoc.addPage([r.w, r.h]);
+      page.drawImage(await newDoc.embedJpg(r.jpeg), { x: 0, y: 0, width: r.w, height: r.h });
+      viewW = r.w;
+      viewH = r.h;
+      objects = objects.filter((o) => o.type !== 'rect');
+    } else if (entry.src == null) {
       const [w, h] = entry.blankSize || A4;
       page = newDoc.addPage([w, h]);
       viewW = w;
@@ -252,13 +269,13 @@ export async function applyEdits(srcBytes, state) {
       viewW = rot === 90 || rot === 270 ? height : width;
       viewH = rot === 90 || rot === 270 ? width : height;
     }
-    if (entry.objects?.length) {
-      await drawObjectsOnPage(newDoc, page, entry.objects, viewW, viewH, fonts, assets);
+    if (objects.length) {
+      await drawObjectsOnPage(newDoc, page, objects, viewW, viewH, fonts, assets);
     }
     if (state.pageNumbers) {
       const idx = state.pages.indexOf(entry) + 1;
       const label = `${idx} / ${state.pages.length}`;
-      const rot0 = entry.src == null ? 0 : ((page.getRotation().angle % 360) + 360) % 360;
+      const rot0 = entry.src == null || redactions.length ? 0 : ((page.getRotation().angle % 360) + 360) % 360;
       const m0 = rotationMatrix(rot0, page.getWidth(), page.getHeight());
       if (m0) page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.concatTransformationMatrix(...m0));
       page.drawText(label, { x: viewW / 2 - label.length * 2.6, y: 18, size: 10, font: fonts.helv, color: PDFLib.rgb(0.25, 0.25, 0.25) });
@@ -266,7 +283,7 @@ export async function applyEdits(srcBytes, state) {
     }
     if (entry.crop) {
       const c = entry.crop;
-      const rot = entry.src == null ? 0 : ((page.getRotation().angle % 360) + 360) % 360;
+      const rot = entry.src == null || redactions.length ? 0 : ((page.getRotation().angle % 360) + 360) % 360;
       const { width: mw, height: mh } = page.getSize();
       // Sicht-Rechteck (y unten) -> Media-Rechteck je nach Rotation
       const x0 = c.x;
@@ -294,7 +311,34 @@ export async function applyEdits(srcBytes, state) {
       }
     }
   }
+  if (pdfjsDoc) await pdfjsDoc.destroy();
   return newDoc.save({ useObjectStreams: true });
+}
+
+const REDACT_DPI = 200;
+
+/** Seite in Sichtlage rendern und die Schwärzungen fest ins Bild malen. */
+async function rasterizeWithRedactions(pdfjsDoc, entry, rects) {
+  const p = await pdfjsDoc.getPage(entry.src + 1);
+  const rotation = ((p.rotate || 0) + (entry.rotate || 0)) % 360;
+  const base = p.getViewport({ scale: 1, rotation });
+  const scale = Math.min(REDACT_DPI / 72, 4800 / Math.max(base.width, base.height));
+  const vp = p.getViewport({ scale, rotation });
+  const c = document.createElement('canvas');
+  c.width = Math.round(vp.width);
+  c.height = Math.round(vp.height);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  await p.render({ canvasContext: ctx, viewport: vp }).promise;
+  for (const r of rects) {
+    ctx.fillStyle = r.color || '#000';
+    ctx.fillRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
+  }
+  const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.9));
+  c.width = 1;
+  p.cleanup();
+  return { jpeg: new Uint8Array(await blob.arrayBuffer()), w: base.width, h: base.height };
 }
 
 // ---------------------------------------------------------------- Editor-UI
@@ -503,7 +547,7 @@ function objectSvg(o, i = -1) {
   const di = i >= 0 ? ` data-i="${i}"` : '';
   if (o.type === 'text') {
     const lines = o.text.split('\n');
-    const tspans = lines.map((ln, li) => `<tspan x="${o.x}" dy="${li === 0 ? o.size * 0.95 : o.size * 1.25}">${esc(ln) || ' '}</tspan>`).join('');
+    const tspans = lines.map((ln, li) => `<tspan x="${o.x}" dy="${li === 0 ? o.size * TEXT_ASCENT : o.size * 1.25}">${esc(ln) || ' '}</tspan>`).join('');
     const weight = o.font === 'helvB' ? ' font-weight="bold"' : '';
     return `<text${di} x="${o.x}" y="${o.y}" font-size="${o.size}" fill="${o.color}"${weight} font-family="${fontFamily(o.font)}" style="white-space:pre">${tspans}</text>`;
   }
@@ -583,22 +627,30 @@ function renderOverlay() {
 function selectionSvg(b) {
   const u = 1 / (ed.zoom * ed.fitScale());
   const r = 7 * u;
-  const hit = 22 * u;
+  // Fangbereich der Anfasser: groß genug für Finger, aber bei kleinen Objekten
+  // (z. B. einer Textzeile) nie so groß, dass er das Objekt selbst überdeckt –
+  // sonst ließe es sich nur noch skalieren statt verschieben oder bearbeiten.
+  const minSidePx = Math.min(b.w, b.h) / u;
+  const hit = Math.max(9, Math.min(22, minSidePx / 3)) * u;
   const corners = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]];
-  const dx = b.x + b.w + 14 * u;
-  const dy = b.y - 14 * u;
+  // Lösch-Knopf mittig über dem Rahmen – weit weg von den Eck-Anfassern
+  const dx = b.x + b.w / 2;
+  const dy = b.y - 30 * u;
   return `<g class="ed-sel">
     <rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="rgba(79,123,255,0.06)" stroke="#4f7bff" stroke-width="${1.6 * u}" stroke-dasharray="${5 * u} ${3 * u}" pointer-events="none"/>
     ${corners.map(([x, y], k) => `<circle data-handle="${k}" cx="${x}" cy="${y}" r="${hit}" fill="transparent"/><circle cx="${x}" cy="${y}" r="${r}" fill="#fff" stroke="#4f7bff" stroke-width="${2 * u}" pointer-events="none"/>`).join('')}
-    <g data-del="1" class="ed-del"><circle cx="${dx}" cy="${dy}" r="${hit * 0.75}" fill="transparent"/><circle cx="${dx}" cy="${dy}" r="${10 * u}" fill="#e5484d"/>
+    <g data-del="1" class="ed-del"><circle cx="${dx}" cy="${dy}" r="${14 * u}" fill="transparent"/><circle cx="${dx}" cy="${dy}" r="${10 * u}" fill="#e5484d"/>
     <path d="M ${dx - 3.6 * u} ${dy - 3.6 * u} l ${7.2 * u} ${7.2 * u} M ${dx + 3.6 * u} ${dy - 3.6 * u} l ${-7.2 * u} ${7.2 * u}" stroke="#fff" stroke-width="${2 * u}" pointer-events="none"/></g>
   </g>`;
 }
 
+let measureCtx = null;
 function textWidth(o) {
-  // grobe Breitenschätzung – genügt für Auswahlrahmen und Treffer
-  const k = o.font === 'courier' ? 0.6 : o.font === 'helvB' ? 0.58 : 0.53;
-  return Math.max(...o.text.split('\n').map((l) => l.length), 1) * o.size * k;
+  // Mit der Schrift messen, die auch die Vorschau zeigt (Helvetica ≈ Arial)
+  measureCtx = measureCtx || document.createElement('canvas').getContext('2d');
+  measureCtx.font = `${o.font === 'helvB' ? 'bold ' : ''}100px ${fontFamily(o.font)}`;
+  const w = Math.max(...o.text.split('\n').map((l) => measureCtx.measureText(l || ' ').width));
+  return Math.max(o.size * 0.6, (w / 100) * o.size);
 }
 function textHeight(o) {
   return o.text.split('\n').length * o.size * 1.25;
@@ -645,7 +697,7 @@ function setTool(tool) {
   }
   ed.tool = tool;
   ed.tempRect = null;
-  if (tool !== 'select' && tool !== 'text') ed.selected = null;
+  if (tool !== 'select' && tool !== 'text') clearSelection();
   syncToolButtons();
   renderPanel();
   renderOverlay();
@@ -661,9 +713,27 @@ function syncToolButtons() {
 }
 
 function select(i) {
+  const prev = selObj();
+  if (prev && prev.type === 'text' && !prev.text.trim() && ed.selected !== i) {
+    curPage().objects.splice(ed.selected, 1);
+    if (i > ed.selected) i--;
+  }
   ed.selected = i;
   if (ed.tool !== 'select' && ed.tool !== 'text' && ed.tool !== 'redact') ed.tool = 'select';
   syncToolButtons();
+  renderPanel();
+  renderOverlay();
+}
+
+/** Auswahl aufheben (ohne neu zu zeichnen); leer gebliebene Texte verschwinden dabei. */
+function clearSelection() {
+  const o = selObj();
+  if (o?.type === 'text' && !o.text.trim()) curPage().objects.splice(ed.selected, 1);
+  ed.selected = null;
+}
+
+function deselect() {
+  clearSelection();
   renderPanel();
   renderOverlay();
 }
@@ -799,7 +869,7 @@ function renderPanel() {
       <p class="ed-hint">Über Ränder, Schatten, Flecken oder Notizen malen – deckt in Weiß ab und wird beim Übernehmen fest eingebrannt.</p>`);
   } else if (ed.tool === 'redact') {
     html = panelSection('Schwärzen', `<p class="ed-hint">Rechteck über den Inhalt ziehen. Vorhandene Balken lassen sich antippen, verschieben und skalieren.</p>
-      <p class="ed-hint ed-hint-warn">${icon('warning', { size: 15 })} Wirklich entfernt ist der Inhalt erst nach dem Komprimieren mit einem Bild-Profil (nicht „Verlustfrei“).</p>`);
+      <p class="ed-hint">${icon('lock', { size: 15 })} Beim Übernehmen wird der Inhalt unter den Balken <b>wirklich entfernt</b> – die Seite wird dafür als Bild gespeichert (Texterkennung beim Komprimieren macht sie wieder durchsuchbar).</p>`);
   } else if (ed.tool === 'crop') {
     const has = !!curPage().crop;
     html = panelSection('Zuschnitt', `<p class="ed-hint">Rechteck über den Bereich ziehen, der stehen bleiben soll.</p>
@@ -851,7 +921,7 @@ function objectPanelBody(o) {
   }
   if (o.type === 'rect') {
     return `<div class="ed-field"><span class="ed-label">Farbe</span>${swatchesHtml('edRectColor', o.color, ['#000000', '#ffffff'])}</div>
-      <p class="ed-hint ed-hint-warn">${icon('warning', { size: 15 })} Echt entfernt erst nach Komprimieren mit Bild-Profil.</p>`;
+      <p class="ed-hint">${icon('lock', { size: 15 })} Inhalt darunter wird beim Übernehmen wirklich entfernt.</p>`;
   }
   return '';
 }
@@ -930,11 +1000,6 @@ function wirePanel(o) {
       $('#edTextFont').value = o.font || 'helv';
       $('#edTextFont').onchange = (e) => { o.font = e.target.value; change('Schrift'); };
       wireSwatches(panel, 'edTextColor', (c) => { o.color = c; change('Textfarbe'); });
-      if (ed.focusText) {
-        ed.focusText = false;
-        ta.focus();
-        ta.select();
-      }
     } else if (o.type === 'stamp') {
       wireStampFields(panel, 'edSt', o, () => change('Stempel geändert'));
     } else if (o.type === 'sig-vector') {
@@ -995,6 +1060,9 @@ function attachPointerHandlers() {
 
   stage.addEventListener('pointerdown', (e) => {
     if (!ed || e.target.closest('.ed-float')) return;
+    // Keine Maus-Nachfolgeereignisse: sonst nimmt der Browser einem gerade
+    // fokussierten Textfeld den Fokus wieder weg.
+    e.preventDefault();
     // Ein primärer Zeiger startet immer eine frische Geste (Reste verpasster
     // pointerup-Ereignisse – kommt auf iOS vor – verwerfen).
     if (e.isPrimary) {
@@ -1036,24 +1104,27 @@ function attachPointerHandlers() {
       const types = tool === 'redact' ? ['rect'] : tool === 'text' ? ['text'] : null;
       const hit = hitObject(pt, types);
       if (hit != null) {
-        if (hit !== ed.selected) select(hit);
+        const wasSelected = hit === ed.selected;
+        if (!wasSelected) select(hit);
         const o = curPage().objects[hit];
-        startDrag({ kind: 'move', start: pt, orig: { x: o.x, y: o.y } });
+        startDrag({ kind: 'move', start: pt, orig: { x: o.x, y: o.y }, wasSelected });
         return;
       }
       if (ed.selected != null) {
-        ed.selected = null;
-        renderPanel();
-        renderOverlay();
+        deselect();
         if (tool === 'select') return;   // erster Tipp daneben hebt nur die Auswahl auf
       }
     }
 
     if (tool === 'select') {
-      startDrag({ kind: 'pan', start: { x: e.clientX, y: e.clientY }, pan: { ...ed.pan } });
+      // Verschieben der Ansicht nur, wenn hineingezoomt ist
+      if (ed.zoom > 1) startDrag({ kind: 'pan', start: { x: e.clientX, y: e.clientY }, pan: { ...ed.pan } });
     } else if (tool === 'text') {
+      // Ein Text pro Tipp – danach gleich zurück zur Auswahl, damit weiteres
+      // Tippen keinen neuen Text anlegt, sondern verschiebt oder abwählt.
       snapshot('Text eingefügt');
       curPage().objects.push({ type: 'text', x: pt.x, y: pt.y - 8, size: 14, color: '#111111', font: 'helv', text: 'Text' });
+      ed.tool = 'select';
       ed.focusText = true;
       select(curPage().objects.length - 1);
     } else if (tool === 'draw' && ed.penMode === 'erase') {
@@ -1095,8 +1166,10 @@ function attachPointerHandlers() {
       const dy = pt.y - dragging.start.y;
       if (!dragging.snapped && Math.hypot(dx, dy) < 1.5) return;   // nur angetippt
       snapOnce(`${TYPE_NAME[o.type] || 'Objekt'} verschoben`);
-      o.x = dragging.orig.x + dx;
-      o.y = dragging.orig.y + dy;
+      // Mitte bleibt auf der Seite – nichts verschwindet aus Versehen
+      const b = boxOf({ ...o, x: 0, y: 0 });
+      o.x = Math.min(ed.pagePt.w - b.w / 2, Math.max(-b.w / 2, dragging.orig.x + dx));
+      o.y = Math.min(ed.pagePt.h - b.h / 2, Math.max(-b.h / 2, dragging.orig.y + dy));
       renderOverlay();
     } else if (dragging.kind === 'resize' && o) {
       snapOnce('Größe geändert');
@@ -1154,7 +1227,14 @@ function attachPointerHandlers() {
       }
       renderOverlay();
     }
+    // Bereits gewählten Text noch einmal angetippt (nicht gezogen): bearbeiten
+    if (((dragging?.kind === 'move' && dragging.wasSelected) || dragging?.kind === 'resize') && !dragging.snapped && selObj()?.type === 'text') ed.focusText = true;
     dragging = null;
+    if (ed.focusText) {
+      ed.focusText = false;
+      const ta = $('#edTextInput');
+      if (ta) { ta.focus(); ta.select(); }
+    }
   };
   stage.addEventListener('pointerup', finish);
   stage.addEventListener('pointercancel', finish);
@@ -1168,7 +1248,14 @@ function attachPointerHandlers() {
   stage.addEventListener('wheel', (e) => {
     if (!ed) return;
     e.preventDefault();
-    zoomTo(ed.zoom * (e.deltaY > 0 ? 0.88 : 1.14));
+    // Zum Mauszeiger hin zoomen
+    const r = stage.getBoundingClientRect();
+    const old = ed.zoom;
+    const z = Math.min(8, Math.max(0.5, old * (e.deltaY > 0 ? 0.88 : 1.14)));
+    const mx = e.clientX - r.left - r.width / 2;
+    const my = e.clientY - r.top - r.height / 2;
+    ed.pan = { x: mx - (mx - ed.pan.x) * (z / old), y: my - (my - ed.pan.y) * (z / old) };
+    zoomTo(z);
   }, { passive: false });
 }
 
@@ -1694,6 +1781,7 @@ async function pageThumb(entry, tw = 112, th = 158) {
 }
 
 function openPagesSheet() {
+  clearSelection();
   openSheet('Seiten', `
     <div class="ed-addrow">
       <span class="ed-label">Seite hinzufügen</span>
@@ -1713,7 +1801,7 @@ function openPagesSheet() {
       <label class="ed-check"><input type="checkbox" id="edPageNums" ${ed.state.pageNumbers ? 'checked' : ''}> Seitenzahlen</label>
       <span class="spacer"></span>
       <button class="btn btn-primary" id="edPagesClose">${icon('check', { size: 16 })}<span>Fertig</span></button>`,
-    onClose: () => { if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; ed.selected = null; renderPageView(); renderPanel(); },
+    onClose: () => { if (ed.pageIdx >= ed.state.pages.length) ed.pageIdx = ed.state.pages.length - 1; ed.selected = null; ed.tempRect = null; renderPageView(); renderPanel(); },
   });
   $('#edPagesClose').onclick = closeSheet;
   $('#edAddBlank').onclick = () => { snapshot('Leere Seite'); ed.state.pages.push({ src: null, blankSize: A4.slice(), objects: [] }); renderGrid(); };
@@ -1844,7 +1932,7 @@ function onKey(e) {
   if (e.key === 'Escape') {
     e.preventDefault();
     if (sheetOpen()) closeSheet();
-    else if (ed.selected != null) { ed.selected = null; renderPanel(); renderOverlay(); }
+    else if (ed.selected != null) deselect();
     else if (ed.tool !== 'select') setTool('select');
     return;
   }
@@ -1877,8 +1965,16 @@ function wire(root) {
   $('#edFormBtn').addEventListener('click', openFormSheet);
   $('#edUndoBtn').addEventListener('click', undo);
   $('#edRedoBtn').addEventListener('click', redo);
-  $('#edPrev').addEventListener('click', () => { if (ed.pageIdx > 0) { ed.pageIdx--; ed.selected = null; ed.tempRect = null; renderPageView(); renderPanel(); } });
-  $('#edNext').addEventListener('click', () => { if (ed.pageIdx < ed.state.pages.length - 1) { ed.pageIdx++; ed.selected = null; ed.tempRect = null; renderPageView(); renderPanel(); } });
+  const goPage = (i) => {
+    if (i < 0 || i >= ed.state.pages.length) return;
+    clearSelection();
+    ed.pageIdx = i;
+    ed.tempRect = null;
+    renderPageView();
+    renderPanel();
+  };
+  $('#edPrev').addEventListener('click', () => goPage(ed.pageIdx - 1));
+  $('#edNext').addEventListener('click', () => goPage(ed.pageIdx + 1));
   $('#edZoomIn').addEventListener('click', () => zoomTo(ed.zoom * 1.25));
   $('#edZoomOut').addEventListener('click', () => zoomTo(ed.zoom / 1.25));
   $('#edZoomFit').addEventListener('click', () => { ed.pan = { x: 0, y: 0 }; zoomTo(1); });
@@ -1909,6 +2005,20 @@ function wire(root) {
   pick('#edStampImageInput', onStampImage);
   attachPointerHandlers();
   document.addEventListener('keydown', onKey);
+  // iPhone: Bildschirmtastatur verkleinert den sichtbaren Bereich – der Editor
+  // passt sich an, damit das Textfeld nie hinter der Tastatur verschwindet.
+  const vv = window.visualViewport;
+  if (vv) {
+    const overlay = root.querySelector('.ed-overlay');
+    const fit = () => {
+      overlay.style.top = `${vv.offsetTop}px`;
+      overlay.style.height = `${vv.height}px`;
+      overlay.style.bottom = 'auto';
+    };
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+    fit();
+  }
   new ResizeObserver(() => { if (ed && !root.classList.contains('hidden')) { layoutPage(); renderOverlay(); } }).observe($('#edStage'));
 }
 

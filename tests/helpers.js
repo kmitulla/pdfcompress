@@ -2,7 +2,9 @@
 import { PDFiumLibrary } from '@hyzyla/pdfium';
 
 /** App laden und warten, bis Backend & Einstellungen stehen. */
-export async function ready(page, settings = {}) {
+export async function ready(page, settings = {}, { keepDocs = false } = {}) {
+  // Dokumente liegen auch auf dem Test-Server – jeder Test beginnt mit leerer Liste
+  if (!keepDocs) await clearServerDocs();
   await page.goto('/');
   await page.waitForFunction(() => window.__pdfpresser && window.PDFLib && window.Tesseract);
   await page.evaluate(() => window.__pdfpresser.booted);
@@ -236,4 +238,12 @@ export async function assertNoRawMarkup(expect, page, scope) {
   for (const needle of ['<svg', 'viewBox', 'stroke-linecap', '<path']) {
     expect(text, `rohes Markup „${needle}“ sichtbar in ${scope}`).not.toContain(needle);
   }
+}
+
+/** Alle Dokumente des Test-Servers löschen. */
+export async function clearServerDocs(base = 'http://127.0.0.1:8823') {
+  try {
+    const { docs } = await (await fetch(`${base}/api/docs`)).json();
+    for (const d of docs) await fetch(`${base}/api/docs/${d.id}`, { method: 'DELETE' });
+  } catch { /* Server (noch) nicht da */ }
 }
