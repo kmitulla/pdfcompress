@@ -1,6 +1,6 @@
 {
   "name": "pdf-presser",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "PDFs, Fotos und Scans verkleinern, auf DIN A4 bringen und an Paperless senden – Web-App mit kleinem Server für Netzwerk-Scanner",
   "scripts": {
     "serve": "node scripts/serve.mjs",

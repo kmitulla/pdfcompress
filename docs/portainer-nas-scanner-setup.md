@@ -172,7 +172,17 @@ die Datei im Ordner (die App meldet das).
 
 ---
 
-## 4. Am Handy
+## 4. Dokumente auf allen Geräten
+
+Alles, was du hinzufügst oder scannst, liegt auch auf dem Server (im Volume
+`pdfpresser_data`, Ordner `docs/`): Original, fertiges PDF, Profil, Name und
+„an Paperless gesendet“. Am iPhone scannen, am Laptop komprimieren oder
+bearbeiten – die Liste gleicht sich beim Öffnen und alle 15 Sekunden ab.
+Gelöschte Dokumente verschwinden überall. Ohne Netz arbeitet die App mit ihrer
+lokalen Kopie weiter und gleicht später ab (bei gleichzeitigen Änderungen
+gewinnt die jüngere).
+
+## 5. Am Handy
 
 1. `http://THINKCENTRE-IP:8823` öffnen, im Browsermenü **„Zum Home-Bildschirm“**.
 2. Das große **+** unten: **Foto aufnehmen** (öffnet die Kamera-App – Fokus,
@@ -189,7 +199,7 @@ zeigt vorher für jedes Profil die Dateigröße, **Vorschau** das Aussehen.
 
 ---
 
-## 5. Sammelordner („Paperless Prepare“)
+## 6. Sammelordner („Paperless Prepare“)
 
 Rohscans erst parken, dann gesammelt übernehmen:
 
@@ -203,7 +213,7 @@ Rohscans erst parken, dann gesammelt übernehmen:
 
 ---
 
-## 6. Wo läuft die Rechenarbeit?
+## 7. Wo läuft die Rechenarbeit?
 
 | Aufgabe | läuft auf |
 | --- | --- |

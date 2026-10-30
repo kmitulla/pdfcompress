@@ -192,6 +192,7 @@ test('Stempel, Schwärzen, Seitenzahlen, Seiten drehen', async ({ page }) => {
     return { text: black.text, blackFrac: black.frac, p2w: p2.w, p2h: p2.h };
   }, { inspect: INSPECT });
   expect(res.blackFrac).toBeGreaterThan(0.85); // Balken deckt vollflächig
+  expect(res.text).not.toContain('GEHEIMNIS');  // geschwärzter Text ist wirklich entfernt
   expect(res.text).toContain('BEZAHLT');
   expect(res.text).toContain('18.07.2026');
   expect(res.text).toContain('per Überweisung');

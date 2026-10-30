@@ -28,6 +28,7 @@ import * as cfg from './config.mjs';
 import * as scanJobs from './jobs.mjs';
 import { discover, subnets } from './discover.mjs';
 import { detectOcr, ocrInfo, recognize } from './ocr.mjs';
+import * as docStore from './docs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..'); // Repo-Wurzel = statische Web-App
@@ -249,10 +250,47 @@ async function handleApi(req, res, url) {
       raw: !!RAW_DIR,
       jobs: profileEnabled,
       settings: profileEnabled,
+      docs: profileEnabled,
       ocr: ocrInfo() ? { langs: ocrInfo().langs, version: ocrInfo().version } : false,
       version: VERSION,
       appVersion: PKG_VERSION,
     });
+  }
+
+  // ---- Dokumente (geräteübergreifend) ----
+  if (url.pathname === '/api/docs' && req.method === 'GET') {
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar (DATA_DIR).' });
+    return sendJson(res, 200, { docs: await docStore.listDocs(), now: Date.now() });
+  }
+  const dm = /^\/api\/docs\/([\w-]{1,64})(?:\/(original|result))?$/.exec(url.pathname);
+  if (dm) {
+    if (!profileEnabled) return sendJson(res, 501, { error: 'Server-Speicher nicht verfügbar (DATA_DIR).' });
+    const [, id, kind] = dm;
+    try {
+      if (!kind && req.method === 'PUT') {
+        const meta = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString('utf8'));
+        await docStore.putMeta(id, meta);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (!kind && req.method === 'DELETE') {
+        await docStore.deleteDoc(id);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (kind && req.method === 'PUT') {
+        const data = await readBody(req);
+        if (!data.length) return sendJson(res, 400, { error: 'Leere Datei.' });
+        await docStore.putFile(id, kind, data);
+        return sendJson(res, 200, { ok: true, bytes: data.length });
+      }
+      if (kind && req.method === 'GET') {
+        const data = await docStore.getFile(id, kind);
+        res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': data.length, 'Cache-Control': 'no-store' });
+        return res.end(data);
+      }
+    } catch (e) {
+      if (e.code === 'ENOENT') return sendJson(res, 404, { error: 'Nicht gefunden.' });
+      return sendJson(res, e.status || 500, { error: e.message });
+    }
   }
 
   // ---- Texterkennung auf dem Server ----
@@ -619,6 +657,7 @@ try {
 } catch {
   profileEnabled = false;
 }
+if (profileEnabled) docStore.initDocs(DATA_DIR);
 if (profileEnabled) scanJobs.initJobs({ dataDir: DATA_DIR, scan: scanWithCurrent, writeRaw: RAW_DIR ? writeRaw : null });
 
 const server = http.createServer(async (req, res) => {
