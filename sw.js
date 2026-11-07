@@ -25,6 +25,7 @@ const APP = [
   './js/prepare.js',
   './js/pdfkit.js',
   './js/calibrate.js',
+  './js/zoompan.js',
   './icons/icon.svg',
   './icons/favicon-32.png',
   './icons/apple-touch-icon.png',
