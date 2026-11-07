@@ -3,6 +3,71 @@
 
 export const A4_PT = [595.28, 841.89];
 
+/**
+ * Lage einer Seite auf DIN A4 (hoch oder quer wie die Vorlage, in Punkt).
+ * Fast-A4 (< 2,5 % Abweichung, z. B. Letter oder Glasfläche) wird exakt
+ * aufgezogen, alles andere unverzerrt eingepasst und mittig gesetzt.
+ */
+export function a4Layout(srcW, srcH) {
+  const landscape = srcW > srcH;
+  const [tw, th] = landscape ? [A4_PT[1], A4_PT[0]] : A4_PT;
+  const sx = tw / srcW;
+  const sy = th / srcH;
+  if (Math.abs(sx / sy - 1) < 0.025) return { wPt: tw, hPt: th, sx, sy, ox: 0, oy: 0 };
+  const s = Math.min(sx, sy);
+  return { wPt: tw, hPt: th, sx: s, sy: s, ox: (tw - srcW * s) / 2, oy: (th - srcH * s) / 2 };
+}
+
+/**
+ * Inhalt einer Seite auf ein Rechteck begrenzen. Nach dem Einpassen liegt um
+ * den früheren Zuschnitt weißer Rand – ohne Begrenzung tauchte dort wieder auf,
+ * was weggeschnitten war.
+ */
+function clipContent(page, x, y, w, h) {
+  const L = window.PDFLib;
+  if (typeof page.createContentStream !== 'function' || typeof page.node?.wrapContentStreams !== 'function') return;
+  const start = page.createContentStream(L.pushGraphicsState(), L.rectangle(x, y, w, h), L.clip(), L.endPath());
+  const end = page.createContentStream(L.popGraphicsState());
+  page.node.wrapContentStreams(page.doc.context.register(start), page.doc.context.register(end));
+}
+
+/**
+ * Eine pdf-lib-Seite ohne Rastern auf A4 bringen. Maßgeblich ist, was man
+ * sieht: der Zuschnitt (CropBox) und die Drehung (/Rotate) – sonst bliebe eine
+ * zugeschnittene Seite unverändert oder eine gedrehte bekäme die falsche Lage.
+ * @returns true, wenn die Seite geändert wurde
+ */
+export function normalizePageA4(page) {
+  const box = page.getCropBox();
+  const media = page.getMediaBox();
+  const rot = (((page.getRotation().angle || 0) % 360) + 360) % 360;
+  const turned = rot === 90 || rot === 270;
+  const viewW = turned ? box.height : box.width;
+  const viewH = turned ? box.width : box.height;
+  if (!(viewW > 0 && viewH > 0)) return false;
+  const L = a4Layout(viewW, viewH);
+  // Zielmaße und Faktoren in ungedrehten Seitenkoordinaten
+  const TW = turned ? L.hPt : L.wPt;
+  const TH = turned ? L.wPt : L.hPt;
+  const sx = turned ? L.sy : L.sx;
+  const sy = turned ? L.sx : L.sy;
+  const same = (a, b) => Math.abs(a - b) < 0.75;
+  if (same(box.width, TW) && same(box.height, TH) && same(box.x, 0) && same(box.y, 0)
+    && same(media.width, TW) && same(media.height, TH) && same(media.x, 0) && same(media.y, 0)) return false;
+  const ox = (TW - box.width * sx) / 2;
+  const oy = (TH - box.height * sy) / 2;
+  page.scaleContent(sx, sy);
+  page.scaleAnnotations?.(sx, sy);
+  page.translateContent(ox - box.x * sx, oy - box.y * sy);
+  clipContent(page, ox, oy, box.width * sx, box.height * sy);
+  page.setMediaBox(0, 0, TW, TH);
+  page.setCropBox(0, 0, TW, TH);
+  page.setTrimBox?.(0, 0, TW, TH);
+  page.setBleedBox?.(0, 0, TW, TH);
+  page.setArtBox?.(0, 0, TW, TH);
+  return true;
+}
+
 const PDFLib = () => window.PDFLib;
 
 /**

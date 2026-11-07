@@ -2,6 +2,7 @@
 // Alles läuft lokal im Browser, es werden keine Daten hochgeladen.
 
 import { encodeG4 } from './ccitt-g4.js';
+import { a4Layout, normalizePageA4 } from './pdfkit.js';
 import { recognizePage, warmOcr, releaseOcrSoon, ocrParallel, usesServerOcr, isMobileDevice } from './ocr.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
@@ -485,15 +486,7 @@ const MAX_PIXELS_COLOR = 12e6; // JPEG-Encode braucht zusätzlich Speicher
  *    bedeuteten die dpi-Stufen nichts.
  */
 export function pageLayout(srcW, srcH, a4) {
-  if (a4) {
-    const landscape = srcW > srcH;
-    const [tw, th] = landscape ? [A4_PT[1], A4_PT[0]] : A4_PT;
-    const sx = tw / srcW;
-    const sy = th / srcH;
-    if (Math.abs(sx / sy - 1) < 0.025) return { wPt: tw, hPt: th, sx, sy, ox: 0, oy: 0 };
-    const s = Math.min(sx, sy);
-    return { wPt: tw, hPt: th, sx: s, sy: s, ox: (tw - srcW * s) / 2, oy: (th - srcH * s) / 2 };
-  }
+  if (a4) return a4Layout(srcW, srcH);
   let norm = 1;
   if (srcW * srcH > 1.7e6) {
     norm = Math.min(A4_PT[1] / Math.max(srcW, srcH), A4_PT[0] / Math.min(srcW, srcH));
@@ -522,6 +515,19 @@ async function renderPage(page, dpi, maxPixels, a4 = false) {
     intent: 'print',
     transform: [1, 0, 0, L.sy / L.sx, L.ox * k, L.oy * k],
   }).promise;
+  // Rand um die eingepasste Seite weiß halten – pdf.js begrenzt nicht auf den
+  // Zuschnitt, sonst erschiene dort Inhalt, der weggeschnitten war.
+  if (L.ox > 0.5 || L.oy > 0.5) {
+    const x0 = Math.round(L.ox * k);
+    const y0 = Math.round(L.oy * k);
+    const x1 = Math.round((L.wPt - L.ox) * k);
+    const y1 = Math.round((L.hPt - L.oy) * k);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, wPx, y0);
+    ctx.fillRect(0, y1, wPx, hPx - y1);
+    ctx.fillRect(0, 0, x0, hPx);
+    ctx.fillRect(x1, 0, wPx - x1, hPx);
+  }
   // Kaputte/leere Canvas erkennen (liefert überall Alpha 0 statt des weißen
   // Hintergrunds) -> klarer Fehler statt komplett schwarzer Seiten
   const corner1 = ctx.getImageData(0, 0, 1, 1).data;
@@ -732,19 +738,7 @@ async function rasterCompress(srcBytes, opts, onProgress, signal) {
 
 /** Seiten mit pdf-lib auf A4 bringen, ohne sie zu rastern (für „Verlustfrei“). */
 function normalizeA4Vector(doc) {
-  for (const page of doc.getPages()) {
-    const box = page.getMediaBox();
-    const L = pageLayout(box.width, box.height, true);
-    if (Math.abs(L.wPt - box.width) < 1 && Math.abs(L.hPt - box.height) < 1) continue;
-    page.scaleContent(L.sx, L.sy);
-    page.scaleAnnotations?.(L.sx, L.sy);
-    page.translateContent(L.ox - box.x * L.sx, L.oy - box.y * L.sy);
-    page.setMediaBox(0, 0, L.wPt, L.hPt);
-    page.setCropBox(0, 0, L.wPt, L.hPt);
-    page.setTrimBox?.(0, 0, L.wPt, L.hPt);
-    page.setBleedBox?.(0, 0, L.wPt, L.hPt);
-    page.setArtBox?.(0, 0, L.wPt, L.hPt);
-  }
+  for (const page of doc.getPages()) normalizePageA4(page);
 }
 
 async function losslessCompress(srcBytes, opts = {}, onProgress) {
