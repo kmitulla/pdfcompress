@@ -612,3 +612,46 @@ test('Schwärzen auf gedrehter Seite (Querformat): Balken an der Sichtposition, 
   expect(res.text).toContain('Neu darüber');
   expect(res.dark).toBeLessThan(40);                            // Balken an der richtigen Stelle
 });
+
+test('Editor: Zuschnitt + „auf A4“ ergibt A4 mit dem zugeschnittenen Inhalt, quer bleibt quer', async ({ page }) => {
+  await appReady(page);
+  await page.waitForFunction(() => window.__pdfeditor || (import('./js/editor.js'), false));
+  const r = await page.evaluate(async () => {
+    const { PDFDocument, rgb } = window.PDFLib;
+    const doc = await PDFDocument.create();
+    const p = doc.addPage([595.28, 841.89]);
+    p.drawRectangle({ x: 0, y: 0, width: 595.28, height: 841.89, color: rgb(0.8, 0.8, 0.8) });
+    p.drawRectangle({ x: 0, y: 0, width: 595.28, height: 200, color: rgb(1, 0, 0) });   // unten rot
+    doc.addPage([841.89, 595.28]);                                                       // quer
+    const src = await doc.save();
+    // Ansicht: y nach unten. Oberen Teil (ohne Rot) zuschneiden
+    const out = await window.__pdfeditor.applyEdits(src, {
+      pages: [
+        { src: 0, crop: { x: 100, y: 100, w: 300, h: 400 }, resizeTo: [595.28, 841.89], objects: [] },
+        { src: 1, resizeTo: [595.28, 841.89], objects: [] },
+      ],
+      assets: { bytes: {}, kind: {}, url: {} },
+    });
+    const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
+    const d = await pdfjs.getDocument({ data: out.slice() }).promise;
+    const res = [];
+    for (let n = 1; n <= 2; n++) {
+      const pg = await d.getPage(n);
+      const vp = pg.getViewport({ scale: 0.25 });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: x, viewport: vp }).promise;
+      const px = x.getImageData(0, 0, c.width, c.height).data;
+      let red = 0, gray = 0;
+      for (let i = 0; i < px.length; i += 4) { if (px[i] > 200 && px[i + 1] < 80) red++; else if (px[i] < 230) gray++; }
+      res.push({ size: [Math.round(vp.width * 4), Math.round(vp.height * 4)], red, grayFrac: gray / (px.length / 4) });
+    }
+    await d.destroy();
+    return res;
+  });
+  expect(r[0].size).toEqual([595, 842]);
+  expect(r[0].red).toBe(0);                 // nur der zugeschnittene Teil
+  expect(r[0].grayFrac).toBeGreaterThan(0.6);
+  expect(r[1].size).toEqual([842, 595]);    // Querformat bleibt quer
+});

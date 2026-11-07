@@ -7,6 +7,7 @@ import { processSignatureImage, hasTransparency, strokeToSvgPath, normalizeStrok
 import { listSignatures, saveSignature, deleteSignature, listStamps, saveStamp, deleteStamp } from './store.js';
 import { hydrateIcons, icon } from './icons.js';
 import { toast, alertDialog, confirmDialog } from './ui.js';
+import { normalizePageA4 } from './pdfkit.js';
 
 const pdfjsLib = await import('../vendor/pdfjs/pdf.min.mjs');
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -296,20 +297,9 @@ export async function applyEdits(srcBytes, state) {
       page.setCropBox(...box);
     }
 
-    // Seite auf ein Zielformat bringen (z. B. A4): Inhalt unverzerrt einpassen
-    // und mittig setzen, dann die Seitengröße ändern.
-    if (entry.resizeTo) {
-      const [tw, th] = entry.resizeTo;
-      const { width: cw, height: ch } = page.getSize();
-      if (cw > 0 && ch > 0 && (Math.abs(cw - tw) > 0.5 || Math.abs(ch - th) > 0.5)) {
-        const s = Math.min(tw / cw, th / ch);
-        page.scaleContent(s, s);
-        page.scaleAnnotations?.(s, s);
-        page.translateContent((tw - cw * s) / 2, (th - ch * s) / 2);
-        page.setSize(tw, th);
-        page.setCropBox(0, 0, tw, th);
-      }
-    }
+    // Seite auf A4 bringen: was nach Zuschnitt und Drehung zu sehen ist, wird
+    // unverzerrt eingepasst – hoch oder quer, wie die Seite liegt.
+    if (entry.resizeTo) normalizePageA4(page);
   }
   if (pdfjsDoc) await pdfjsDoc.destroy();
   return newDoc.save({ useObjectStreams: true });

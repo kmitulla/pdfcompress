@@ -332,3 +332,52 @@ test('OCR: durchsuchbarer Textlayer auf jeder Seite, parallel zur Seitenverarbei
     expect(r.overlap, 'Rendern läuft weiter, während OCR arbeitet').toBe(true);
   }
 });
+
+test('DIN A4 für alle Formate und Profile – auch zugeschnittene, gedrehte und verschobene Seiten', async ({ page }) => {
+  await ready(page);
+  const r = await page.evaluate(async () => {
+    const { PDFDocument, rgb, degrees } = window.PDFLib;
+    const pdfjs = await import('./vendor/pdfjs/pdf.min.mjs');
+    const mk = async (fn) => { const d = await PDFDocument.create(); await fn(d); return d.save(); };
+    const gray = (p) => { const { width, height } = p.getSize(); p.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.8, 0.8, 0.8) }); };
+    const cases = {
+      a5: await mk((d) => gray(d.addPage([419.53, 595.28]))),
+      letter: await mk((d) => gray(d.addPage([612, 792]))),
+      a3quer: await mk((d) => gray(d.addPage([1190.55, 841.89]))),
+      pixel: await mk((d) => gray(d.addPage([2480, 3508]))),
+      bon: await mk((d) => gray(d.addPage([226, 600]))),
+      gedreht: await mk((d) => { const p = d.addPage([419.53, 595.28]); gray(p); p.setRotation(degrees(90)); }),
+      zuschnitt: await mk((d) => { const p = d.addPage([595.28, 841.89]); gray(p); p.drawRectangle({ x: 0, y: 0, width: 595, height: 300, color: rgb(1, 0, 0) }); p.setCropBox(50, 300, 300, 300); }),
+      ursprung: await mk((d) => { const p = d.addPage([400, 500]); gray(p); p.setMediaBox(100, 100, 400, 500); }),
+    };
+    const info = async (bytes) => {
+      const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+      const pg = await doc.getPage(1);
+      const vp = pg.getViewport({ scale: 0.25 });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: x, viewport: vp }).promise;
+      let red = 0;
+      const d = x.getImageData(0, 0, c.width, c.height).data;
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 200 && d[i + 1] < 80) red++;
+      await doc.destroy();
+      return { size: [Math.round(vp.width * 4), Math.round(vp.height * 4)], red };
+    };
+    const out = {};
+    const { compressPdf, PRESETS } = window.__pdfpresser;
+    for (const [k, bytes] of Object.entries(cases)) {
+      for (const prof of ['verlustfrei', 'mittel', 'extrem-sw']) {
+        const o = PRESETS[prof].mode === 'lossless' ? { mode: 'lossless', a4: true } : { ...PRESETS[prof], a4: true };
+        out[`${k}/${prof}`] = await info(await compressPdf(bytes.slice(), o));
+      }
+    }
+    return out;
+  });
+  for (const [k, v] of Object.entries(r)) {
+    const quer = k.startsWith('a3quer') || k.startsWith('gedreht');
+    expect(v.size, k).toEqual(quer ? [842, 595] : [595, 842]);
+  }
+  // Weggeschnittener (roter) Inhalt taucht im Rand nicht wieder auf
+  for (const prof of ['verlustfrei', 'mittel']) expect(r[`zuschnitt/${prof}`].red, prof).toBe(0);
+});

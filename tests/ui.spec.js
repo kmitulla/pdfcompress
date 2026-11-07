@@ -384,3 +384,26 @@ test('Dokumente auf dem Server: am zweiten Gerät sichtbar, Änderungen und Lös
   await a.context().close();
   await b.context().close();
 });
+
+test('„Sofort komprimieren“: nachträglich A4 umschalten rechnet automatisch neu', async ({ page }) => {
+  await ready(page, { autoCompress: true, pdfProfile: 'mittel', a4: false });
+  await page.evaluate(async () => {
+    const { PDFDocument, rgb } = window.PDFLib;
+    const d = await PDFDocument.create();
+    d.addPage([419.53, 595.28]).drawRectangle({ x: 20, y: 20, width: 300, height: 400, color: rgb(0.2, 0.4, 0.8) });
+    await window.__pdfpresser.addPdfDoc(new Uint8Array(await d.save()), 'A5-Brief.pdf', { kind: 'pdf' });
+  });
+  await page.waitForFunction(() => window.__pdfpresser.state.docs[0]?.status === 'done', null, { timeout: 60000 });
+  const size = () => page.evaluate(async () => {
+    const doc = await window.PDFLib.PDFDocument.load(window.__pdfpresser.state.docs[0].result.slice());
+    const p = doc.getPage(0);
+    return [Math.round(p.getWidth()), Math.round(p.getHeight())];
+  });
+  expect(await size()).toEqual([420, 595]);
+  await page.locator('#inspA4').evaluate((el) => el.click());
+  await expect.poll(() => page.evaluate(() => {
+    const d = window.__pdfpresser.state.docs[0];
+    return d.status === 'done' && window.__pdfpresser.hasFresh(d);
+  }), { timeout: 60000 }).toBe(true);
+  expect(await size()).toEqual([595, 842]);
+});

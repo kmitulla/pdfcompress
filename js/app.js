@@ -23,7 +23,7 @@ import {
 import { mergePdfs } from './pdfkit.js';
 import { setServerOcr } from './ocr.js';
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 
 hydrateIcons();
 
@@ -1039,6 +1039,20 @@ function afterDocChange(doc, full = true) {
   renderToolbar();
   maybeAutoSimulate(doc);
   if (viewer.doc === doc && viewer.mode === 'preview') renderViewer();
+  maybeAutoRecompress(doc);
+}
+
+/**
+ * „Sofort komprimieren“ gilt auch für Änderungen: Wer bei einem fertigen
+ * Dokument z. B. A4 oder das Profil umstellt, bekommt das neue Ergebnis ohne
+ * Extra-Tipp (kurz verzögert, damit mehrere Änderungen zusammenkommen).
+ */
+function maybeAutoRecompress(doc) {
+  clearTimeout(doc.recompressTimer);
+  if (!settings.autoCompress || !doc.result || !isStale(doc) || doc.status === 'working' || doc.status === 'queued') return;
+  doc.recompressTimer = setTimeout(() => {
+    if (state.docs.includes(doc) && isStale(doc) && doc.status !== 'working' && doc.status !== 'queued') enqueue(doc);
+  }, 1200);
 }
 
 inspector.addEventListener('click', (e) => {
@@ -2140,6 +2154,9 @@ function applyBackendUi() {
     ? `${ver} (${backend.version}) · selbst gehostet`
     : `${APP_VERSION} · Web-Version (ohne Server-Funktionen)`;
   $$('.needs-server').forEach((el) => el.classList.toggle('hidden', !backend.settings));
+  $('#emptyPrivacy').textContent = backend.docs
+    ? 'PDFs, Fotos oder Scans – gespeichert auf deinem eigenen Server, auf all deinen Geräten.'
+    : 'PDFs, Fotos oder Scans – alles bleibt auf deinem Gerät.';
   $$('[data-add="scanner"]').forEach((b) => b.classList.toggle('hidden', !backend.scanner));
   $$('.needs-scanner').forEach((el) => el.classList.toggle('hidden', !backend.scanner));
   $('#statusScanner').classList.toggle('hidden', !backend.scanner);
