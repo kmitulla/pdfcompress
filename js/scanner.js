@@ -12,6 +12,7 @@
 import { hydrateIcons, icon } from './icons.js';
 import { toast, confirmDialog, alertDialog } from './ui.js';
 import { A4_PT, readJpegDpi } from './pdfkit.js';
+import { createZoomPan } from './zoompan.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -1482,9 +1483,19 @@ async function openPagePreview(idx) {
   box.classList.remove('hidden');
   const src = await getSrc(page);
   if (state.previewIdx !== idx) return;
-  const big = composeThumb(page, src, Math.max(900, Math.round(window.innerHeight * 1.6)));
-  big.className = 'sc-preview-img';
-  stage.replaceChildren(big);
+  // Hoch aufgelöst, damit man hineinzoomen kann (Finger, Trackpad, Doppeltipp)
+  const big = composeThumb(page, src, Math.max(1400, Math.round(window.innerHeight * 2.4)));
+  const canvas = $('#scPreviewCanvas', state.root) || Object.assign(document.createElement('canvas'), { id: 'scPreviewCanvas', className: 'sc-preview-img' });
+  canvas.width = big.width;
+  canvas.height = big.height;
+  canvas.getContext('2d').drawImage(big, 0, 0);
+  big.width = 1;
+  if (!canvas.isConnected) stage.replaceChildren(canvas);
+  if (!state.previewZoom) {
+    state.previewZoom = createZoomPan(stage, canvas, { onSwipe: (d) => openPagePreview(state.previewIdx + d) });
+  }
+  state.previewZoom.reset();
+  state.previewZoom.setAspect(canvas.width / canvas.height);
 }
 
 function closePagePreview() {
@@ -1552,6 +1563,7 @@ function closeScanner() {
   window.removeEventListener('resize', onResize);
   state.root?.remove();
   state.root = null;
+  state.previewZoom = null;
   state.pages = [];
   state.pending = 0;
   state.editing = null;

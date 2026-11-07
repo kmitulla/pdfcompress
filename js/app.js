@@ -22,8 +22,9 @@ import {
 } from './ui.js';
 import { mergePdfs } from './pdfkit.js';
 import { setServerOcr } from './ocr.js';
+import { createZoomPan } from './zoompan.js';
 
-const APP_VERSION = '2.2.1';
+const APP_VERSION = '2.3.0';
 
 hydrateIcons();
 
@@ -1168,14 +1169,39 @@ async function editDoc(doc) {
 
 // ---------------------------------------------------------------- Betrachter (Vorschau)
 
-const viewer = { doc: null, page: 1, mode: 'preview', zoom: 1, pages: 1, token: 0, timer: null };
+const viewer = { doc: null, page: 1, mode: 'preview', pages: 1, token: 0, timer: null };
 const viewerEl = $('#viewer');
+
+// Zoomen & Verschieben der Vorschau (nur das Dokument, nie die Oberfläche):
+// zwei Finger, Trackpad-Pinch bzw. Strg+Mausrad, Doppeltipp, Knöpfe, +/−/0.
+// Ungezoomt blättert Wischen; nach dem Zoomen wird scharf nachgerendert.
+const VIEW_ZMAX = 8;
+const VIEW_MAX_PX = 4200;   // längste Renderbreite (Speicher am Handy)
+let viewerRenderedW = 0;
+let viewerRenderCap = Infinity;   // mehr Auflösung gibt es für diese Ansicht nicht
+const zp = createZoomPan($('#viewerStage'), $('#viewerImg'), {
+  maxZoom: VIEW_ZMAX,
+  onSwipe: (dir) => viewerGo(dir),
+  onChange: (z) => {
+    $('#viewerZoomLabel').textContent = `${Math.round(z * 100)} %`;
+    $('#viewerZoomOut').disabled = z <= 1.001;
+    $('#viewerZoomIn').disabled = z >= VIEW_ZMAX - 0.001;
+  },
+  onSettled: (z) => {
+    if (!viewer.doc || viewerEl.hidden) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const need = Math.min(VIEW_MAX_PX, zp.fitW * dpr * Math.min(z, 4));
+    if (need > viewerRenderedW * 1.25 && viewerRenderedW < viewerRenderCap) renderViewer({ quiet: true });
+  },
+});
+const zoomViewerAtCenter = (z) => zp.zoomCenter(z);
+const resetViewerZoom = () => zp.reset();
 
 function openViewer(doc, mode = 'preview') {
   viewer.page = Math.min(viewer.doc === doc ? viewer.page : 1, doc.pages || 1);
   viewer.doc = doc;
   viewer.mode = mode;
-  viewer.zoom = 1;
+  resetViewerZoom();
   viewer.pages = doc.pages || 1;
   viewerEl.hidden = false;
   document.addEventListener('keydown', onViewerKey);
@@ -1191,6 +1217,9 @@ function closeViewer() {
 
 function onViewerKey(e) {
   if (e.target.tagName === 'SELECT') return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomViewerAtCenter(zp.zoom * 1.5); }
+  if (e.key === '-') { e.preventDefault(); zoomViewerAtCenter(zp.zoom / 1.5); }
+  if (e.key === '0') { e.preventDefault(); zoomViewerAtCenter(1); }
   if (e.key === 'Escape') { e.preventDefault(); closeViewer(); }
   if (e.key === 'ArrowRight') { e.preventDefault(); viewerGo(1); }
   if (e.key === 'ArrowLeft') { e.preventDefault(); viewerGo(-1); }
@@ -1200,6 +1229,7 @@ function viewerGo(delta) {
   const n = viewer.page + delta;
   if (n < 1 || n > viewer.pages) return;
   viewer.page = n;
+  resetViewerZoom();
   renderViewer();
 }
 
@@ -1208,7 +1238,7 @@ function scheduleViewer() {
   viewer.timer = setTimeout(renderViewer, 260);
 }
 
-async function renderViewer() {
+async function renderViewer({ quiet = false } = {}) {
   const d = viewer.doc;
   if (!d) return;
   const token = ++viewer.token;
@@ -1234,11 +1264,15 @@ async function renderViewer() {
   sel.value = d.pageProfiles[viewer.page] || '';
 
   const stage = $('#viewerStage');
-  stage.classList.toggle('zoomed', viewer.zoom > 1);
-  stage.classList.add('loading');
-  $('#viewerBusy').classList.remove('hidden');
+  // Nachschärfen nach dem Zoomen läuft unauffällig im Hintergrund
+  if (!quiet) {
+    stage.classList.add('loading');
+    $('#viewerBusy').classList.remove('hidden');
+  }
+  // Auflösung passend zur Zoomstufe: gezoomt wird scharf nachgerendert
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const width = Math.min(2400, Math.round(Math.max(600, stage.clientWidth - 48) * dpr * viewer.zoom));
+  const baseW = zp.fitW || Math.max(300, stage.clientWidth - 32);
+  const width = Math.min(VIEW_MAX_PX, Math.round(Math.max(600, baseW * dpr * Math.min(zp.zoom, 4))));
   try {
     let url;
     let info = '';
@@ -1259,7 +1293,13 @@ async function renderViewer() {
     if (token !== viewer.token) return;
     const img = $('#viewerImg');
     img.src = url;
-    img.style.width = viewer.zoom > 1 ? `${Math.round(width / dpr)}px` : '';
+    await img.decode().catch(() => {});
+    if (token !== viewer.token) return;
+    viewerRenderedW = img.naturalWidth || 0;
+    // Kam weniger zurück als bestellt (Vorschau zeigt die Auflösung des
+    // Profils), lohnt kein weiteres Nachschärfen auf dieser Seite.
+    viewerRenderCap = viewerRenderedW < width * 0.9 ? viewerRenderedW : Infinity;
+    zp.setAspect(img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 0);
     $('#viewerInfo').textContent = info;
     renderViewerSize(d);
   } catch (e) {
@@ -1320,9 +1360,9 @@ async function renderViewerSize(d) {
 $('#viewerClose').addEventListener('click', closeViewer);
 $('#viewerPrev').addEventListener('click', () => viewerGo(-1));
 $('#viewerNext').addEventListener('click', () => viewerGo(1));
-$('#viewerZoomIn').addEventListener('click', () => { viewer.zoom = Math.min(3, viewer.zoom * 1.5); renderViewer(); });
-$('#viewerZoomOut').addEventListener('click', () => { viewer.zoom = Math.max(1, viewer.zoom / 1.5); renderViewer(); });
-$('#viewerImg').addEventListener('dblclick', () => { viewer.zoom = viewer.zoom > 1 ? 1 : 2; renderViewer(); });
+$('#viewerZoomIn').addEventListener('click', () => zoomViewerAtCenter(zp.zoom * 1.5));
+$('#viewerZoomOut').addEventListener('click', () => zoomViewerAtCenter(zp.zoom / 1.5));
+$('#viewerZoomLabel').addEventListener('click', () => zoomViewerAtCenter(1));
 $('#viewerMode').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-v]');
   if (!b || b.disabled) return;
@@ -1337,18 +1377,8 @@ $('#viewerOverride').addEventListener('change', (e) => {
   afterDocChange(d);
   renderViewer();
 });
-// Wischen am Handy
-{
-  let x0 = null;
-  const stage = $('#viewerStage');
-  stage.addEventListener('touchstart', (e) => { x0 = viewer.zoom === 1 && e.touches.length === 1 ? e.touches[0].clientX : null; }, { passive: true });
-  stage.addEventListener('touchend', (e) => {
-    if (x0 == null) return;
-    const dx = e.changedTouches[0].clientX - x0;
-    if (Math.abs(dx) > 60) viewerGo(dx < 0 ? 1 : -1);
-    x0 = null;
-  });
-}
+// iPhone/iPad: die ganze Oberfläche nie mit zwei Fingern zoomen
+document.addEventListener('gesturestart', (e) => { if (!e.target.closest?.('#viewerStage, #scPreviewStage')) e.preventDefault(); });
 
 // ---------------------------------------------------------------- Blätter, Menü, Scrim
 
@@ -2426,7 +2456,7 @@ $('#main').addEventListener('scroll', (e) => e.currentTarget.classList.toggle('s
 
 // Für die automatisierten Tests
 window.__pdfpresser = {
-  state, backend, get settings() { return settings; },
+  state, backend, get settings() { return settings; }, get viewerZoom() { return zp.state; },
   compressPdf, previewPage, simulateVariants, simulatePdf, PRESETS, PRESET_INFO,
   addFiles, addPdfDoc, enqueue, optsFor, hasFresh, sendToPaperless, openViewer, selectDoc,
   fetchScannedPage, followJob, refreshJobBanner, saveDocsNow, pullDocs, pushDocs, openStudio, toast, exportAllData, importAllData, persistSettings,
