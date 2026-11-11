@@ -182,12 +182,17 @@ async function writeAtomic(dir, name, data) {
 // -------------------------------------------------------------------- Paperless
 
 /** PDF über die REST-API an Paperless übergeben. Liefert die Task-ID. */
-async function uploadToPaperless(data, name, title) {
+async function uploadToPaperless(data, name, title, meta = {}) {
   const PAPERLESS_URL = cfg.get('paperlessUrl');
   const PAPERLESS_TOKEN = cfg.get('paperlessToken');
   const form = new FormData();
   form.append('document', new Blob([data], { type: 'application/pdf' }), name);
   if (title) form.append('title', title);
+  // Optionale Angaben – so landet das Dokument gleich richtig eingeordnet
+  if (meta.created) form.append('created', meta.created);
+  if (meta.correspondent) form.append('correspondent', String(meta.correspondent));
+  if (meta.documentType) form.append('document_type', String(meta.documentType));
+  for (const t of meta.tags || []) form.append('tags', String(t));
   const res = await fetch(`${PAPERLESS_URL}/api/documents/post_document/`, {
     method: 'POST',
     headers: { Authorization: `Token ${PAPERLESS_TOKEN}`, Accept: 'application/json' },
@@ -200,6 +205,34 @@ async function uploadToPaperless(data, name, title) {
     throw new Error(`Paperless antwortet mit HTTP ${res.status}${hint}: ${text.slice(0, 160)}`);
   }
   try { return JSON.parse(text); } catch { return text.trim(); }
+}
+
+/**
+ * Korrespondenten, Dokumenttypen und Tags aus Paperless – für die Auswahl
+ * beim Senden. Kurz zwischengespeichert, damit das Blatt sofort aufgeht.
+ */
+let metaCache = { at: 0, key: '', data: null };
+async function paperlessMeta({ fresh = false } = {}) {
+  const base = cfg.get('paperlessUrl');
+  const token = cfg.get('paperlessToken');
+  const key = `${base}|${token.slice(-6)}`;
+  if (!fresh && metaCache.data && metaCache.key === key && Date.now() - metaCache.at < 60000) return metaCache.data;
+  const list = async (what) => {
+    const out = [];
+    let next = `${base}/api/${what}/?page_size=500&ordering=name`;
+    for (let i = 0; next && i < 10; i++) {
+      const r = await fetch(next, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error(`Paperless antwortet mit HTTP ${r.status}${r.status === 401 || r.status === 403 ? ' (API-Token prüfen)' : ''}`);
+      const j = await r.json();
+      for (const x of j.results || []) out.push({ id: x.id, name: x.name, color: x.color || x.colour || null });
+      // „next“ kommt absolut zurück – nur die Abfrage übernehmen, die Adresse bleibt unsere
+      next = j.next ? `${base}/api/${what}/${new URL(j.next).search}` : null;
+    }
+    return out;
+  };
+  const [correspondents, documentTypes, tags] = await Promise.all([list('correspondents'), list('document_types'), list('tags')]);
+  metaCache = { at: Date.now(), key, data: { correspondents, documentTypes, tags } };
+  return metaCache.data;
 }
 
 /** Verbindung zu Paperless prüfen (für den Knopf „Testen“ in der App). */
@@ -268,7 +301,9 @@ async function handleApi(req, res, url) {
     const [, id, kind] = dm;
     try {
       if (!kind && req.method === 'PUT') {
-        const meta = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString('utf8'));
+        let meta;
+        try { meta = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString('utf8')); } catch { meta = null; }
+        if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return sendJson(res, 400, { error: 'Ungültige Metadaten.' });
         await docStore.putMeta(id, meta);
         return sendJson(res, 200, { ok: true });
       }
@@ -306,7 +341,9 @@ async function handleApi(req, res, url) {
       });
       return sendJson(res, 200, { words, ms: Date.now() - t0 });
     } catch (e) {
-      return sendJson(res, 500, { error: e.message });
+      // Kein lesbares Bild / unbekannte Sprache = Fehler der Anfrage, nicht des Servers
+      const bad = /pixRead|image file not found|fehlt auf dem Server|Sprache/i.test(e.message);
+      return sendJson(res, bad ? 400 : 500, { error: bad ? 'Bild nicht lesbar oder Sprache nicht verfügbar.' : e.message });
     }
   }
 
@@ -324,6 +361,16 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { ...view, mounts: cfg.mountedFolders(), rawDir: RAW_DIR || null });
     } catch (e) {
       return sendJson(res, 400, { error: e.code === 'EACCES' ? 'Ordner ist nicht beschreibbar.' : e.message });
+    }
+  }
+
+  // Auswahllisten aus Paperless (nur mit API-Zugang)
+  if (url.pathname === '/api/paperless/meta' && req.method === 'GET') {
+    if (cfg.paperlessMode() !== 'api') return sendJson(res, 501, { error: 'Paperless-API ist nicht eingerichtet.' });
+    try {
+      return sendJson(res, 200, await paperlessMeta({ fresh: url.searchParams.has('fresh') }));
+    } catch (e) {
+      return sendJson(res, 502, { error: e.message });
     }
   }
 
@@ -568,6 +615,14 @@ async function handleApi(req, res, url) {
     if (!paperlessMode) return sendJson(res, 501, { error: 'Paperless ist nicht eingerichtet (CONSUME_DIR oder PAPERLESS_URL/PAPERLESS_TOKEN fehlen).' });
     const name = safePdfName(url.searchParams.get('name') || req.headers['x-filename']);
     const title = (url.searchParams.get('title') || '').trim().slice(0, 200);
+    const q = url.searchParams;
+    const id = (v) => (/^\d{1,9}$/.test(v || '') ? Number(v) : null);
+    const meta = {
+      created: /^\d{4}-\d{2}-\d{2}$/.test(q.get('created') || '') ? q.get('created') : null,
+      correspondent: id(q.get('correspondent')),
+      documentType: id(q.get('document_type')),
+      tags: (q.get('tags') || '').split(',').map(id).filter(Boolean).slice(0, 50),
+    };
     let data;
     try {
       data = await readBody(req);
@@ -578,7 +633,7 @@ async function handleApi(req, res, url) {
     let apiError = null;
     if (paperlessMode === 'api') {
       try {
-        const task = await uploadToPaperless(data, name, title);
+        const task = await uploadToPaperless(data, name, title, meta);
         return sendJson(res, 200, { ok: true, mode: 'api', name, task, bytes: data.length });
       } catch (e) {
         apiError = e;

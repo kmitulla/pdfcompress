@@ -96,6 +96,14 @@
         </div>
 
         <div class="job-banner hidden" id="jobBanner" aria-live="polite"></div>
+        <div class="doc-filter hidden" id="docFilter">
+          <label class="doc-search"><i data-icon="search" data-icon-size="17"></i>
+            <input type="search" id="docSearch" placeholder="Name oder Text suchen …" autocomplete="off" aria-label="Dokumente durchsuchen"></label>
+          <div class="seg" id="docFilterSeg" role="radiogroup" aria-label="Filter">
+            <button data-v="all" class="active">Alle</button><button data-v="open">Offen</button><button data-v="done">Fertig</button><button data-v="sent">Gesendet</button>
+          </div>
+        </div>
+        <p class="doc-nohit hidden" id="docNoHit">Keine Dokumente passen zur Suche.</p>
         <div class="doc-list" id="docList" role="list"></div>
       </section>
 
@@ -160,6 +168,10 @@
                 <option value="deu+eng">Deutsch + Englisch (langsamer)</option>
               </select>
             </div>
+            <div class="row">
+              <div class="row-text"><span class="tile-text"><strong>Leere Seiten erkennen</strong><small>Rückseiten und Trennblätter im Scan-Studio markieren und mit einem Tipp entfernen</small></span></div>
+              <label class="switch"><input type="checkbox" id="setBlankDetect" checked><span></span></label>
+            </div>
             <div class="row needs-server-ocr hidden">
               <div class="row-text"><span class="tile-text"><strong>Texterkennung auf dem Server</strong><small>Viel schneller als am Handy – die Seite geht dafür kurz an deinen eigenen Server</small></span></div>
               <label class="switch"><input type="checkbox" id="setServerOcr" checked><span></span></label>
@@ -213,6 +225,10 @@
             <div class="row">
               <div class="row-text"><strong>Übergabe</strong><small id="paperlessModeInfo">–</small></div>
               <span class="pill" id="paperlessPill"><span class="dot"></span><span>–</span></span>
+            </div>
+            <div class="row needs-paperless-api hidden">
+              <div class="row-text"><span class="tile-text"><strong>Vor dem Senden fragen</strong><small>Titel, Datum, Korrespondent, Dokumenttyp und Tags gleich mitgeben</small></span></div>
+              <label class="switch"><input type="checkbox" id="setPaperlessAsk" checked><span></span></label>
             </div>
             <div class="row row-stack">
               <label class="field-label" for="setPaperlessUrl">API – Adresse von Paperless</label>
@@ -367,6 +383,59 @@
     <p class="sheet-hint sheet-hint-ok" id="scanBgHint"><i data-icon="checkCircle" data-icon-size="15"></i> Läuft auf dem Server – du kannst die App währenddessen schließen.</p>
     <p class="sheet-hint" id="scanCornerHint">Vorlage bündig an die Ecke oben links legen – der Ausschnitt ist exakt DIN A4.</p>
     <button class="btn btn-primary btn-large" id="scanStartBtn"><i data-icon="play"></i><span>Scannen</span></button>
+  </div>
+
+  <!-- Dokument aufteilen: zwischen zwei Seiten tippen = dort trennen -->
+  <div class="sheet sheet-wide" id="splitSheet" role="dialog" aria-modal="true" aria-labelledby="splitSheetTitle">
+    <div class="sheet-grip"></div>
+    <div class="sheet-head">
+      <h2 id="splitSheetTitle">Aufteilen</h2>
+      <span class="pill" id="splitInfo"><span>–</span></span>
+    </div>
+    <p class="sheet-hint">Zwischen zwei Seiten tippen, um dort zu trennen. Seiten antippen, um sie wegzulassen.</p>
+    <div class="split-tools">
+      <button class="btn btn-small" id="splitBlank"><i data-icon="sparkle" data-icon-size="15"></i><span>An leeren Seiten trennen</span></button>
+      <button class="btn btn-small" id="splitEach"><i data-icon="layers" data-icon-size="15"></i><span>Jede Seite einzeln</span></button>
+      <button class="btn btn-small" id="splitReset"><span>Zurücksetzen</span></button>
+    </div>
+    <div class="split-grid" id="splitGrid"></div>
+    <div class="sheet-actions-row">
+      <button class="btn btn-large" id="splitCancel">Abbrechen</button>
+      <button class="btn btn-primary btn-large" id="splitGo" disabled><i data-icon="layers"></i><span>Aufteilen</span></button>
+    </div>
+  </div>
+
+  <!-- An Paperless senden: Titel, Datum, Korrespondent, Dokumenttyp, Tags -->
+  <div class="sheet" id="sendSheet" role="dialog" aria-modal="true" aria-labelledby="sendSheetTitle">
+    <div class="sheet-grip"></div>
+    <div class="sheet-head">
+      <h2 id="sendSheetTitle">An Paperless senden</h2>
+      <span class="pill" id="sendSheetState"><span class="dot"></span><span>lädt …</span></span>
+    </div>
+    <div class="form-rows send-form">
+      <label class="send-field"><span class="field-label">Titel</span>
+        <input type="text" id="sendTitle" maxlength="128" autocomplete="off"></label>
+      <div class="send-chips hidden" id="sendTitleSuggest"></div>
+      <label class="send-field"><span class="field-label">Datum <small>leer = Paperless liest es aus dem Dokument</small></span>
+        <input type="date" id="sendDate"></label>
+      <div class="send-chips" id="sendDateChips"></div>
+      <div class="send-two">
+        <label class="send-field"><span class="field-label">Korrespondent</span>
+          <select id="sendCorr"><option value="">automatisch</option></select></label>
+        <label class="send-field"><span class="field-label">Dokumenttyp</span>
+          <select id="sendType"><option value="">automatisch</option></select></label>
+      </div>
+      <div class="send-field"><span class="field-label">Tags <small id="sendTagCount"></small></span>
+        <input type="search" id="sendTagFilter" placeholder="Tags durchsuchen …" class="hidden" autocomplete="off">
+        <div class="send-tags" id="sendTags"><span class="faint">–</span></div>
+      </div>
+      <div class="send-chips" id="sendLast"></div>
+      <label class="check send-ask"><input type="checkbox" id="sendAsk" checked><span>Vor jedem Senden fragen</span></label>
+    </div>
+    <div class="sheet-actions-row">
+      <button class="btn btn-large" id="sendCancel">Abbrechen</button>
+      <button class="btn btn-primary btn-large" id="sendGo"><i data-icon="send"></i><span>Senden</span></button>
+    </div>
   </div>
 
   <div class="menu" id="moreMenu" role="menu" hidden>

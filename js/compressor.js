@@ -610,6 +610,28 @@ export async function countPages(bytes) {
   return withPdf(bytes, (doc) => doc.numPages);
 }
 
+/** Text der ersten Seiten (Textlayer bzw. OCR-Ergebnis) – für Vorschläge. */
+export async function extractText(bytes, maxPages = 2) {
+  return withPdf(bytes, async (doc) => {
+    const parts = [];
+    for (let p = 1; p <= Math.min(maxPages, doc.numPages); p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      // Zeilen wiederherstellen: neue Zeile, wenn sich die Höhe ändert
+      let lastY = null;
+      let line = '';
+      for (const it of tc.items) {
+        const y = Math.round(it.transform[5]);
+        if (lastY !== null && Math.abs(y - lastY) > 3) { parts.push(line.trim()); line = ''; }
+        line += `${it.str}${it.hasEOL ? '' : ' '}`;
+        lastY = y;
+      }
+      if (line.trim()) parts.push(line.trim());
+    }
+    return parts.filter(Boolean).join('\n');
+  });
+}
+
 /**
  * Rendert eine Seite als Bild (Miniatur, Originalansicht).
  * @returns {Promise<{url:string, numPages:number, w:number, h:number}>}

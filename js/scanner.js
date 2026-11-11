@@ -13,6 +13,7 @@ import { hydrateIcons, icon } from './icons.js';
 import { toast, confirmDialog, alertDialog } from './ui.js';
 import { A4_PT, readJpegDpi } from './pdfkit.js';
 import { createZoomPan } from './zoompan.js';
+import { isBlank } from './blank.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -781,9 +782,18 @@ function composeThumb(page, src, thumbH = 190) {
 async function thumbFor(page) {
   if (!page.thumb) {
     const src = await getSrc(page);
-    page.thumb = composeThumb(page, src, 460).toDataURL('image/jpeg', 0.85);
+    const c = composeThumb(page, src, 460);
+    page.thumb = c.toDataURL('image/jpeg', 0.85);
+    // Leere Seite (Rückseite, Trennblatt)? Wird in der Übersicht markiert.
+    page.blank = (state.opts.blankDetect ? state.opts.blankDetect() : true) && isBlank(c);
   }
   return page.thumb;
+}
+
+let blankRefresh = null;
+function refreshForBlank() {
+  clearTimeout(blankRefresh);
+  blankRefresh = setTimeout(() => { if (state.root && state.view === 'pages') renderPages(); }, 120);
 }
 
 function formatLabel(page) {
@@ -825,11 +835,24 @@ async function renderPages() {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPagePreview(idx); }
     });
     if (page.thumb) img.src = page.thumb;
-    else thumbFor(page).then((u) => { if (token === renderToken || img.isConnected) img.src = u; }).catch(() => {});
+    else {
+      thumbFor(page).then((u) => {
+        if (token === renderToken || img.isConnected) img.src = u;
+        if (page.blank) refreshForBlank();
+      }).catch(() => {});
+    }
     const no = document.createElement('span');
     no.className = 'sc-pageno';
     no.textContent = String(idx + 1);
     wrap.append(img, no);
+    if (page.blank) {
+      const badge = document.createElement('span');
+      badge.className = 'sc-blank-badge';
+      badge.textContent = 'leer?';
+      badge.title = 'Diese Seite scheint leer zu sein';
+      wrap.appendChild(badge);
+      cell.classList.add('is-blank');
+    }
     const label = document.createElement('div');
     label.className = 'sc-pagelabel';
     label.textContent = formatLabel(page);
@@ -855,6 +878,29 @@ async function renderPages() {
     cell.append(wrap, label, bar);
     frag.appendChild(cell);
   });
+  // Hinweis oben: leere Seiten mit einem Tipp entfernen
+  const blanks = state.pages.filter((p) => p.blank);
+  if (blanks.length && state.pages.length > blanks.length) {
+    const bar = document.createElement('div');
+    bar.className = 'sc-blank-banner';
+    bar.innerHTML = `<span>${icon('sparkle', { size: 16 })}${blanks.length === 1 ? 'Eine Seite scheint leer zu sein' : `${blanks.length} Seiten scheinen leer zu sein`}</span>`;
+    const keep = document.createElement('button');
+    keep.className = 'btn btn-small';
+    keep.textContent = 'Behalten';
+    keep.addEventListener('click', () => { blanks.forEach((p) => { p.blank = false; }); renderPages(); });
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-small btn-primary';
+    rm.id = 'scBlankRemove';
+    rm.innerHTML = `${icon('trash', { size: 15 })}<span>Entfernen</span>`;
+    rm.addEventListener('click', () => {
+      blanks.forEach((p) => dropSrc(p));
+      state.pages = state.pages.filter((p) => !p.blank);
+      toast(`${blanks.length === 1 ? 'Leere Seite' : `${blanks.length} leere Seiten`} entfernt`, 'ok', 2500);
+      renderPages();
+    });
+    bar.append(keep, rm);
+    frag.insertBefore(bar, frag.firstChild);
+  }
   for (let i = 0; i < state.pending; i++) {
     const cell = document.createElement('div');
     cell.className = 'sc-pagecell';

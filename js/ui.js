@@ -49,12 +49,18 @@ const TOAST_ICON = { ok: 'check', err: 'info', busy: 'spinner', info: 'info' };
  * Kurze Rückmeldung. `kind`: 'ok' | 'err' | 'busy' | 'info'.
  * Liefert {update(text, kind, ms), close()}.
  */
-export function toast(text, kind = 'ok', ms = 3200, { onClick = null } = {}) {
+export function toast(text, kind = 'ok', ms = 3200, { onClick = null, action = null } = {}) {
   const el = document.createElement('div');
+  // action: { label, run } – eigener Knopf im Hinweis (z. B. „Rückgängig“)
   const paint = (t, k) => {
-    el.className = `toast toast-${k}`;
-    el.innerHTML = `${icon(TOAST_ICON[k] || 'info', { size: 18 })}<span></span>`;
+    el.className = `toast toast-${k}${action ? ' toast-has-action' : ''}`;
+    el.innerHTML = `${icon(TOAST_ICON[k] || 'info', { size: 18 })}<span></span>${action ? '<button type="button" class="toast-action"></button>' : ''}`;
     el.querySelector('span').textContent = t;
+    if (action) {
+      const b = el.querySelector('.toast-action');
+      b.textContent = action.label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); close(); action.run(); });
+    }
   };
   paint(text, kind);
   toastHost().appendChild(el);
