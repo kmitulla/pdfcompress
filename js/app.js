@@ -8,7 +8,7 @@
 
 import {
   compressPdf, previewPage, simulateVariants, simulatePdf, PRESETS, PRESET_INFO, presetName,
-  countPages, renderPageImage,
+  countPages, renderPageImage, extractText,
 } from './compressor.js';
 import { openEditor, setScanProvider } from './editor.js';
 import {
@@ -23,8 +23,10 @@ import {
 import { mergePdfs } from './pdfkit.js';
 import { setServerOcr } from './ocr.js';
 import { createZoomPan } from './zoompan.js';
+import { findDates, suggestTitle, isGenericName } from './suggest.js';
+import { isBlankUrl } from './blank.js';
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 
 hydrateIcons();
 
@@ -50,6 +52,9 @@ const DEFAULTS = {
   scanTarget: 'doc',
   scanRect: null,        // kalibrierter A4-Bereich in mm {x, y, w}
   serverOcr: true,       // Texterkennung auf dem Server, wenn verfügbar
+  paperlessAsk: true,    // vor dem Senden Titel/Datum/Tags abfragen (nur API)
+  paperlessLast: null,   // letzte Auswahl {correspondent, documentType, tags}
+  blankDetect: true,     // leere Seiten im Studio markieren
 };
 
 let settings = { ...DEFAULTS };
@@ -160,7 +165,7 @@ const selected = () => docById(state.selectedId);
 // geändert hat; bei Konflikten gewinnt die jüngere Änderung.
 
 const PERSIST_FIELDS = ['id', 'name', 'kind', 'edited', 'rawSources', 'pages', 'thumb', 'profile', 'ocr', 'ocrAuto', 'a4',
-  'tune', 'pageProfiles', 'resultSig', 'sent', 'savedDir', 'delivered', 'rev', 'rawCleaned', 'created'];
+  'tune', 'pageProfiles', 'resultSig', 'sent', 'savedDir', 'delivered', 'rev', 'rawCleaned', 'created', 'paperlessMeta', 'nameDismissed'];
 const SYNC_STATE = ['updatedAt', 'synced', 'srvRev', 'srvResultSig'];
 const savedSig = new Map();   // id -> Signatur des gespeicherten Stands
 const pendingDeletes = new Set();   // auf dem Server noch zu löschen
@@ -251,7 +256,7 @@ const busyDoc = (d) => d.status === 'working' || d.status === 'queued' || d.send
 
 async function sendBytes(url, bytes) {
   const res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/pdf' }, body: bytes });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
 }
 
 function metaFor(d) {
@@ -292,7 +297,19 @@ function pushDocs() {
           await storeIndex();
         }
         for (const d of [...state.docs]) {
-          if ((d.dirty || !d.synced) && !busyDoc(d) && state.docs.includes(d)) await pushDoc(d);
+          if (!(d.dirty || !d.synced) || busyDoc(d) || !state.docs.includes(d)) continue;
+          // Unlesbare Dokumente bleiben auf diesem Gerät – anderswo wären sie
+          // nur leere Karten ohne Fehlermeldung
+          if (d.status === 'error' || !d.pages) continue;
+          try {
+            await pushDoc(d);
+            d.syncError = null;
+          } catch (e) {
+            // Ein Dokument, das der Server ablehnt, hält die anderen nicht auf.
+            // Netzfehler (offline) brechen dagegen den ganzen Durchlauf ab.
+            if (!e.status) throw e;
+            d.syncError = e.message;
+          }
         }
       } while (sync.again);
       sync.lastError = null;
@@ -307,7 +324,7 @@ function pushDocs() {
 
 async function fetchBytes(url) {
   const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
   return new Uint8Array(await res.arrayBuffer());
 }
 
@@ -332,12 +349,20 @@ async function pullDocs() {
       let changed = false;
       for (const r of remote) {
         if (pendingDeletes.has(r.id)) continue;
+        if (!r.pages) continue;   // unbrauchbare Altlast (früher mitsynchronisiert)
         let d = docById(r.id);
         if (d && (busyDoc(d) || d.dirty || (d.updatedAt || 0) >= (r.updatedAt || 0))) continue;
-        const bytes = !d || d.rev !== r.rev || d.bytes.length !== r.bytesLen ? await fetchBytes(`/api/docs/${r.id}/original`) : d.bytes;
-        const result = r.hasResult
-          ? (d && d.result && d.resultSig === r.resultSig ? d.result : await fetchBytes(`/api/docs/${r.id}/result`))
-          : null;
+        let bytes;
+        let result;
+        try {
+          bytes = !d || d.rev !== r.rev || d.bytes.length !== r.bytesLen ? await fetchBytes(`/api/docs/${r.id}/original`) : d.bytes;
+          result = r.hasResult
+            ? (d && d.result && d.resultSig === r.resultSig ? d.result : await fetchBytes(`/api/docs/${r.id}/result`))
+            : null;
+        } catch (e) {
+          if (e.status) continue;   // dieses eine Dokument fehlt gerade – die anderen trotzdem holen
+          throw e;
+        }
         if (!d) {
           d = newDoc(bytes, r.name, { kind: r.kind });
           d.id = r.id;
@@ -400,7 +425,11 @@ const isImageFile = (f) => /^image\//.test(f.type || '') || /\.(jpe?g|png|webp|g
 
 /** Beliebige Dateien: PDFs werden Dokumente, Bilder gehen ins Scan-Studio. */
 async function addFiles(fileList) {
-  const files = [...fileList];
+  const all = [...fileList];
+  // Leere Dateien (abgebrochener Download, iCloud-Platzhalter) gleich aussortieren
+  const empty = all.filter((f) => !f.size);
+  const files = all.filter((f) => f.size);
+  if (empty.length) toast(`${empty.length === 1 ? `„${empty[0].name}“ ist leer` : `${empty.length} Dateien sind leer`} – übersprungen`, 'err', 5000);
   const pdfs = files.filter(isPdfFile);
   const images = files.filter((f) => !isPdfFile(f) && isImageFile(f));
   const skipped = files.length - pdfs.length - images.length;
@@ -411,20 +440,35 @@ async function addFiles(fileList) {
   if (skipped) toast(`${plural(skipped, 'Datei', 'Dateien')} übersprungen – nur PDFs und Bilder`, 'info', 4000);
 }
 
+function withTimeout(promise, ms, message = 'Zeitüberschreitung') {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { t = setTimeout(() => reject(new Error(message)), ms); }),
+  ]).finally(() => clearTimeout(t));
+}
+
 /** Fertiges PDF als neues Dokument in die Liste. */
 async function addPdfDoc(bytes, name, opts = {}) {
   const doc = newDoc(bytes, name, opts);
+  if (opts.inherit) Object.assign(doc, opts.inherit);
   state.docs.push(doc);
   state.selectedId = doc.id;
   renderAll();
   try {
-    doc.pages = await countPages(bytes);
-    doc.thumb = (await renderPageImage(bytes, 1, 180)).url;
+    // Kaputte Dateien können pdf.js lange hängen lassen – nicht ewig warten
+    doc.pages = await withTimeout(countPages(bytes), 30000, 'Zeitüberschreitung beim Lesen');
+    if (!doc.pages) throw new Error('keine Seiten gefunden');
   } catch (e) {
+    doc.pages = 0;
     doc.status = 'error';
     doc.message = /password|encrypt/i.test(String(e?.name || e?.message || e))
       ? 'PDF ist passwortgeschützt – bitte erst entsperren'
       : `PDF nicht lesbar: ${e?.message || e}`;
+  }
+  if (doc.pages) {
+    // Fehlt nur die Miniatur, ist das Dokument trotzdem brauchbar
+    try { doc.thumb = (await withTimeout(renderPageImage(bytes, 1, 180), 30000)).url; } catch { doc.thumb = null; }
   }
   renderDoc(doc);
   renderToolbar();
@@ -432,6 +476,8 @@ async function addPdfDoc(bytes, name, opts = {}) {
   if (doc.status !== 'error') {
     if (settings.autoCompress) enqueue(doc);
     else maybeAutoSimulate(doc);
+    // Hat das PDF schon Text (digital erstellt), gibt es gleich einen Namensvorschlag
+    offerNameSuggestion(doc).catch(() => {});
   }
   return doc;
 }
@@ -518,8 +564,10 @@ async function pump() {
           : 'Fertig – nicht kleiner als vorher (anderes Profil probieren)';
       renderDoc(doc);
       if (doc.id === state.selectedId) renderInspector();
+      // Nach der Texterkennung gibt es meist genug Text für einen Namensvorschlag
+      await offerNameSuggestion(doc);
       if (state.outDir) await saveToDir(doc, { quiet: true });
-      if (backend.consume && settings.autoPaperless) await sendToPaperless(doc, { quiet: true });
+      if (backend.consume && settings.autoPaperless) await sendToPaperless(doc, { quiet: true, meta: doc.paperlessMeta || null });
     } catch (e) {
       if (e?.name === 'AbortError') {
         doc.status = 'idle';
@@ -591,7 +639,7 @@ async function shareDoc(doc) {
   }
 }
 
-async function sendToPaperless(doc, { quiet = false } = {}) {
+async function sendToPaperless(doc, { quiet = false, meta = null } = {}) {
   if (!backend.consume) return false;
   const bytes = quiet ? (hasFresh(doc) ? doc.result : null) : resultOrToast(doc);
   if (!bytes) return false;
@@ -600,7 +648,12 @@ async function sendToPaperless(doc, { quiet = false } = {}) {
   if (doc.id === state.selectedId) renderInspector();
   const t = quiet ? null : toast(`„${doc.name}“ wird an Paperless übergeben …`, 'busy', 0);
   try {
-    const res = await fetch(`/api/save?name=${encodeURIComponent(outName(doc))}&title=${encodeURIComponent(doc.name)}`, {
+    const q = new URLSearchParams({ name: outName(doc), title: meta?.title || doc.name });
+    if (meta?.created) q.set('created', meta.created);
+    if (meta?.correspondent) q.set('correspondent', meta.correspondent);
+    if (meta?.documentType) q.set('document_type', meta.documentType);
+    if (meta?.tags?.length) q.set('tags', meta.tags.join(','));
+    const res = await fetch(`/api/save?${q}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/pdf' },
       body: bytes,
@@ -626,6 +679,295 @@ async function sendToPaperless(doc, { quiet = false } = {}) {
     }
   }
 }
+
+/**
+ * Namensvorschlag aus dem Text (z. B. „Rechnung 2026-114 – 2026-10-03“) –
+ * nur für automatisch benannte Dokumente („Scan 2026-11-11 09-41“).
+ */
+async function offerNameSuggestion(doc) {
+  if (doc.nameDismissed || doc.nameSuggestion || !isGenericName(doc.name)) return;
+  const s = suggestTitle(await docText(doc));
+  if (!s || !state.docs.includes(doc) || !isGenericName(doc.name)) return;
+  doc.nameSuggestion = s;
+  if (doc.id === state.selectedId) renderInspector();
+}
+
+// ---- Blatt „An Paperless senden“ (nur mit Paperless-API)
+//
+// Titel, Datum, Korrespondent, Dokumenttyp und Tags gleich beim Senden
+// festlegen – die Listen kommen aus dem eigenen Paperless. Leer gelassene
+// Felder überlässt man Paperless (es erkennt Datum und Zuordnung selbst).
+// „Wie zuletzt“ übernimmt die letzte Auswahl mit einem Tipp.
+
+const send = { doc: null, meta: null, tags: new Set() };
+
+/** Paperless-Knopf: mit API das Blatt öffnen, sonst direkt in den Ordner. */
+function askAndSend(doc) {
+  if (backend.paperless === 'api' && settings.paperlessAsk !== false) openSendSheet(doc);
+  else sendToPaperless(doc);
+}
+
+async function docText(doc) {
+  const bytes = hasFresh(doc) ? doc.result : doc.bytes;
+  if (doc.textFor === bytes) return doc.text || '';
+  try {
+    doc.text = await withTimeout(extractText(bytes, 2), 15000);
+  } catch {
+    doc.text = '';
+  }
+  doc.textFor = bytes;
+  return doc.text;
+}
+
+async function openSendSheet(doc) {
+  if (!resultOrToast(doc)) return;
+  send.doc = doc;
+  const prev = doc.paperlessMeta || {};
+  send.tags = new Set(prev.tags || []);
+  $('#sendTitle').value = prev.title || doc.name;
+  $('#sendDate').value = prev.created || '';
+  $('#sendAsk').checked = settings.paperlessAsk !== false;
+  $('#sendTitleSuggest').classList.add('hidden');
+  $('#sendDateChips').innerHTML = '';
+  renderSendLast();
+  openSheet('#sendSheet');
+  setSendState('busy', 'lädt …');
+  // Listen und Vorschläge parallel holen
+  const metaP = api('/api/paperless/meta').then((m) => { send.meta = m; return m; });
+  const textP = docText(doc);
+  try {
+    const m = await metaP;
+    fillSendLists(m, prev);
+    setSendState('on', `${m.tags.length} Tags · ${m.correspondents.length} Korrespondenten`);
+  } catch (e) {
+    setSendState('off', 'Listen nicht verfügbar');
+    fillSendLists({ correspondents: [], documentTypes: [], tags: [] }, prev);
+    $('#sendTags').innerHTML = `<span class="faint">${escapeHtml(e.message)}</span>`;
+  }
+  const text = await textP;
+  if (send.doc !== doc) return;
+  const dates = findDates(text).slice(0, 3);
+  const today = new Date().toISOString().slice(0, 10);
+  $('#sendDateChips').innerHTML = [...dates.map((d) => `<button type="button" class="chip-btn" data-date="${d}">${fmtDateDe(d)}</button>`),
+    `<button type="button" class="chip-btn" data-date="${today}">Heute</button>`,
+    '<button type="button" class="chip-btn" data-date="">automatisch</button>'].join('');
+  const sug = suggestTitle(text);
+  if (sug && sug !== $('#sendTitle').value) {
+    $('#sendTitleSuggest').innerHTML = `<button type="button" class="chip-btn" data-title="${escapeHtml(sug)}">${icon('sparkle', { size: 13 })}${escapeHtml(sug)}</button>`;
+    $('#sendTitleSuggest').classList.remove('hidden');
+  }
+}
+
+const fmtDateDe = (iso) => { const [y, m, d] = iso.split('-'); return `${d}.${m}.${y}`; };
+
+function setSendState(cls, text) {
+  const pill = $('#sendSheetState');
+  pill.querySelector('.dot').className = `dot ${cls}`;
+  pill.querySelector('span:last-child').textContent = text;
+}
+
+function fillSendLists(m, prev) {
+  const opts = (list, sel) => `<option value="">automatisch</option>${list.map((x) => `<option value="${x.id}" ${String(x.id) === String(sel || '') ? 'selected' : ''}>${escapeHtml(x.name)}</option>`).join('')}`;
+  $('#sendCorr').innerHTML = opts(m.correspondents, prev.correspondent);
+  $('#sendType').innerHTML = opts(m.documentTypes, prev.documentType);
+  $('#sendTagFilter').classList.toggle('hidden', m.tags.length < 12);
+  $('#sendTagFilter').value = '';
+  renderSendTags();
+}
+
+function renderSendTags() {
+  const tags = send.meta?.tags || [];
+  const f = $('#sendTagFilter').value.trim().toLowerCase();
+  const shown = tags.filter((t) => !f || t.name.toLowerCase().includes(f) || send.tags.has(t.id));
+  $('#sendTags').innerHTML = shown.length
+    ? shown.map((t) => `<button type="button" class="tag-chip ${send.tags.has(t.id) ? 'on' : ''}" data-tag="${t.id}" aria-pressed="${send.tags.has(t.id)}" style="--tag:${escapeHtml(t.color || '#8a93a6')}">${escapeHtml(t.name)}</button>`).join('')
+    : `<span class="faint">${tags.length ? 'Kein Tag passt' : 'Keine Tags in Paperless'}</span>`;
+  $('#sendTagCount').textContent = send.tags.size ? `${send.tags.size} gewählt` : '';
+}
+
+function renderSendLast() {
+  const last = settings.paperlessLast;
+  const has = last && (last.correspondent || last.documentType || last.tags?.length);
+  $('#sendLast').innerHTML = has ? `<button type="button" class="chip-btn" data-last="1">${icon('rotate', { size: 13 })}Wie zuletzt</button>` : '';
+}
+
+function collectSendMeta() {
+  return {
+    title: cleanName($('#sendTitle').value) || send.doc.name,
+    created: $('#sendDate').value || null,
+    correspondent: $('#sendCorr').value || null,
+    documentType: $('#sendType').value || null,
+    tags: [...send.tags],
+  };
+}
+
+$('#sendSheet').addEventListener('click', (e) => {
+  const tag = e.target.closest('[data-tag]');
+  if (tag) {
+    const id = Number(tag.dataset.tag);
+    if (send.tags.has(id)) send.tags.delete(id); else send.tags.add(id);
+    renderSendTags();
+    return;
+  }
+  const d = e.target.closest('[data-date]');
+  if (d) { $('#sendDate').value = d.dataset.date; return; }
+  const t = e.target.closest('[data-title]');
+  if (t) { $('#sendTitle').value = t.dataset.title; $('#sendTitleSuggest').classList.add('hidden'); return; }
+  if (e.target.closest('[data-last]')) {
+    const last = settings.paperlessLast || {};
+    if (last.correspondent) $('#sendCorr').value = last.correspondent;
+    if (last.documentType) $('#sendType').value = last.documentType;
+    send.tags = new Set(last.tags || []);
+    renderSendTags();
+  }
+});
+$('#sendTagFilter').addEventListener('input', renderSendTags);
+$('#sendCancel').addEventListener('click', closeSheets);
+$('#sendAsk').addEventListener('change', (e) => { settings.paperlessAsk = e.target.checked; persistSettings(); syncSettingsUi(); });
+$('#sendGo').addEventListener('click', async () => {
+  const doc = send.doc;
+  if (!doc) return;
+  const meta = collectSendMeta();
+  doc.paperlessMeta = meta;
+  // Name in der App folgt dem Titel
+  if (meta.title !== doc.name) { doc.name = meta.title; renderDoc(doc); }
+  settings.paperlessLast = { correspondent: meta.correspondent, documentType: meta.documentType, tags: meta.tags };
+  persistSettings();
+  closeSheets();
+  await sendToPaperless(doc, { meta });
+});
+
+// ---- Dokument aufteilen
+//
+// Ein Stapel-Scan mit mehreren Briefen wird zu mehreren Dokumenten: zwischen
+// den Seiten antippen setzt eine Trennung, eine Seite antippen lässt sie weg.
+// „An leeren Seiten trennen“ nutzt leere Trennblätter (und lässt sie weg).
+
+const split = { doc: null, cuts: new Set(), skip: new Set(), blank: new Set(), token: 0 };
+
+async function openSplitSheet(doc) {
+  if (!doc.pages || doc.pages < 2) return;
+  split.doc = doc;
+  split.cuts = new Set();
+  split.skip = new Set();
+  split.blank = new Set();
+  const token = ++split.token;
+  const grid = $('#splitGrid');
+  grid.innerHTML = Array.from({ length: doc.pages }, (_, i) => `
+    ${i ? `<button type="button" class="split-cut" data-cut="${i}" aria-label="Nach Seite ${i} trennen" title="Hier trennen"><span>${icon('close', { size: 12 })}</span></button>` : ''}
+    <button type="button" class="split-page" data-page="${i + 1}" aria-label="Seite ${i + 1}">
+      <span class="split-thumb"><span class="faint">${i + 1}</span></span><span class="split-no">${i + 1}</span>
+    </button>`).join('');
+  syncSplit();
+  openSheet('#splitSheet');
+  // Miniaturen nacheinander (schont den Speicher), dabei leere Seiten erkennen
+  for (let p = 1; p <= doc.pages; p++) {
+    try {
+      const { url } = await renderPageImage(doc.bytes, p, 220);
+      if (token !== split.token) return;
+      const el = grid.querySelector(`[data-page="${p}"] .split-thumb`);
+      if (el) el.innerHTML = `<img src="${url}" alt="">`;
+      if (await isBlankUrl(url)) split.blank.add(p);
+    } catch { /* Miniatur egal */ }
+  }
+  if (token === split.token) syncSplit();
+}
+
+/** Teile als Seitenlisten, z. B. [[1,2],[4,5,6]] */
+function splitParts() {
+  const parts = [];
+  let cur = [];
+  for (let p = 1; p <= split.doc.pages; p++) {
+    if (p > 1 && split.cuts.has(p - 1) && cur.length) { parts.push(cur); cur = []; }
+    if (!split.skip.has(p)) cur.push(p);
+  }
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+
+function syncSplit() {
+  const grid = $('#splitGrid');
+  grid.querySelectorAll('[data-cut]').forEach((b) => {
+    const on = split.cuts.has(Number(b.dataset.cut));
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  grid.querySelectorAll('[data-page]').forEach((b) => {
+    const p = Number(b.dataset.page);
+    b.classList.toggle('skip', split.skip.has(p));
+    b.classList.toggle('blank', split.blank.has(p));
+  });
+  const parts = splitParts();
+  $('#splitInfo span').textContent = `${plural(parts.length, 'Dokument', 'Dokumente')}${split.skip.size ? ` · ${split.skip.size} weggelassen` : ''}`;
+  $('#splitGo').disabled = parts.length < 2 && !split.skip.size;
+  $('#splitGo span').textContent = parts.length > 1 ? `In ${parts.length} teilen` : 'Übernehmen';
+  $('#splitBlank').disabled = !split.blank.size;
+}
+
+$('#splitGrid').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-cut]');
+  if (c) { const n = Number(c.dataset.cut); if (split.cuts.has(n)) split.cuts.delete(n); else split.cuts.add(n); syncSplit(); return; }
+  const p = e.target.closest('[data-page]');
+  if (p) { const n = Number(p.dataset.page); if (split.skip.has(n)) split.skip.delete(n); else split.skip.add(n); syncSplit(); }
+});
+$('#splitBlank').addEventListener('click', () => {
+  // Jede leere Seite trennt (und fällt weg)
+  for (const p of split.blank) {
+    split.skip.add(p);
+    if (p > 1) split.cuts.add(p - 1);
+    if (p < split.doc.pages) split.cuts.add(p);
+  }
+  syncSplit();
+});
+$('#splitEach').addEventListener('click', () => {
+  for (let p = 1; p < split.doc.pages; p++) split.cuts.add(p);
+  syncSplit();
+});
+$('#splitReset').addEventListener('click', () => { split.cuts.clear(); split.skip.clear(); syncSplit(); });
+$('#splitCancel').addEventListener('click', () => { split.token++; closeSheets(); });
+$('#splitGo').addEventListener('click', async () => {
+  const doc = split.doc;
+  const parts = splitParts();
+  if (!doc || !parts.length) return;
+  split.token++;
+  closeSheets();
+  const t = toast('Teile auf …', 'busy', 0);
+  try {
+    const { PDFDocument } = window.PDFLib;
+    const src = await PDFDocument.load(doc.bytes, { updateMetadata: false });
+    const at = state.docs.indexOf(doc);
+    const made = [];
+    for (let i = 0; i < parts.length; i++) {
+      const out = await PDFDocument.create();
+      const pages = await out.copyPages(src, parts[i].map((p) => p - 1));
+      pages.forEach((pg) => out.addPage(pg));
+      const name = parts.length > 1 ? `${doc.name} – Teil ${i + 1}` : doc.name;
+      // Einstellungen des Ausgangsdokuments übernehmen
+      const nd = await addPdfDoc(new Uint8Array(await out.save({ useObjectStreams: true })), name, {
+        kind: doc.kind,
+        // Rohdateien nur einmal zuordnen – sonst fragt jedes Teil nach dem Aufräumen
+        rawSources: i === 0 ? doc.rawSources : undefined,
+        inherit: { profile: doc.profile, ocr: doc.ocr, a4: doc.a4, tune: { ...doc.tune }, edited: doc.edited },
+      });
+      made.push(nd);
+    }
+    removeDoc(doc);
+    // neue Teile an die Stelle des Originals rücken
+    for (const nd of made) state.docs.splice(state.docs.indexOf(nd), 1);
+    state.docs.splice(Math.min(at, state.docs.length), 0, ...made);
+    state.selectedId = made[0]?.id || null;
+    renderAll();
+    t.update(`In ${plural(made.length, 'Dokument', 'Dokumente')} aufgeteilt`, 'ok', 6500);
+    toast(`„${doc.name}“ aufgeteilt`, 'info', 6500, {
+      action: {
+        label: 'Rückgängig',
+        run: () => { made.forEach((nd) => { if (state.docs.includes(nd)) removeDoc(nd); }); restoreDoc(doc, at); },
+      },
+    });
+  } catch (e) {
+    t.update(`Aufteilen fehlgeschlagen: ${e?.message || e}`, 'err', 6000);
+  }
+});
 
 /** Kam das Dokument aus dem Sammelordner: Rohdateien nach der Übergabe aufräumen? */
 async function offerRawCleanup(doc) {
@@ -777,6 +1119,48 @@ function updateProgress(d) {
   }
 }
 
+// ---- Suche & Filter (ab vier Dokumenten)
+const docFilter = { q: '', kind: 'all' };
+
+function docMatches(d) {
+  if (docFilter.kind === 'open' && (hasFresh(d) || d.status === 'error')) return false;
+  if (docFilter.kind === 'done' && (!hasFresh(d) || d.sent)) return false;
+  if (docFilter.kind === 'sent' && !d.sent) return false;
+  const q = docFilter.q.trim().toLowerCase();
+  if (!q) return true;
+  // Name und – falls schon gelesen – der erkannte Text
+  return q.split(/\s+/).every((w) => d.name.toLowerCase().includes(w) || (d.text || '').toLowerCase().includes(w));
+}
+
+function applyDocFilter() {
+  const show = state.docs.length >= 4 || docFilter.q || docFilter.kind !== 'all';
+  $('#docFilter').classList.toggle('hidden', !show);
+  let hits = 0;
+  for (const d of state.docs) {
+    const ok = !show || docMatches(d);
+    if (ok) hits++;
+    const el = docListEl.querySelector(`[data-id="${d.id}"]`);
+    if (el) el.classList.toggle('hidden', !ok);
+  }
+  $('#docNoHit').classList.toggle('hidden', !show || hits > 0 || !state.docs.length);
+}
+
+$('#docSearch').addEventListener('input', (e) => {
+  docFilter.q = e.target.value;
+  applyDocFilter();
+  // Text der Dokumente bei Bedarf nachladen, damit auch Inhalte gefunden werden
+  if (docFilter.q.trim().length >= 3) {
+    for (const d of state.docs) if (d.pages && d.textFor === undefined) docText(d).then(applyDocFilter);
+  }
+});
+$('#docFilterSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  docFilter.kind = b.dataset.v;
+  $$('#docFilterSeg button').forEach((x) => x.classList.toggle('active', x === b));
+  applyDocFilter();
+});
+
 function renderList() {
   scheduleSaveDocs();
   // Reihenfolge der Karten an die Liste anpassen, Überzählige entfernen
@@ -790,6 +1174,7 @@ function renderList() {
   $('#navDocCount').textContent = state.docs.length || '';
   const n = state.docs.length;
   const done = state.docs.filter(hasFresh);
+  applyDocFilter();
   $('#docsSub').textContent = n === 0
     ? 'Komprimieren · DIN A4 · Texterkennung · Paperless'
     : `${plural(n, 'Dokument', 'Dokumente')}${done.length ? ` · ${done.length} fertig` : ''}`;
@@ -851,7 +1236,10 @@ function runAction(doc, act) {
   switch (act) {
     case 'compress': enqueue(doc); break;
     case 'cancel': cancelDoc(doc); break;
-    case 'paperless': sendToPaperless(doc); break;
+    case 'paperless': askAndSend(doc); break;
+    case 'applyName': if (doc.nameSuggestion) { doc.name = cleanName(doc.nameSuggestion); doc.nameSuggestion = null; afterDocChange(doc); } break;
+    case 'dismissName': doc.nameSuggestion = null; doc.nameDismissed = true; renderInspector(); break;
+    case 'split': openSplitSheet(doc); break;
     case 'share': shareDoc(doc); break;
     case 'download': downloadDoc(doc); break;
     case 'open': openDoc(doc); break;
@@ -868,12 +1256,26 @@ function runAction(doc, act) {
   }
 }
 
-async function confirmRemove(doc) {
-  if (hasFresh(doc) && !doc.delivered) {
-    const ok = await confirmDialog('Dokument entfernen?', 'Das Ergebnis wurde noch nicht gespeichert, geteilt oder gesendet.', 'Entfernen', 'danger');
-    if (!ok) return;
-  }
+/** Entfernen ohne Rückfrage – dafür ein paar Sekunden „Rückgängig“. */
+function confirmRemove(doc) {
+  const at = state.docs.indexOf(doc);
   removeDoc(doc);
+  toast(`„${doc.name}“ entfernt`, 'info', 6500, { action: { label: 'Rückgängig', run: () => restoreDoc(doc, at) } });
+}
+
+function restoreDoc(doc, at) {
+  if (state.docs.includes(doc)) return;
+  state.docs.splice(Math.min(at, state.docs.length), 0, doc);
+  pendingDeletes.delete(doc.id);
+  // Auf dem Server war es womöglich schon gelöscht → komplett neu hochladen
+  doc.synced = false;
+  doc.srvRev = null;
+  doc.srvResultSig = null;
+  doc.dirty = true;
+  if (doc.status === 'working' || doc.status === 'queued') { doc.status = doc.result ? 'done' : 'idle'; doc.message = ''; }
+  state.selectedId = doc.id;
+  renderAll();
+  saveDocsNow().catch(() => {});
 }
 
 async function makeDefault(doc) {
@@ -974,6 +1376,7 @@ function inspectorHtml(d) {
         <label class="sr-only" for="inspName">Name</label>
         <input class="insp-name" id="inspName" value="${escapeHtml(d.name)}" spellcheck="false" autocomplete="off" title="Name ändern">
         <div class="insp-meta">${d.pages ? `${plural(d.pages, 'Seite', 'Seiten')} · ` : ''}${fmtSize(d.bytes.length)} · ${d.kind === 'scan' ? 'Scan' : 'PDF'}${d.edited ? ' · bearbeitet' : ''}</div>
+        ${d.nameSuggestion ? `<div class="name-suggest">${icon('sparkle', { size: 14 })}<button class="link-btn" data-act="applyName" title="Als Namen übernehmen">${escapeHtml(d.nameSuggestion)}</button><button class="name-suggest-x" data-act="dismissName" aria-label="Vorschlag verwerfen">${icon('close', { size: 13 })}</button></div>` : ''}
         <div class="doc-tags">${docTags(d)}</div>
         <div class="progress ${busy ? '' : 'hidden'}" id="inspProgress"><div style="width:${Math.round(d.progress * 100)}%"></div></div>
         <div class="insp-status ${d.status === 'error' ? 'err' : ''}" id="inspStatus">${escapeHtml(d.message)}</div>
@@ -1006,6 +1409,7 @@ function inspectorHtml(d) {
         <button class="btn btn-small" data-act="preview">${icon('eye', { size: 16 })}<span>Vorschau</span></button>
         <button class="btn btn-small" data-act="edit" ${busy ? 'disabled' : ''}>${icon('pen', { size: 16 })}<span>Bearbeiten</span></button>
         <button class="btn btn-small" data-act="openOriginal">${icon('external', { size: 16 })}<span>Original</span></button>
+        ${d.pages > 1 ? `<button class="btn btn-small" data-act="split" ${busy ? 'disabled' : ''} title="In mehrere Dokumente trennen">${icon('layers', { size: 16 })}<span>Aufteilen</span></button>` : ''}
         <button class="btn btn-small btn-danger-ghost" data-act="remove">${icon('trash', { size: 16 })}<span>Entfernen</span></button>
       </div>
       <p class="card-note"><button class="link-btn" data-act="makeDefault">Profil &amp; Optionen als Standard für ${d.kind === 'scan' ? 'Scans' : 'PDFs'} merken</button></p>
@@ -1394,9 +1798,11 @@ function openSheet(id) {
   closeSheets();
   $(id).classList.add('open');
   showScrim(true, closeSheets);
+  scrim.classList.add('over');
 }
 function closeSheets() {
   $$('.sheet.open').forEach((s) => s.classList.remove('open'));
+  scrim.classList.remove('over');
   if (!inspector.classList.contains('open')) showScrim(false);
   else showScrim(true, closeInspectorDrawer);
 }
@@ -1566,6 +1972,7 @@ async function openStudio({ files = [], camera = false, rawSources = null, scanN
     onCancelBatch: cancelScan,
     onDiscard: dropStudioJob,
     geometry: scanGeometry,
+    blankDetect: () => settings.blankDetect !== false,
     setCorner: (c) => { settings.scanCorner = c; persistSettings(); syncSettingsUi(); syncScanSheet(); },
     a4: () => !!settings.a4,
     camera,
@@ -2053,6 +2460,8 @@ const SETTING_FIELDS = {
   setAutoCompress: 'autoCompress',
   setAutoPaperless: 'autoPaperless',
   setServerOcr: 'serverOcr',
+  setPaperlessAsk: 'paperlessAsk',
+  setBlankDetect: 'blankDetect',
 };
 
 function syncSettingsUi() {
@@ -2192,6 +2601,7 @@ function applyBackendUi() {
   $('#statusScanner').classList.toggle('hidden', !backend.scanner);
   $('#rawScanBtn').classList.toggle('hidden', !(backend.raw && backend.scanner));
   $$('.needs-paperless').forEach((el) => el.classList.toggle('hidden', !backend.consume));
+  $$('.needs-paperless-api').forEach((el) => el.classList.toggle('hidden', backend.paperless !== 'api'));
   $('#statusPaperless').classList.toggle('hidden', !backend.consume);
   $('#statusPaperless span:last-child').textContent = backend.paperless === 'api' ? 'Paperless (API)' : 'Paperless (Ordner)';
   setScanProvider(backend.scanner ? () => fetchScannedPage() : null);

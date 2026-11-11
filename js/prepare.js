@@ -94,6 +94,8 @@ function syncActions() {
     ? `${n} ausgewählt${n > 1 ? ' – werden ein Dokument' : ''}`
     : plural(state.files.length, 'Datei', 'Dateien');
   $('#rawSelectAll').checked = state.files.length > 0 && n === state.files.length;
+  // Auswahlleiste nur, wenn es etwas auszuwählen gibt
+  $('#rawSelbar')?.classList.toggle('hidden', state.files.length === 0);
   $('#inboxSub').textContent = state.files.length
     ? `${plural(state.files.length, 'Datei wartet', 'Dateien warten')} auf die Übergabe an Paperless.`
     : 'Rohscans und Fotos sammeln, sichten – erst dann an Paperless.';

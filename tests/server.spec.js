@@ -317,5 +317,7 @@ test('Texterkennung auf dem Server: Wörter mit Position (wenn Tesseract install
   expect(w.bbox.x0).toBeGreaterThan(40);
   expect(w.bbox.x0).toBeLessThan(90);
   expect(w.bbox.y1).toBeGreaterThan(w.bbox.y0);
-  expect((await request.post(`${BASE}/api/ocr?lang=xyz`, { data: jpeg })).status()).toBe(500);
+  expect((await request.post(`${BASE}/api/ocr?lang=xyz`, { data: jpeg })).status()).toBe(400);
+  expect((await request.post(`${BASE}/api/ocr`, { data: Buffer.from('kein bild') })).status()).toBe(400);
+  expect((await request.put(`${BASE}/api/docs/abc`, { data: '{kaputt', headers: { 'Content-Type': 'application/json' } })).status()).toBe(400);
 });

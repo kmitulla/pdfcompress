@@ -25,6 +25,10 @@ Paperless schickst.
 | **DIN A4** | Jede Seite landet auf A4 (hoch/quer, nie verzerrt) – auch bei „Verlustfrei“ |
 | **Texterkennung** | Tesseract (Deutsch/Englisch) legt einen unsichtbaren Textlayer an. Selbst gehostet erkennt der **Server** die Seiten (nativ, parallel – am Handy um ein Vielfaches schneller), sonst rechnet der Browser |
 | **Weitergeben** | Herunterladen, **im Browser öffnen**, **Teilen** (System-Dialog), **an Paperless** (API oder consume-Ordner), Zielordner (Chrome/Edge) |
+| **Paperless-Angaben** | Mit API vor dem Senden: Titel, Datum, Korrespondent, Dokumenttyp und Tags wählen – mit Vorschlägen aus dem Text (Datum, „Rechnung 2026-114 – …“) und **„Wie zuletzt“**. Abschaltbar („Vor jedem Senden fragen“) |
+| **Leere Seiten** | Das Scan-Studio erkennt leere Rückseiten/Trennblätter und entfernt sie mit einem Tipp |
+| **Aufteilen** | Einen Stapel in mehrere Dokumente teilen – an leeren Trennblättern, jede Seite einzeln oder frei; Seiten weglassen. Die Teile behalten Profil und Optionen |
+| **Ordnung** | Suche (Name und Text im PDF) und Filter Offen/Fertig/Gesendet, Namensvorschlag für „Scan …“-Dokumente, Entfernen mit **Rückgängig** |
 | **Bearbeiten** | Editor mit beschrifteten Werkzeugen, Eigenschaften daneben, Rückgängig. Schwärzen entfernt den Inhalt wirklich (Seite wird dafür zum Bild). Unterschrift zeichnen oder als Bild (transparente PNGs bleiben transparent), Stempel mit Vorschau & Vorlagen (Rahmen-Stempel bleiben durchsuchbar), Text, Stift/Marker, Abdecken, Schwärzen, Bilder, Seiten, Formulare |
 | **Auf allen Geräten** | Selbst gehostet liegen alle Dokumente (Original, Ergebnis, Einstellungen je Dokument) auch auf dem Server: am iPhone scannen, am Laptop weitermachen. Offline wird lokal weitergearbeitet und später abgeglichen |
 | **Sammelordner** | „Paperless Prepare“: Rohscans parken, sichten, als **ein** Dokument übernehmen, nach der Übergabe aufräumen |
